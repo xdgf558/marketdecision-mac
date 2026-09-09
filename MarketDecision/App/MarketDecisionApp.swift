@@ -74,6 +74,7 @@ struct MarketDecisionApp: App {
         }
         .defaultSize(width: 1392, height: 944)
         .windowStyle(.hiddenTitleBar)
+        .commands { CredentialMenuCommands() }
         Settings {
             SettingsContent(model: model).frame(width: 650, height: 620)
                 .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
@@ -230,7 +231,8 @@ struct CredentialSettingsSection: View {
     @State private var draft = ""
     @State private var confirmDelete = false
     @State private var confirmReplace = false
-    @FocusState private var inputFocused: Bool
+    private enum Control: Hashable { case input, save, delete, check }
+    @FocusState private var focusedControl: Control?
     @Environment(\.scenePhase) private var scenePhase
     private var canSave: Bool {
         !model.isBusy && model.presence != .unknown && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -245,22 +247,36 @@ struct CredentialSettingsSection: View {
                 .accessibilityIdentifier("credentialInput")
                 .accessibilityLabel(model.presence == .saved ? "输入新凭据以替换" : "输入凭据")
                 .accessibilityHint("安全文本，不显示已保存的凭据。Command S 保存或打开替换确认。")
-                .focused($inputFocused)
+                .focused($focusedControl, equals: .input)
                 .onSubmit { requestSave() }
                 .disabled(model.isBusy || model.presence == .unknown)
             HStack {
                 Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
                     requestSave()
-                }.disabled(!canSave)
-                    .keyboardShortcut("s", modifiers: .command)
+                }
+                    .focusable()
+                    .focused($focusedControl, equals: .save)
+                    .onKeyPress(keys: [.space, .return], phases: .down) { _ in
+                        requestSave(); return .handled
+                    }
+                    .disabled(!canSave)
                     .help("保存或替换凭据（⌘S）")
-                Button("删除凭据…", role: .destructive) { confirmDelete = true }
+                Button("删除凭据…", role: .destructive) { requestDelete() }
+                    .focusable()
+                    .focused($focusedControl, equals: .delete)
+                    .onKeyPress(keys: [.space, .return], phases: .down) { _ in
+                        requestDelete(); return .handled
+                    }
                     .disabled(model.isBusy || model.presence != .saved)
-                    .keyboardShortcut(.delete, modifiers: [.command, .shift])
                     .help("删除凭据（⇧⌘⌫），仍需确认")
                 Spacer()
-                Button("检查状态") { Task { await model.refresh() } }.disabled(model.isBusy)
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                Button("检查状态") { checkStatus() }
+                    .focusable()
+                    .focused($focusedControl, equals: .check)
+                    .onKeyPress(keys: [.space, .return], phases: .down) { _ in
+                        checkStatus(); return .handled
+                    }
+                    .disabled(model.isBusy)
                     .help("检查钥匙串状态（⇧⌘R）")
             }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
@@ -270,27 +286,69 @@ struct CredentialSettingsSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .background {
-            Button("聚焦凭据输入") { inputFocused = true }
-                .keyboardShortcut("l", modifiers: .command)
-                .hidden().accessibilityHidden(true)
+        .focusedSceneValue(\.credentialActions, CredentialSceneActions(
+            canFocus: canUseInput && !confirmationOpen,
+            canSave: canSave && !confirmationOpen,
+            canDelete: model.presence == .saved && !model.isBusy && !confirmationOpen,
+            canCheck: !model.isBusy && !confirmationOpen,
+            focus: { restoreFocus(.input) }, save: requestSave,
+            delete: requestDelete, check: checkStatus
+        ))
+        .onKeyPress(.tab, phases: .down) { press in
+            guard let current = focusedControl, let index = focusOrder.firstIndex(of: current) else { return .ignored }
+            let next = index + (press.modifiers.contains(.shift) ? -1 : 1)
+            guard focusOrder.indices.contains(next) else { return .ignored }
+            focusedControl = focusOrder[next]
+            return .handled
         }
         .task { await model.refresh() }
-        .onDisappear { draft = "" }
+        .onDisappear { draft = ""; focusedControl = nil }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false }
         }
         .alert("替换本机凭据？", isPresented: $confirmReplace) {
-            Button("取消", role: .cancel) {}
+            Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("替换") { saveDraft() }.disabled(!canSave)
         } message: { Text("原凭据将被覆盖，无法在本应用内恢复。") }
         .alert("删除本机凭据？", isPresented: $confirmDelete) {
-            Button("取消", role: .cancel) {}
+            Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
             Button("删除", role: .destructive) { draft = ""; Task { await model.delete() } }
-        } message: { Text("删除后如需使用，必须重新输入凭据。") }
+                .keyboardShortcut("d", modifiers: .command)
+        } message: { Text("删除后如需使用，必须重新输入凭据。按 Command-D 确认删除，Esc 取消。") }
+        .onChange(of: focusOrder) { _, order in
+            if let current = focusedControl, !order.contains(current) { focusedControl = nil }
+        }
+        .onChange(of: confirmDelete) { _, open in if !open { restoreFocus(.input) } }
+        .onChange(of: confirmReplace) { _, open in if !open { restoreFocus(.input) } }
+    }
+    private var confirmationOpen: Bool { confirmDelete || confirmReplace }
+    private var canUseInput: Bool { !model.isBusy && model.presence != .unknown }
+    private var focusOrder: [Control] {
+        guard !model.isBusy else { return [] }
+        var order: [Control] = canUseInput ? [.input] : []
+        if canSave { order.append(.save) }
+        if model.presence == .saved { order.append(.delete) }
+        order.append(.check)
+        return order
+    }
+    private func restoreFocus(_ control: Control) {
+        focusedControl = nil
+        Task { @MainActor in
+            await Task.yield()
+            guard scenePhase == .active, !confirmationOpen, focusOrder.contains(control) else { return }
+            focusedControl = control
+        }
+    }
+    private func requestDelete() {
+        guard !model.isBusy, model.presence == .saved, !confirmationOpen else { return }
+        confirmDelete = true
+    }
+    private func checkStatus() {
+        guard !model.isBusy, !confirmationOpen else { return }
+        Task { await model.refresh() }
     }
     private func requestSave() {
-        guard canSave else { return }
+        guard canSave, !confirmationOpen else { return }
         if model.presence == .saved { confirmReplace = true } else { saveDraft() }
     }
     private func saveDraft() {
@@ -298,5 +356,46 @@ struct CredentialSettingsSection: View {
         let value = draft
         draft = ""
         Task { await model.save(value) }
+    }
+}
+
+
+@MainActor private struct CredentialSceneActions {
+    let canFocus: Bool
+    let canSave: Bool
+    let canDelete: Bool
+    let canCheck: Bool
+    let focus: () -> Void
+    let save: () -> Void
+    let delete: () -> Void
+    let check: () -> Void
+}
+private struct CredentialActionsKey: FocusedValueKey {
+    typealias Value = CredentialSceneActions
+}
+private extension FocusedValues {
+    var credentialActions: CredentialSceneActions? {
+        get { self[CredentialActionsKey.self] }
+        set { self[CredentialActionsKey.self] = newValue }
+    }
+}
+private struct CredentialMenuCommands: Commands {
+    @FocusedValue(\.credentialActions) private var actions
+    var body: some Commands {
+        CommandMenu("凭据") {
+            Button("聚焦凭据输入") { actions?.focus() }
+                .keyboardShortcut("l", modifiers: .command)
+                .disabled(actions?.canFocus != true)
+            Button("保存或替换凭据…") { actions?.save() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(actions?.canSave != true)
+            Button("删除凭据…") { actions?.delete() }
+                .keyboardShortcut(.delete, modifiers: [.command, .shift])
+                .disabled(actions?.canDelete != true)
+            Divider()
+            Button("检查钥匙串状态") { actions?.check() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(actions?.canCheck != true)
+        }
     }
 }
