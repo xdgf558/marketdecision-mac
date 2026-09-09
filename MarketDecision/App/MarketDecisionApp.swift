@@ -3,6 +3,7 @@ import AppComposition
 import DataContracts
 
 @MainActor @Observable final class WorkspaceModel {
+    let credentials = CredentialSettingsModel()
     var quote: Quote?
     var isLoading = false
     var message: String?
@@ -58,7 +59,7 @@ struct MarketDecisionApp: App {
         .defaultSize(width: 1392, height: 944)
         .windowStyle(.hiddenTitleBar)
         Settings {
-            SettingsContent(model: model).frame(width: 650, height: 440)
+            SettingsContent(model: model).frame(width: 650, height: 620)
                 .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
         }
     }
@@ -188,8 +189,65 @@ struct SettingsContent: View {
                 }.disabled(model.isLoading)
                 if let connectionMessage { Text(connectionMessage).foregroundStyle(.secondary) }
             }
+            CredentialSettingsSection(model: model.credentials)
             Section { Text("数据默认保存在本机。当前不会调用付费 API。") }
         }
         .formStyle(.grouped).navigationTitle("设置")
+    }
+}
+
+struct CredentialSettingsSection: View {
+    @Bindable var model: CredentialSettingsModel
+    @State private var draft = ""
+    @State private var confirmDelete = false
+    @State private var confirmReplace = false
+    @Environment(\.scenePhase) private var scenePhase
+    private var canSave: Bool {
+        !model.isBusy && model.presence != .unknown && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    var body: some View {
+        Section("服务凭据") {
+            LabeledContent("本机状态", value: model.presence == .saved ? "已保存" : model.presence == .absent ? "未保存" : "待检查")
+            Text("预留的数据服务凭据，仅存入本机钥匙串，不会显示已保存的内容。保存不代表已连接或验证服务。")
+                .foregroundStyle(.secondary)
+            SecureField(model.presence == .saved ? "输入新凭据以替换" : "输入凭据", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("credentialInput")
+                .disabled(model.isBusy || model.presence == .unknown)
+            HStack {
+                Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
+                    if model.presence == .saved { confirmReplace = true } else { saveDraft() }
+                }.disabled(!canSave)
+                Button("删除凭据…", role: .destructive) { confirmDelete = true }
+                    .disabled(model.isBusy || model.presence != .saved)
+                Spacer()
+                Button("检查状态") { Task { await model.refresh() } }.disabled(model.isBusy)
+            }
+            if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
+            if let message = model.message {
+                Label(message, systemImage: model.hasError ? "exclamationmark.triangle" : "checkmark.circle")
+                    .foregroundStyle(model.hasError ? Color.red : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await model.refresh() }
+        .onDisappear { draft = "" }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false }
+        }
+        .alert("替换本机凭据？", isPresented: $confirmReplace) {
+            Button("取消", role: .cancel) {}
+            Button("替换") { saveDraft() }.disabled(!canSave)
+        } message: { Text("原凭据将被覆盖，无法在本应用内恢复。") }
+        .alert("删除本机凭据？", isPresented: $confirmDelete) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) { draft = ""; Task { await model.delete() } }
+        } message: { Text("删除后如需使用，必须重新输入凭据。") }
+    }
+    private func saveDraft() {
+        guard canSave else { return }
+        let value = draft
+        draft = ""
+        Task { await model.save(value) }
     }
 }
