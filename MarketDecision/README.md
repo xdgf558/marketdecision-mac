@@ -35,3 +35,7 @@ These source-level synthetic tests are included and can be rerun. Full private a
 No hosted CI workflow has been created or run. The local script is not the Phase 0 CI exit criterion. Keychain entitlement evidence, complete foundation contracts, CI/traceability execution, minimum-system runtime, Intel runtime, full accessibility and Release performance remain open.
 
 DATA-000 remains route B with G5 unpassed and no qualified supplier; no Bootstrap/calibration or real historical analysis is implemented here. Data remains free-first; no paid API or real market data is invoked. GPT is not used to fill missing market data. This slice does not start later analysis phases or close Phase 0.
+
+## Permission and signing follow-up
+
+The demo no longer requests network client or user-selected file access. The local verification script checks the effective signature permissions. Optional provisioned app and synthetic Keychain verification commands are documented in [KeychainHost](Tests/KeychainHost/README.md). A provisioned standalone host passed synthetic CRUD and stored accessibility checks locally; this is not an in-app or cross-launch test. The default Swift test runner still skips its opt-in Keychain test and is not provisioned by these commands. DATA-001 and Phase 0 remain incomplete. No profiles, signing identities or private evidence are included.
