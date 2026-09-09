@@ -12,7 +12,7 @@ import SecuritySupport
     private let store: any CredentialStorage
     private let reference = "reserved-data-service"
 
-    public init(store: any CredentialStorage = CredentialStore()) { self.store = store }
+    public init(store: any CredentialStorage) { self.store = store }
 
     public func refresh() async {
         guard !isBusy else { return }

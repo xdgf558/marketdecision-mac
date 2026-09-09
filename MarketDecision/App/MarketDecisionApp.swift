@@ -3,25 +3,41 @@ import AppComposition
 import DataContracts
 
 @MainActor @Observable final class WorkspaceModel {
-    let credentials = CredentialSettingsModel()
+    private(set) var credentials: CredentialSettingsModel?
     var quote: Quote?
     var isLoading = false
+    private(set) var isPreparing = false
+    private(set) var initializationError: String?
     var message: String?
     private var environment: AppEnvironment?
+
+    private func prepare() async {
+        guard environment == nil, !isPreparing else { return }
+        isPreparing = true
+        initializationError = nil
+        defer { isPreparing = false }
+        do {
+            let ready = try await Task.detached {
+                let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                    .appendingPathComponent("MarketDecision", isDirectory: true)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                return try AppEnvironment.mock(databasePath: folder.appendingPathComponent("foundation.sqlite").path)
+            }.value
+            environment = ready
+            credentials = ready.makeCredentialSettings()
+        } catch {
+            initializationError = "本地数据暂时不可用，请重试。"
+        }
+    }
+
     func refresh() async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
+        await prepare()
+        guard let environment else { message = initializationError; return }
         do {
-            if environment == nil {
-                environment = try await Task.detached {
-                    let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                        .appendingPathComponent("MarketDecision", isDirectory: true)
-                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                    return try AppEnvironment.mock(databasePath: folder.appendingPathComponent("foundation.sqlite").path)
-                }.value
-            }
-            quote = try await environment?.quotes.quote(for: "DEMO")
+            quote = try await environment.quotes.quote(for: "DEMO")
             message = "演示数据已刷新"
         } catch is CancellationError {
             message = "刷新已取消"
@@ -83,6 +99,8 @@ struct RootView: View {
                     .foregroundStyle(page == item ? Color.white : Color.primary)
                     .background(page == item ? Color.blue : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                     .accessibilityAddTraits(page == item ? .isSelected : [])
+                    .keyboardShortcut(item == .workspace ? "1" : "2", modifiers: .command)
+                    .help(item == .workspace ? "工作台（⌘1）" : "设置（⌘2）")
                 }
                 Spacer()
             }
@@ -186,13 +204,24 @@ struct SettingsContent: View {
                     .foregroundStyle(.secondary)
                 Button("测试演示连接") {
                     Task { await model.refresh(); connectionMessage = model.quote == nil ? "演示连接失败，请重试。" : "演示连接正常；未访问真实数据服务。" }
-                }.disabled(model.isLoading)
+                }.disabled(model.isLoading || model.isPreparing || model.credentials == nil)
                 if let connectionMessage { Text(connectionMessage).foregroundStyle(.secondary) }
             }
-            CredentialSettingsSection(model: model.credentials)
+            if let credentials = model.credentials {
+                CredentialSettingsSection(model: credentials)
+            } else {
+                Section("服务凭据") {
+                    if let error = model.initializationError {
+                        Text(error).foregroundStyle(.red)
+                        Button("重试初始化") { Task { await model.refresh() } }
+                            .disabled(model.isPreparing)
+                    } else { ProgressView("正在准备本地服务…") }
+                }
+            }
             Section { Text("数据默认保存在本机。当前不会调用付费 API。") }
         }
         .formStyle(.grouped).navigationTitle("设置")
+        .task { await model.refresh() }
     }
 }
 
@@ -201,6 +230,7 @@ struct CredentialSettingsSection: View {
     @State private var draft = ""
     @State private var confirmDelete = false
     @State private var confirmReplace = false
+    @FocusState private var inputFocused: Bool
     @Environment(\.scenePhase) private var scenePhase
     private var canSave: Bool {
         !model.isBusy && model.presence != .unknown && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -213,15 +243,25 @@ struct CredentialSettingsSection: View {
             SecureField(model.presence == .saved ? "输入新凭据以替换" : "输入凭据", text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("credentialInput")
+                .accessibilityLabel(model.presence == .saved ? "输入新凭据以替换" : "输入凭据")
+                .accessibilityHint("安全文本，不显示已保存的凭据。Command S 保存或打开替换确认。")
+                .focused($inputFocused)
+                .onSubmit { requestSave() }
                 .disabled(model.isBusy || model.presence == .unknown)
             HStack {
                 Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
-                    if model.presence == .saved { confirmReplace = true } else { saveDraft() }
+                    requestSave()
                 }.disabled(!canSave)
+                    .keyboardShortcut("s", modifiers: .command)
+                    .help("保存或替换凭据（⌘S）")
                 Button("删除凭据…", role: .destructive) { confirmDelete = true }
                     .disabled(model.isBusy || model.presence != .saved)
+                    .keyboardShortcut(.delete, modifiers: [.command, .shift])
+                    .help("删除凭据（⇧⌘⌫），仍需确认")
                 Spacer()
                 Button("检查状态") { Task { await model.refresh() } }.disabled(model.isBusy)
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .help("检查钥匙串状态（⇧⌘R）")
             }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
             if let message = model.message {
@@ -229,6 +269,11 @@ struct CredentialSettingsSection: View {
                     .foregroundStyle(model.hasError ? Color.red : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .background {
+            Button("聚焦凭据输入") { inputFocused = true }
+                .keyboardShortcut("l", modifiers: .command)
+                .hidden().accessibilityHidden(true)
         }
         .task { await model.refresh() }
         .onDisappear { draft = "" }
@@ -243,6 +288,10 @@ struct CredentialSettingsSection: View {
             Button("取消", role: .cancel) {}
             Button("删除", role: .destructive) { draft = ""; Task { await model.delete() } }
         } message: { Text("删除后如需使用，必须重新输入凭据。") }
+    }
+    private func requestSave() {
+        guard canSave else { return }
+        if model.presence == .saved { confirmReplace = true } else { saveDraft() }
     }
     private func saveDraft() {
         guard canSave else { return }

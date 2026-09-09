@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import AppComposition
 import SecuritySupport
+import Persistence
+import DataProviders
 
 private actor MemoryCredentials: CredentialStorage {
     var value: Data?
@@ -23,6 +25,21 @@ private actor MemoryCredentials: CredentialStorage {
 }
 
 @Suite @MainActor struct CredentialSettingsTests {
+    @Test func environmentInjectsTheSameStoreAcrossSettingsModels() async throws {
+        let store = MemoryCredentials()
+        let environment = AppEnvironment(quotes: MockQuoteProvider(), database: try DatabaseStore(path: ":memory:"), credentials: store)
+        let first = environment.makeCredentialSettings()
+        let second = environment.makeCredentialSettings()
+        await first.refresh()
+        #expect(await first.save("synthetic-injected"))
+        #expect(await store.value == Data("synthetic-injected".utf8))
+        await second.refresh()
+        #expect(second.presence == .saved)
+        await second.delete()
+        await first.refresh()
+        #expect(first.presence == .absent)
+        #expect(await store.value == nil)
+    }
     @Test func lifecycleAndRestart() async {
         let store = MemoryCredentials()
         let model = CredentialSettingsModel(store: store)
