@@ -231,9 +231,8 @@ struct CredentialSettingsSection: View {
     @State private var draft = ""
     @State private var confirmDelete = false
     @State private var confirmReplace = false
-    @State private var focusRequest = UUID()
-    @State private var requestedFocus: Control?
-    @State private var visibleSession: UUID?
+    @State private var flow = CredentialInteractionFlow()
+    @State private var confirmationNotice: String?
     private enum Control: Hashable { case input, save, delete, check }
     @FocusState private var focusedControl: Control?
     @Environment(\.scenePhase) private var scenePhase
@@ -263,7 +262,7 @@ struct CredentialSettingsSection: View {
                         requestSave(); return .handled
                     }
                     .disabled(!canSave)
-                    .help("保存或替换凭据（⌘S）")
+                    .help(model.presence == .saved ? "替换凭据（⌘S），仍需确认" : "保存凭据（⌘S）")
                 Button("删除凭据…", role: .destructive) { requestDelete() }
                     .focusable(model.presence == .saved && !model.isBusy)
                     .focused($focusedControl, equals: .delete)
@@ -282,6 +281,7 @@ struct CredentialSettingsSection: View {
                     .disabled(model.isBusy)
                     .help("检查钥匙串状态（⇧⌘R）")
             }
+            if let confirmationNotice { Text(confirmationNotice).foregroundStyle(.secondary) }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
             if let message = model.message {
                 Label(message, systemImage: model.hasError ? "exclamationmark.triangle" : "checkmark.circle")
@@ -306,38 +306,44 @@ struct CredentialSettingsSection: View {
             return .handled
         }
         .task { await model.refresh() }
-        .onAppear { visibleSession = UUID() }
-        .task(id: focusRequest) {
-            guard let control = requestedFocus else { return }
+        .onAppear { flow.appear() }
+        .task(id: flow.focusRequest) {
+            guard flow.focusRequest != nil else { return }
             await Task.yield()
-            guard !Task.isCancelled, visibleSession != nil, scenePhase == .active,
-                  !confirmationOpen, focusOrder.contains(control) else { return }
-            focusedControl = control
+            guard !Task.isCancelled, flow.isVisible, scenePhase == .active,
+                  !confirmationOpen, focusOrder.contains(.input) else { return }
+            focusedControl = .input
         }
         .onDisappear {
-            visibleSession = nil
+            flow.disappear()
             draft = ""
             cancelFocusRequest()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false; cancelFocusRequest() }
+            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false; flow.disappear(); cancelFocusRequest() }
+            else { flow.appear() }
         }
         .alert("替换本机凭据？", isPresented: $confirmReplace) {
-            Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
-            Button("替换", role: .destructive) { saveDraft() }
+            Button("取消", role: .cancel) { flow.cancel() }.keyboardShortcut(.cancelAction)
+            Button("替换", role: .destructive) { saveDraft(replacing: true) }
                 .keyboardShortcut("r", modifiers: .command)
                 .disabled(!canSave)
         } message: { Text("原凭据将被覆盖，无法在本应用内恢复。按 Command-R 确认替换，Esc 取消。") }
         .alert("删除本机凭据？", isPresented: $confirmDelete) {
-            Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
+            Button("取消", role: .cancel) { flow.cancel() }.keyboardShortcut(.cancelAction)
             Button("删除", role: .destructive) { deleteCredential() }
                 .keyboardShortcut("d", modifiers: .command)
         } message: { Text("删除后如需使用，必须重新输入凭据。按 Command-D 确认删除，Esc 取消。") }
         .onChange(of: focusOrder) { _, order in
             if let current = focusedControl, !order.contains(current) { focusedControl = nil }
         }
-        .onChange(of: confirmDelete) { _, open in if !open { restoreFocus(.input) } }
-        .onChange(of: confirmReplace) { _, open in if !open { restoreFocus(.input) } }
+        .onChange(of: model.revision) { _, revision in
+            if flow.invalidate(revision: revision) {
+                confirmReplace = false
+                confirmDelete = false
+                confirmationNotice = "凭据状态已变化，请重新发起操作并确认。"
+            }
+        }
     }
     private var confirmationOpen: Bool { confirmDelete || confirmReplace }
     private var canUseInput: Bool { !model.isBusy && model.presence != .unknown }
@@ -350,29 +356,27 @@ struct CredentialSettingsSection: View {
         return order
     }
     private func cancelFocusRequest() {
-        requestedFocus = nil
+        flow.clearFocusRequest()
         focusedControl = nil
-        focusRequest = UUID()
     }
     private func restoreFocus(_ control: Control) {
-        guard visibleSession != nil, scenePhase == .active else { return }
+        guard scenePhase == .active else { return }
         focusedControl = nil
-        requestedFocus = control
-        focusRequest = UUID()
+        flow.requestFocus()
     }
     private func deleteCredential() {
-        guard !model.isBusy, model.presence == .saved else { return }
-        let session = visibleSession
+        guard !model.isBusy, model.presence == .saved,
+              let operation = flow.confirm(.delete, revision: model.revision) else { return }
         draft = ""
         Task {
-            await model.delete()
-            guard !model.hasError, model.presence == .absent,
-                  let session, visibleSession == session else { return }
-            restoreFocus(.input)
+            let deleted = await model.delete(expectedRevision: operation.revision)
+            flow.completed(operation, succeeded: deleted)
         }
     }
     private func requestDelete() {
         guard !model.isBusy, model.presence == .saved, !confirmationOpen else { return }
+        confirmationNotice = nil
+        flow.present(.delete, revision: model.revision)
         confirmDelete = true
     }
     private func checkStatus() {
@@ -381,17 +385,21 @@ struct CredentialSettingsSection: View {
     }
     private func requestSave() {
         guard canSave, !confirmationOpen else { return }
-        if model.presence == .saved { confirmReplace = true } else { saveDraft() }
+        confirmationNotice = nil
+        if model.presence == .saved {
+            flow.present(.replace, revision: model.revision)
+            confirmReplace = true
+        } else { saveDraft() }
     }
-    private func saveDraft() {
+    private func saveDraft(replacing: Bool = false) {
         guard canSave else { return }
+        let operation = replacing ? flow.confirm(.replace, revision: model.revision) : flow.begin(revision: model.revision)
+        guard let operation else { return }
         let value = draft
         draft = ""
-        let session = visibleSession
         Task {
-            let saved = await model.save(value)
-            guard saved, let session, visibleSession == session else { return }
-            restoreFocus(.input)
+            let saved = await model.save(value, expectedRevision: operation.revision)
+            flow.completed(operation, succeeded: saved)
         }
     }
 }
