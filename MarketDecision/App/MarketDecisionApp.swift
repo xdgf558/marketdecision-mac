@@ -231,6 +231,9 @@ struct CredentialSettingsSection: View {
     @State private var draft = ""
     @State private var confirmDelete = false
     @State private var confirmReplace = false
+    @State private var focusRequest = UUID()
+    @State private var requestedFocus: Control?
+    @State private var visibleSession: UUID?
     private enum Control: Hashable { case input, save, delete, check }
     @FocusState private var focusedControl: Control?
     @Environment(\.scenePhase) private var scenePhase
@@ -287,6 +290,7 @@ struct CredentialSettingsSection: View {
             }
         }
         .focusedSceneValue(\.credentialActions, CredentialSceneActions(
+            saveTitle: model.presence == .saved ? "替换凭据…" : "保存凭据",
             canFocus: canUseInput && !confirmationOpen,
             canSave: canSave && !confirmationOpen,
             canDelete: model.presence == .saved && !model.isBusy && !confirmationOpen,
@@ -302,17 +306,31 @@ struct CredentialSettingsSection: View {
             return .handled
         }
         .task { await model.refresh() }
-        .onDisappear { draft = ""; focusedControl = nil }
+        .onAppear { visibleSession = UUID() }
+        .task(id: focusRequest) {
+            guard let control = requestedFocus else { return }
+            await Task.yield()
+            guard !Task.isCancelled, visibleSession != nil, scenePhase == .active,
+                  !confirmationOpen, focusOrder.contains(control) else { return }
+            focusedControl = control
+        }
+        .onDisappear {
+            visibleSession = nil
+            draft = ""
+            cancelFocusRequest()
+        }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false }
+            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false; cancelFocusRequest() }
         }
         .alert("替换本机凭据？", isPresented: $confirmReplace) {
             Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
-            Button("替换") { saveDraft() }.disabled(!canSave)
-        } message: { Text("原凭据将被覆盖，无法在本应用内恢复。") }
+            Button("替换", role: .destructive) { saveDraft() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(!canSave)
+        } message: { Text("原凭据将被覆盖，无法在本应用内恢复。按 Command-R 确认替换，Esc 取消。") }
         .alert("删除本机凭据？", isPresented: $confirmDelete) {
             Button("取消", role: .cancel) {}.keyboardShortcut(.cancelAction)
-            Button("删除", role: .destructive) { draft = ""; Task { await model.delete() } }
+            Button("删除", role: .destructive) { deleteCredential() }
                 .keyboardShortcut("d", modifiers: .command)
         } message: { Text("删除后如需使用，必须重新输入凭据。按 Command-D 确认删除，Esc 取消。") }
         .onChange(of: focusOrder) { _, order in
@@ -331,12 +349,26 @@ struct CredentialSettingsSection: View {
         order.append(.check)
         return order
     }
-    private func restoreFocus(_ control: Control) {
+    private func cancelFocusRequest() {
+        requestedFocus = nil
         focusedControl = nil
-        Task { @MainActor in
-            await Task.yield()
-            guard scenePhase == .active, !confirmationOpen, focusOrder.contains(control) else { return }
-            focusedControl = control
+        focusRequest = UUID()
+    }
+    private func restoreFocus(_ control: Control) {
+        guard visibleSession != nil, scenePhase == .active else { return }
+        focusedControl = nil
+        requestedFocus = control
+        focusRequest = UUID()
+    }
+    private func deleteCredential() {
+        guard !model.isBusy, model.presence == .saved else { return }
+        let session = visibleSession
+        draft = ""
+        Task {
+            await model.delete()
+            guard !model.hasError, model.presence == .absent,
+                  let session, visibleSession == session else { return }
+            restoreFocus(.input)
         }
     }
     private func requestDelete() {
@@ -355,12 +387,17 @@ struct CredentialSettingsSection: View {
         guard canSave else { return }
         let value = draft
         draft = ""
-        Task { await model.save(value) }
+        let session = visibleSession
+        Task {
+            let saved = await model.save(value)
+            guard saved, let session, visibleSession == session else { return }
+            restoreFocus(.input)
+        }
     }
 }
 
-
 @MainActor private struct CredentialSceneActions {
+    let saveTitle: String
     let canFocus: Bool
     let canSave: Bool
     let canDelete: Bool
@@ -386,7 +423,7 @@ private struct CredentialMenuCommands: Commands {
             Button("聚焦凭据输入") { actions?.focus() }
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(actions?.canFocus != true)
-            Button("保存或替换凭据…") { actions?.save() }
+            Button(actions?.saveTitle ?? "保存凭据") { actions?.save() }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(actions?.canSave != true)
             Button("删除凭据…") { actions?.delete() }
