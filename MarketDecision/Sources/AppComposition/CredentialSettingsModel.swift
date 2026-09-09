@@ -15,8 +15,8 @@ import SecuritySupport
 
     public init(store: any CredentialStorage) { self.store = store }
 
-    public func refresh() async {
-        guard !isBusy else { return }
+    @discardableResult public func refresh() async -> Bool {
+        guard !isBusy else { return false }
         revision = UUID()
         isBusy = true
         defer { isBusy = false }
@@ -24,11 +24,15 @@ import SecuritySupport
             presence = try await store.contains(reference: reference) ? .saved : .absent
             message = nil
             hasError = false
-        } catch { fail("无法检查钥匙串状态。请解锁设备后重试。") }
+            return true
+        } catch {
+            fail("无法检查钥匙串状态。请解锁设备后重试。")
+            return false
+        }
     }
 
-    @discardableResult public func save(_ secret: String, expectedRevision: UUID? = nil) async -> Bool {
-        guard !isBusy, presence != .unknown, expectedRevision == nil || expectedRevision == revision else { return false }
+    @discardableResult public func save(_ secret: String, expectedRevision: UUID) async -> Bool {
+        guard !isBusy, presence != .unknown, expectedRevision == revision else { return false }
         guard !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             message = "请输入凭据，不能只包含空白。"
             hasError = true
@@ -50,8 +54,8 @@ import SecuritySupport
         }
     }
 
-    @discardableResult public func delete(expectedRevision: UUID? = nil) async -> Bool {
-        guard !isBusy, presence == .saved, expectedRevision == nil || expectedRevision == revision else { return false }
+    @discardableResult public func delete(expectedRevision: UUID) async -> Bool {
+        guard !isBusy, presence == .saved, expectedRevision == revision else { return false }
         revision = UUID()
         isBusy = true
         defer { isBusy = false }

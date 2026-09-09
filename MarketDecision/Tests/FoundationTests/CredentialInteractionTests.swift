@@ -7,6 +7,8 @@ private actor PausedCredentials: CredentialStorage {
     var value: Data? = Data("synthetic-original".utf8)
     var writes = 0
     var deletes = 0
+    var fails = false
+    func setFailure(_ value: Bool) { fails = value }
     private var held = false
     private var started = false
     private var operation: CheckedContinuation<Void, Never>?
@@ -25,7 +27,11 @@ private actor PausedCredentials: CredentialStorage {
             observer?.resume(); observer = nil
         }
     }
-    func contains(reference: String) -> Bool { value != nil }
+    func contains(reference: String) async throws -> Bool {
+        await barrier()
+        if fails { throw CredentialError.invalidReference }
+        return value != nil
+    }
     func save(_ secret: Data, reference: String) async {
         await barrier(); value = secret; writes += 1
     }
@@ -42,10 +48,11 @@ private actor PausedCredentials: CredentialStorage {
         let page = CredentialInteractionFlow(); page.appear()
         page.present(.replace, revision: model.revision)
         #expect(page.focusRequest == nil)
-        page.cancel()
+        let id = page.confirmation!.id
+        page.cancel(id)
         let request = page.focusRequest
         #expect(request != nil && page.confirmation == nil)
-        page.cancel()
+        page.cancel(id)
         #expect(page.focusRequest == request)
         #expect(await store.writes == 0)
     }
@@ -55,7 +62,9 @@ private actor PausedCredentials: CredentialStorage {
         await model.refresh()
         let page = CredentialInteractionFlow(); page.appear()
         page.present(.replace, revision: model.revision)
-        let op = try #require(page.confirm(.replace, revision: model.revision))
+        let id = try #require(page.confirmation?.id)
+        let op = try #require(page.respond(to: id, confirmed: true, revision: model.revision))
+        #expect(page.respond(to: id, confirmed: false, revision: model.revision) == nil)
         #expect(page.confirmation == nil && page.focusRequest == nil)
         await store.pause()
         let task = Task {
@@ -75,7 +84,7 @@ private actor PausedCredentials: CredentialStorage {
         await model.refresh()
         let page = CredentialInteractionFlow(); page.appear()
         page.present(.delete, revision: model.revision)
-        let op = try #require(page.confirm(.delete, revision: model.revision))
+        let op = try #require(page.respond(to: page.confirmation!.id, confirmed: true, revision: model.revision))
         await store.pause()
         let task = Task {
             let deleted = await model.delete(expectedRevision: op.revision)
@@ -95,7 +104,7 @@ private actor PausedCredentials: CredentialStorage {
         let first = CredentialInteractionFlow(); first.appear()
         first.present(.delete, revision: model.revision)
         let old = model.revision
-        #expect(await model.save("synthetic-other-page"))
+        #expect(await model.save("synthetic-other-page", expectedRevision: model.revision))
         #expect(model.presence == .saved && model.revision != old)
         #expect(first.invalidate(revision: model.revision))
         #expect(first.confirmation == nil && first.focusRequest == nil)
@@ -108,8 +117,8 @@ private actor PausedCredentials: CredentialStorage {
         await model.refresh()
         let page = CredentialInteractionFlow(); page.appear()
         page.present(.replace, revision: model.revision)
-        let op = try #require(page.confirm(.replace, revision: model.revision))
-        #expect(await model.delete())
+        let op = try #require(page.respond(to: page.confirmation!.id, confirmed: true, revision: model.revision))
+        #expect(await model.delete(expectedRevision: model.revision))
         let saved = await model.save("synthetic-stale", expectedRevision: op.revision)
         page.completed(op, succeeded: saved)
         #expect(!saved && model.presence == .absent && page.focusRequest == nil)
@@ -121,7 +130,100 @@ private actor PausedCredentials: CredentialStorage {
         let page = CredentialInteractionFlow(); page.appear()
         page.present(.replace, revision: model.revision)
         await model.refresh()
-        #expect(page.confirm(.replace, revision: model.revision) == nil)
+        #expect(page.respond(to: page.confirmation!.id, confirmed: true, revision: model.revision) == nil)
         #expect(page.focusRequest == nil)
     }
+    @Test func systemDismissalIsTerminalAndNeverWrites() async throws {
+        let store = PausedCredentials()
+        let model = CredentialSettingsModel(store: store)
+        await model.refresh()
+        let page = CredentialInteractionFlow(); page.appear()
+        page.present(.delete, revision: model.revision)
+        let id = try #require(page.confirmation?.id)
+        #expect(page.respond(to: id, confirmed: false, revision: model.revision) == nil)
+        let focus = try #require(page.focusRequest)
+        #expect(page.confirmation == nil)
+        #expect(page.respond(to: id, confirmed: true, revision: model.revision) == nil)
+        #expect(page.respond(to: id, confirmed: false, revision: model.revision) == nil)
+        #expect(page.focusRequest == focus)
+        #expect(await store.writes == 0)
+        #expect(await store.deletes == 0)
+    }
+    @Test func oldSheetResponseCannotCancelOrConfirmNewPromptAtSameRevision() throws {
+        let page = CredentialInteractionFlow(); page.appear()
+        let revision = UUID()
+        page.present(.replace, revision: revision)
+        let old = try #require(page.confirmation?.id)
+        page.cancel(old)
+        page.present(.replace, revision: revision)
+        let current = try #require(page.confirmation?.id)
+        #expect(old != current)
+        #expect(page.respond(to: old, confirmed: false, revision: revision) == nil)
+        #expect(page.respond(to: old, confirmed: true, revision: revision) == nil)
+        #expect(page.confirmation?.id == current && page.focusRequest == nil)
+        #expect(page.respond(to: current, confirmed: true, revision: revision) != nil)
+        #expect(page.respond(to: current, confirmed: true, revision: revision) == nil)
+    }
+    @Test func lateSystemResponseAfterDisappearanceDoesNotRestoreFocus() throws {
+        let page = CredentialInteractionFlow(); page.appear()
+        let revision = UUID()
+        page.present(.delete, revision: revision)
+        let id = try #require(page.confirmation?.id)
+        page.disappear(); page.appear()
+        #expect(page.respond(to: id, confirmed: false, revision: revision) == nil)
+        #expect(page.respond(to: id, confirmed: true, revision: revision) == nil)
+        #expect(page.confirmation == nil && page.focusRequest == nil)
+    }
+    @Test func slowCheckClearsNoticeAndRestoresOnlyAfterSuccess() async throws {
+        let store = PausedCredentials()
+        let model = CredentialSettingsModel(store: store)
+        await model.refresh()
+        let page = CredentialInteractionFlow(); page.appear()
+        page.present(.replace, revision: UUID())
+        page.invalidate(revision: model.revision)
+        let op = try #require(page.begin(revision: model.revision))
+        await store.pause()
+        let task = Task {
+            let checked = await model.refresh()
+            page.completedCheck(op, succeeded: checked)
+        }
+        await store.waitUntilStarted()
+        #expect(model.isBusy && page.focusRequest == nil && page.confirmationNotice != nil)
+        #expect(await model.refresh() == false)
+        await store.resume(); await task.value
+        #expect(!model.isBusy && page.focusRequest != nil && page.confirmationNotice == nil)
+    }
+    @Test func failedCheckKeepsNoticeAndDoesNotFocusDisabledInput() async throws {
+        let store = PausedCredentials()
+        let model = CredentialSettingsModel(store: store)
+        await model.refresh()
+        let page = CredentialInteractionFlow(); page.appear()
+        page.present(.delete, revision: UUID())
+        page.invalidate(revision: model.revision)
+        let op = try #require(page.begin(revision: model.revision))
+        await store.setFailure(true)
+        let checked = await model.refresh()
+        page.completedCheck(op, succeeded: checked)
+        #expect(!checked && model.presence == .unknown && model.hasError)
+        #expect(page.confirmationNotice != nil && page.focusRequest == nil)
+    }
+    @Test func oldCheckCannotClearNewSessionNoticeOrStealFocus() async throws {
+        let store = PausedCredentials()
+        let model = CredentialSettingsModel(store: store)
+        await model.refresh()
+        let page = CredentialInteractionFlow(); page.appear()
+        let op = try #require(page.begin(revision: model.revision))
+        await store.pause()
+        let task = Task {
+            let checked = await model.refresh()
+            page.completedCheck(op, succeeded: checked)
+        }
+        await store.waitUntilStarted()
+        page.disappear(); page.appear()
+        page.present(.delete, revision: UUID())
+        page.invalidate(revision: model.revision)
+        await store.resume(); await task.value
+        #expect(page.confirmationNotice != nil && page.focusRequest == nil)
+    }
+
 }
