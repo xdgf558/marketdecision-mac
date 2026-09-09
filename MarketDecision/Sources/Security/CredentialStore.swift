@@ -23,8 +23,13 @@ public struct CredentialProtection: Sendable {
 }
 
 public enum CredentialError: Error { case invalidReference, status(OSStatus) }
+public protocol CredentialStorage: Sendable {
+    func contains(reference: String) async throws -> Bool
+    func save(_ secret: Data, reference: String) async throws
+    func delete(reference: String) async throws
+}
 /// Logical Security module uses a distinct Swift module name to avoid Apple's Security framework collision.
-public actor CredentialStore {
+public actor CredentialStore: CredentialStorage {
     private let service: String
     public init(service: String = "local.marketdecision.credentials") { self.service = service }
     private func query(_ reference: String) throws -> [String: Any] {
@@ -50,6 +55,18 @@ public actor CredentialStore {
         guard result == errSecSuccess else { throw CredentialError.status(result) }
         guard let data = value as? Data else { throw CredentialError.status(errSecDecode) }
         return data
+    }
+    /// Presence only: never request secret bytes for the settings UI.
+    public func contains(reference: String) throws -> Bool {
+        var match = try query(reference)
+        match[kSecMatchLimit as String] = kSecMatchLimitOne
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        match[kSecUseAuthenticationContext as String] = context
+        let result = SecItemCopyMatching(match as CFDictionary, nil)
+        if result == errSecItemNotFound { return false }
+        guard result == errSecSuccess else { throw CredentialError.status(result) }
+        return true
     }
     /// Read back the actual stored accessibility; do not infer it from the write request.
     public func protection(reference: String) throws -> CredentialProtection {
