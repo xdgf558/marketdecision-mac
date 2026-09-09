@@ -32,7 +32,7 @@ The local implementation was built for arm64 and cross-built for x86_64 in Debug
 
 These source-level synthetic tests are included and can be rerun. Full private acceptance cases, parameters, traceability records, device preflight and visual QA evidence are not included. The original 84 acceptance scenarios remain unexecuted as complete scenarios; the 57 earlier reference checks are not 57 production tests. Do not infer full coverage from this PR.
 
-No hosted CI workflow has been created or run. The local script is not the Phase 0 CI exit criterion. Keychain entitlement evidence, complete foundation contracts, CI/traceability execution, minimum-system runtime, Intel runtime, full accessibility and Release performance remain open.
+A public foundation CI workflow is now provided; see [CI scope](Scripts/CI.md). Its run status must be checked separately; configuration alone is not passing evidence. The local script is not the Phase 0 CI exit criterion. Keychain entitlement evidence, complete foundation contracts, CI/traceability execution, minimum-system runtime, Intel runtime, full accessibility and Release performance remain open.
 
 DATA-000 remains route B with G5 unpassed and no qualified supplier; no Bootstrap/calibration or real historical analysis is implemented here. Data remains free-first; no paid API or real market data is invoked. GPT is not used to fill missing market data. This slice does not start later analysis phases or close Phase 0.
 
