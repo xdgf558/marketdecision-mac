@@ -8,11 +8,13 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 probe_root="$(mktemp -d "${TMPDIR:-/tmp}/marketdecision-keychain.XXXXXX")"
 trap 'rm -rf "$probe_root"' EXIT
 security cms -D -i "$KEYCHAIN_PROFILE" > "$probe_root/profile.plist"
-python3 - "$probe_root" "$KEYCHAIN_SIGN_IDENTITY" <<'PY'
+python3 - "$probe_root" "$KEYCHAIN_SIGN_IDENTITY" "$project_root/Scripts" <<'PY'
 import datetime, hashlib, pathlib, plistlib, sys
+sys.path.insert(0, sys.argv[3])
+from profile_time import require_unexpired
 root=pathlib.Path(sys.argv[1]); profile=plistlib.loads((root/'profile.plist').read_bytes())
 assert 'OSX' in profile.get('Platform', []), 'A macOS profile is required; iOS profiles cannot authorize this host'
-assert profile['ExpirationDate'] > datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), 'Profile expired'
+require_unexpired(profile['ExpirationDate'])
 assert sys.argv[2].upper() in [hashlib.sha1(c).hexdigest().upper() for c in profile['DeveloperCertificates']], 'Certificate is not authorized by profile'
 e=profile['Entitlements']; app=e.get('com.apple.application-identifier','')
 assert '.' in app, 'Profile lacks macOS application identity'

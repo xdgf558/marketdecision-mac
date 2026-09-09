@@ -110,6 +110,7 @@ import GRDB
         do {
             try await store.save(Data("synthetic-not-a-real-key".utf8), reference: reference)
             #expect(try await store.isDeviceOnlyWhileUnlocked(reference: reference))
+            #expect(try await store.protection(reference: reference).synchronizable == false)
             #expect(try await store.read(reference: reference) == Data("synthetic-not-a-real-key".utf8))
             try await store.save(Data("replacement-synthetic".utf8), reference: reference)
             #expect(try await store.read(reference: reference) == Data("replacement-synthetic".utf8))

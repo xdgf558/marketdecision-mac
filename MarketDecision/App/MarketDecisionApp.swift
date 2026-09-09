@@ -36,7 +36,18 @@ enum AppPage: String, CaseIterable, Identifiable {
     var symbol: String { self == .workspace ? "house.fill" : "gearshape" }
 }
 
-@main struct MarketDecisionApp: App {
+@main enum MarketDecisionEntry {
+    @MainActor static func main() async {
+        #if DEBUG
+        if CommandLine.arguments.contains("--keychain-diagnostic") {
+            exit(await KeychainDiagnostic.run(CommandLine.arguments))
+        }
+        #endif
+        MarketDecisionApp.main()
+    }
+}
+
+struct MarketDecisionApp: App {
     @State private var model = WorkspaceModel()
     @AppStorage("appearance") private var appearance = "system"
     var body: some Scene {
