@@ -254,7 +254,7 @@ struct CredentialSettingsSection: View {
                 Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
                     requestSave()
                 }
-                    .focusable()
+                    .focusable(canSave)
                     .focused($focusedControl, equals: .save)
                     .onKeyPress(keys: [.space, .return], phases: .down) { _ in
                         requestSave(); return .handled
@@ -262,7 +262,7 @@ struct CredentialSettingsSection: View {
                     .disabled(!canSave)
                     .help("保存或替换凭据（⌘S）")
                 Button("删除凭据…", role: .destructive) { requestDelete() }
-                    .focusable()
+                    .focusable(model.presence == .saved && !model.isBusy)
                     .focused($focusedControl, equals: .delete)
                     .onKeyPress(keys: [.space, .return], phases: .down) { _ in
                         requestDelete(); return .handled
@@ -271,7 +271,7 @@ struct CredentialSettingsSection: View {
                     .help("删除凭据（⇧⌘⌫），仍需确认")
                 Spacer()
                 Button("检查状态") { checkStatus() }
-                    .focusable()
+                    .focusable(!model.isBusy)
                     .focused($focusedControl, equals: .check)
                     .onKeyPress(keys: [.space, .return], phases: .down) { _ in
                         checkStatus(); return .handled
