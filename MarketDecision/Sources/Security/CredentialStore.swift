@@ -5,6 +5,21 @@ import LocalAuthentication
 public struct CredentialProtection: Sendable {
     public let deviceOnlyWhileUnlocked: Bool
     public let synchronizable: Bool
+
+    init(attributes: [String: Any]) throws {
+        guard let number = attributes[kSecAttrSynchronizable as String] as? NSNumber,
+              let accessibility = attributes[kSecAttrAccessible as String] as? String else {
+            throw CredentialError.status(errSecDecode)
+        }
+        let isBoolean = CFGetTypeID(number) == CFBooleanGetTypeID()
+        // macOS may return an integral CFNumber 0/1 rather than CFBoolean.
+        let integerTypes: Set<String> = ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q", "B"]
+        let isBinaryInteger = integerTypes.contains(String(cString: number.objCType))
+            && (number == NSNumber(value: 0) || number == NSNumber(value: 1))
+        guard isBoolean || isBinaryInteger else { throw CredentialError.status(errSecDecode) }
+        synchronizable = number.boolValue
+        deviceOnlyWhileUnlocked = accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+    }
 }
 
 public enum CredentialError: Error { case invalidReference, status(OSStatus) }
@@ -49,11 +64,7 @@ public actor CredentialStore {
         let result = SecItemCopyMatching(match as CFDictionary, &value)
         guard result == errSecSuccess else { throw CredentialError.status(result) }
         guard let attributes = value as? [String: Any] else { throw CredentialError.status(errSecDecode) }
-        guard let sync = attributes[kSecAttrSynchronizable as String] as? Bool,
-              let accessibility = attributes[kSecAttrAccessible as String] as? String else {
-            throw CredentialError.status(errSecDecode)
-        }
-        return CredentialProtection(deviceOnlyWhileUnlocked: accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String, synchronizable: sync)
+        return try CredentialProtection(attributes: attributes)
     }
     public func isDeviceOnlyWhileUnlocked(reference: String) throws -> Bool {
         try protection(reference: reference).deviceOnlyWhileUnlocked

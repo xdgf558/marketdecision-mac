@@ -40,3 +40,9 @@ This invokes the actual application executable in an explicit Debug-only diagnos
 Both device-only accessibility and synchronizable=false are checked from returned item attributes. The attribute query allows either synchronization state, so it does not assume the answer from its query filter. Missing attributes are errors. The regular Swift test Keychain case remains opt-in; this executable test does not make a skipped test pass. These checks cover app-executable diagnostic processes, not UI-driven provider workflows, lock/unlock, backup, system reboot, or the complete DATA-001 contract.
 
 `test_profile_time.py` covers naive UTC plist dates, equivalent timezone offsets, exact expiration boundaries and invalid values. `profile_time.py` normalizes both naive and timezone-aware dates to UTC before comparison.
+
+## Local Release verification
+
+Set `MARKETDECISION_BUILD_CONFIGURATION=Release` when running `build-signed-local.sh` to build an arm64 Release application with the existing development signing account. The script checks effective sandbox permissions, rejects debugger attachment permission, and scans shipped Mach-O images for the Debug diagnostic symbol, argument and service markers. This is local development signing, not a notarized distribution or performance qualification. Debug remains the default.
+
+The production attribute parser accepts CFBoolean or an integral NSNumber representation of 0/1, as macOS may return the latter. It rejects other numbers, strings, missing fields and invalid accessibility types. Four unit tests exercise those boundaries, while the optional signed-host test checks actual Keychain values. A passing local test does not certify all macOS versions.

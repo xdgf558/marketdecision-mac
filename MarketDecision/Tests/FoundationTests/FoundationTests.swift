@@ -4,7 +4,8 @@ import CoreDomain
 import DataContracts
 import DataProviders
 import Persistence
-import SecuritySupport
+@testable import SecuritySupport
+import Security
 import AppComposition
 import GRDB
 
@@ -120,5 +121,36 @@ import GRDB
             try? await store.delete(reference: reference)
             throw error
         }
+    }
+}
+
+
+@Suite struct CredentialAttributeTests {
+    func decode(_ sync: Any?, accessibility: Any? = kSecAttrAccessibleWhenUnlockedThisDeviceOnly) throws -> CredentialProtection {
+        var attributes: [String: Any] = [:]
+        attributes[kSecAttrSynchronizable as String] = sync
+        attributes[kSecAttrAccessible as String] = accessibility
+        return try CredentialProtection(attributes: attributes)
+    }
+    @Test func acceptsBooleanAndBinaryIntegerRepresentations() throws {
+        #expect(try decode(kCFBooleanFalse).synchronizable == false)
+        #expect(try decode(kCFBooleanTrue).synchronizable == true)
+        #expect(try decode(false).deviceOnlyWhileUnlocked)
+        #expect(try !decode(NSNumber(value: 0)).synchronizable)
+        #expect(try decode(NSNumber(value: 1)).synchronizable)
+    }
+    @Test func rejectsNumericAndTextCoercion() {
+        let values: [Any] = [NSNumber(value: 2), NSNumber(value: -1), NSNumber(value: 0.5), "false", "0", NSNull()]
+        for value in values {
+            #expect(throws: (any Error).self) { try decode(value) }
+        }
+    }
+    @Test func rejectsMissingOrMalformedAttributes() {
+        #expect(throws: (any Error).self) { try decode(nil) }
+        #expect(throws: (any Error).self) { try decode(false, accessibility: nil) }
+        #expect(throws: (any Error).self) { try decode(false, accessibility: NSNumber(value: 1)) }
+    }
+    @Test func otherAccessibilityIsNotDeviceOnly() throws {
+        #expect(try !decode(false, accessibility: kSecAttrAccessibleAfterFirstUnlock).deviceOnlyWhileUnlocked)
     }
 }
