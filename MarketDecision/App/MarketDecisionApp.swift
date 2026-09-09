@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AppComposition
 import DataContracts
 
@@ -229,10 +230,7 @@ struct SettingsContent: View {
 struct CredentialSettingsSection: View {
     @Bindable var model: CredentialSettingsModel
     @State private var draft = ""
-    @State private var confirmDelete = false
-    @State private var confirmReplace = false
     @State private var flow = CredentialInteractionFlow()
-    @State private var confirmationNotice: String?
     private enum Control: Hashable { case input, save, delete, check }
     @FocusState private var focusedControl: Control?
     @Environment(\.scenePhase) private var scenePhase
@@ -281,7 +279,7 @@ struct CredentialSettingsSection: View {
                     .disabled(model.isBusy)
                     .help("检查钥匙串状态（⇧⌘R）")
             }
-            if let confirmationNotice { Text(confirmationNotice).foregroundStyle(.secondary) }
+            if let confirmationNotice = flow.confirmationNotice { Text(confirmationNotice).foregroundStyle(.secondary) }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
             if let message = model.message {
                 Label(message, systemImage: model.hasError ? "exclamationmark.triangle" : "checkmark.circle")
@@ -295,7 +293,7 @@ struct CredentialSettingsSection: View {
             canSave: canSave && !confirmationOpen,
             canDelete: model.presence == .saved && !model.isBusy && !confirmationOpen,
             canCheck: !model.isBusy && !confirmationOpen,
-            focus: { restoreFocus(.input) }, save: requestSave,
+            focus: restoreInputFocus, save: requestSave,
             delete: requestDelete, check: checkStatus
         ))
         .onKeyPress(.tab, phases: .down) { press in
@@ -320,32 +318,22 @@ struct CredentialSettingsSection: View {
             cancelFocusRequest()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { draft = ""; confirmReplace = false; confirmDelete = false; flow.disappear(); cancelFocusRequest() }
+            if phase != .active { draft = ""; flow.disappear(); cancelFocusRequest() }
             else { flow.appear() }
         }
-        .alert("替换本机凭据？", isPresented: $confirmReplace) {
-            Button("取消", role: .cancel) { flow.cancel() }.keyboardShortcut(.cancelAction)
-            Button("替换", role: .destructive) { saveDraft(replacing: true) }
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(!canSave)
-        } message: { Text("原凭据将被覆盖，无法在本应用内恢复。按 Command-R 确认替换，Esc 取消。") }
-        .alert("删除本机凭据？", isPresented: $confirmDelete) {
-            Button("取消", role: .cancel) { flow.cancel() }.keyboardShortcut(.cancelAction)
-            Button("删除", role: .destructive) { deleteCredential() }
-                .keyboardShortcut("d", modifiers: .command)
-        } message: { Text("删除后如需使用，必须重新输入凭据。按 Command-D 确认删除，Esc 取消。") }
+        .background {
+            CredentialConfirmationHost(confirmation: flow.confirmation, respond: respondToConfirmation)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
         .onChange(of: focusOrder) { _, order in
             if let current = focusedControl, !order.contains(current) { focusedControl = nil }
         }
         .onChange(of: model.revision) { _, revision in
-            if flow.invalidate(revision: revision) {
-                confirmReplace = false
-                confirmDelete = false
-                confirmationNotice = "凭据状态已变化，请重新发起操作并确认。"
-            }
+            flow.invalidate(revision: revision)
         }
     }
-    private var confirmationOpen: Bool { confirmDelete || confirmReplace }
+    private var confirmationOpen: Bool { flow.confirmation != nil }
     private var canUseInput: Bool { !model.isBusy && model.presence != .unknown }
     private var focusOrder: [Control] {
         guard !model.isBusy else { return [] }
@@ -359,48 +347,115 @@ struct CredentialSettingsSection: View {
         flow.clearFocusRequest()
         focusedControl = nil
     }
-    private func restoreFocus(_ control: Control) {
+    private func restoreInputFocus() {
         guard scenePhase == .active else { return }
         focusedControl = nil
         flow.requestFocus()
     }
-    private func deleteCredential() {
-        guard !model.isBusy, model.presence == .saved,
-              let operation = flow.confirm(.delete, revision: model.revision) else { return }
-        draft = ""
-        Task {
-            let deleted = await model.delete(expectedRevision: operation.revision)
-            flow.completed(operation, succeeded: deleted)
+    private func respondToConfirmation(_ confirmation: CredentialInteractionFlow.Confirmation, confirmed: Bool) {
+        guard let operation = flow.respond(to: confirmation.id, confirmed: confirmed, revision: model.revision) else { return }
+        switch confirmation.action {
+        case .delete:
+            draft = ""
+            Task {
+                let deleted = await model.delete(expectedRevision: operation.revision)
+                flow.completed(operation, succeeded: deleted)
+            }
+        case .replace:
+            saveDraft(operation: operation)
         }
     }
     private func requestDelete() {
         guard !model.isBusy, model.presence == .saved, !confirmationOpen else { return }
-        confirmationNotice = nil
         flow.present(.delete, revision: model.revision)
-        confirmDelete = true
     }
     private func checkStatus() {
-        guard !model.isBusy, !confirmationOpen else { return }
-        Task { await model.refresh() }
+        guard !model.isBusy, !confirmationOpen, let operation = flow.begin(revision: model.revision) else { return }
+        Task {
+            let checked = await model.refresh()
+            flow.completedCheck(operation, succeeded: checked)
+        }
     }
     private func requestSave() {
         guard canSave, !confirmationOpen else { return }
-        confirmationNotice = nil
         if model.presence == .saved {
             flow.present(.replace, revision: model.revision)
-            confirmReplace = true
-        } else { saveDraft() }
+        } else if let operation = flow.begin(revision: model.revision) {
+            saveDraft(operation: operation)
+        }
     }
-    private func saveDraft(replacing: Bool = false) {
+    private func saveDraft(operation: CredentialInteractionFlow.Operation) {
         guard canSave else { return }
-        let operation = replacing ? flow.confirm(.replace, revision: model.revision) : flow.begin(revision: model.revision)
-        guard let operation else { return }
         let value = draft
         draft = ""
         Task {
             let saved = await model.save(value, expectedRevision: operation.revision)
             flow.completed(operation, succeeded: saved)
         }
+    }
+}
+
+/// A projection of flow.confirmation, with one terminal native-sheet response.
+/// The coordinator retains only the rendered alert; it cannot authorize storage writes.
+private struct CredentialConfirmationHost: NSViewRepresentable {
+    let confirmation: CredentialInteractionFlow.Confirmation?
+    let respond: (CredentialInteractionFlow.Confirmation, Bool) -> Void
+
+    final class HostView: NSView {
+        var windowChanged: (() -> Void)?
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); windowChanged?() }
+    }
+    @MainActor final class Coordinator {
+        var presentation: CredentialConfirmationHost
+        private var rendered: (id: UUID, alert: NSAlert)?
+        init(_ presentation: CredentialConfirmationHost) { self.presentation = presentation }
+        func synchronize(in window: NSWindow?) {
+            if let rendered, rendered.id != presentation.confirmation?.id || window == nil {
+                dismiss()
+            }
+            guard rendered == nil, let window, let confirmation = presentation.confirmation else { return }
+            let alert = NSAlert()
+            let replacing = confirmation.action == .replace
+            alert.messageText = replacing ? "替换本机凭据？" : "删除本机凭据？"
+            alert.informativeText = replacing
+                ? "原凭据将被覆盖，无法在本应用内恢复。按 Command-R 确认替换，Esc 取消。"
+                : "删除后如需使用，必须重新输入凭据。按 Command-D 确认删除，Esc 取消。"
+            let commit = alert.addButton(withTitle: replacing ? "替换" : "删除")
+            commit.hasDestructiveAction = true
+            commit.keyEquivalent = replacing ? "r" : "d"
+            commit.keyEquivalentModifierMask = .command
+            let cancel = alert.addButton(withTitle: "取消")
+            cancel.keyEquivalent = "\u{1b}"
+            cancel.keyEquivalentModifierMask = []
+            // Return must never activate the destructive button.
+            alert.window.defaultButtonCell = nil
+            rendered = (confirmation.id, alert)
+            alert.beginSheetModal(for: window) { [weak self] response in
+                guard let self, self.rendered?.id == confirmation.id else { return }
+                self.rendered = nil
+                self.presentation.respond(confirmation, response == .alertFirstButtonReturn)
+            }
+        }
+        func dismiss() {
+            guard let current = rendered else { return }
+            rendered = nil
+            current.alert.window.sheetParent?.endSheet(current.alert.window, returnCode: .abort)
+        }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> HostView {
+        let view = HostView()
+        let coordinator = context.coordinator
+        view.windowChanged = { [weak view, weak coordinator] in coordinator?.synchronize(in: view?.window) }
+        return view
+    }
+    func updateNSView(_ view: HostView, context: Context) {
+        context.coordinator.presentation = self
+        context.coordinator.synchronize(in: view.window)
+    }
+    static func dismantleNSView(_ view: HostView, coordinator: Coordinator) {
+        view.windowChanged = nil
+        coordinator.dismiss()
     }
 }
 
