@@ -11,7 +11,8 @@ import Foundation
             try await store.save(Data("synthetic-initial".utf8), reference: reference)
             guard try await store.read(reference: reference) == Data("synthetic-initial".utf8),
                   try await store.isDeviceOnlyWhileUnlocked(reference: reference) else { throw ProbeFailure.mismatch }
-            print("PASS create/read/device-only accessibility")
+            guard try await store.protection(reference: reference).synchronizable == false else { throw ProbeFailure.mismatch }
+            print("PASS create/read/device-only accessibility/synchronization disabled")
             try await store.save(Data("synthetic-replacement".utf8), reference: reference)
             guard try await store.read(reference: reference) == Data("synthetic-replacement".utf8) else { throw ProbeFailure.mismatch }
             print("PASS update/read")

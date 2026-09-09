@@ -1,5 +1,11 @@
 import Foundation
 import Security
+import LocalAuthentication
+
+public struct CredentialProtection: Sendable {
+    public let deviceOnlyWhileUnlocked: Bool
+    public let synchronizable: Bool
+}
 
 public enum CredentialError: Error { case invalidReference, status(OSStatus) }
 /// Logical Security module uses a distinct Swift module name to avoid Apple's Security framework collision.
@@ -31,16 +37,26 @@ public actor CredentialStore {
         return data
     }
     /// Read back the actual stored accessibility; do not infer it from the write request.
-    public func isDeviceOnlyWhileUnlocked(reference: String) throws -> Bool {
+    public func protection(reference: String) throws -> CredentialProtection {
         var match = try query(reference)
         match[kSecReturnAttributes as String] = true
         match[kSecMatchLimit as String] = kSecMatchLimitOne
-        match[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        match[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        match[kSecUseAuthenticationContext as String] = context
         var value: CFTypeRef?
         let result = SecItemCopyMatching(match as CFDictionary, &value)
         guard result == errSecSuccess else { throw CredentialError.status(result) }
         guard let attributes = value as? [String: Any] else { throw CredentialError.status(errSecDecode) }
-        return attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String
+        guard let sync = attributes[kSecAttrSynchronizable as String] as? Bool,
+              let accessibility = attributes[kSecAttrAccessible as String] as? String else {
+            throw CredentialError.status(errSecDecode)
+        }
+        return CredentialProtection(deviceOnlyWhileUnlocked: accessibility == kSecAttrAccessibleWhenUnlockedThisDeviceOnly as String, synchronizable: sync)
+    }
+    public func isDeviceOnlyWhileUnlocked(reference: String) throws -> Bool {
+        try protection(reference: reference).deviceOnlyWhileUnlocked
     }
     public func delete(reference: String) throws {
         let result = SecItemDelete(try query(reference) as CFDictionary)
