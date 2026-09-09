@@ -1,0 +1,40 @@
+# macOS / editors
+.DS_Store
+.AppleDouble/
+.vscode/
+.idea/
+# Build output
+.build/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.mobileprovision
+Secrets.*
+*.local
+# Private financial data and caches
+Private/
+LocalData/
+Imports/
+Backups/
+Cache/
+Caches/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+
+DerivedData*/
+
+# Private specifications and review evidence are never published
+Documentation/
+AGENTS.md
+**/design-qa.md
