@@ -34,7 +34,7 @@ public struct MockQuoteProvider: QuoteProvider, MarketDataProvider {
     }
     public func request(for symbol: String, at date: Date) -> ProviderRequest {
         ProviderRequest(providerID: id, feedID: "synthetic", resourceID: symbol, capability: .quote, mode: .latest,
-                        usage: .liveAnalysis, configurationVersion: "mock.config.v1", entitlementVersion: "mock.rights.v1", requestedAt: date)
+                        usage: .liveAnalysis, configurationVersion: capabilitySnapshot.version, entitlementVersion: "mock.rights.v1", requestedAt: date)
     }
     private func syntheticRights(at date: Date) -> EntitlementSnapshot {
         EntitlementSnapshot(providerID: id, feedID: "synthetic", version: "mock.rights.v1", evidenceRef: "synthetic-rights-only",
@@ -61,7 +61,7 @@ public struct MockQuoteProvider: QuoteProvider, MarketDataProvider {
         let raw = Data("DEMO|99.50|100.50|synthetic".utf8)
         let provenance = Provenance(providerID: id, feedID: request.feedID, sourceEventAt: request.requestedAt,
             receivedAt: request.requestedAt, availableAt: nil, evidenceRef: "synthetic-quote-only", origin: .derived,
-            endpointDescriptor: "mock/quotes/{symbol}", requestedAt: request.requestedAt, requestID: request.id,
+            endpointDescriptor: EndpointDescriptor.syntheticQuote.rawValue, requestedAt: request.requestedAt, requestID: request.id,
             versionID: "synthetic.quote.v1", versionKind: .localContent, rawObjectRef: "synthetic.quote.raw.v1",
             rawHash: SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined(), normalizationVersion: "mock.normalize.v1",
             licenseRef: "synthetic-fixture")

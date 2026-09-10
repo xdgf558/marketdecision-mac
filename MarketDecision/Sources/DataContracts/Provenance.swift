@@ -2,7 +2,7 @@ import Foundation
 
 public enum ContractError: String, Error, Sendable {
     case invalidIdentity, invalidTime, invalidRange, invalidEndpoint, invalidAvailability
-    case invalidRequest, mismatchedRequest, mismatchedSource, duplicateRecord, invalidCoverage, ambiguousVersion
+    case invalidRequest, mismatchedRequest, mismatchedSource, duplicateRecord, invalidCoverage, ambiguousVersion, invalidNormalization
 }
 func nonblank(_ value: String?) -> Bool { value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
 func finite(_ date: Date) -> Bool { date.timeIntervalSince1970.isFinite }
@@ -17,10 +17,23 @@ public enum UnavailableReason: String, Error, Sendable, Codable {
 }
 public enum LegacyDataTier: String, Sendable { case realtime, delayed, endOfDay, filing, userImport, derived, stale, unknown }
 
+/// Closed logical-operation identifiers, never service URLs or interpolated request paths.
+/// Concrete endpoint configuration belongs to the adapter configuration version.
+public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
+    case quote = "market/quote", bars = "market/bars"
+    case optionExpirations = "market/option-expirations", optionChain = "market/option-chain"
+    case companyIdentity = "fundamentals/company-identity", submissions = "fundamentals/submissions"
+    case companyFacts = "fundamentals/company-facts", macroSeries = "macro/series", ledgerMarks = "ledger/marks"
+    case brokerImport = "import/broker", calculation = "derived/calculation", syntheticQuote = "synthetic/quote"
+}
+
 /// Calendar date, not an instant. Construction and decoding do not imply validation.
-public struct MarketDate: Sendable, Codable, Equatable {
+public struct MarketDate: Sendable, Codable, Comparable {
     public let year: Int, month: Int, day: Int
     public init(year: Int, month: Int, day: Int) { self.year = year; self.month = month; self.day = day }
+    public static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.year, lhs.month, lhs.day) < (rhs.year, rhs.month, rhs.day)
+    }
     public func start(in zone: TimeZone) throws -> Date {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
         guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)),
@@ -100,9 +113,7 @@ public struct Provenance: Sendable, Codable, Equatable {
               nonblank(rawObjectRef), nonblank(normalizationVersion), nonblank(licenseRef), requestID != nil,
               let hash = rawHash, hash.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
         else { throw ContractError.invalidIdentity }
-        guard let endpoint = endpointDescriptor, !endpoint.isEmpty,
-              endpoint.range(of: "^[A-Za-z0-9_./{}:-]+$", options: .regularExpression) != nil,
-              !endpoint.contains("://"), !endpoint.contains("..") else { throw ContractError.invalidEndpoint }
+        guard let endpoint = endpointDescriptor, EndpointDescriptor(rawValue: endpoint) != nil else { throw ContractError.invalidEndpoint }
         guard finite(receivedAt), let requestedAt, finite(requestedAt), requestedAt <= receivedAt,
               sourceEventAt.map(finite) ?? true, legacySourceTimestamp.map(finite) ?? true,
               availableAt.map(finite) ?? true else { throw ContractError.invalidTime }

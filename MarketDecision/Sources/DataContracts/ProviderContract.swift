@@ -16,19 +16,53 @@ public struct DateRange: Sendable, Codable, Equatable {
         guard finite(start), finite(end), start <= end else { throw ContractError.invalidRange }
     }
 }
+public struct MarketDateRange: Sendable, Codable, Equatable {
+    public let start: MarketDate, end: MarketDate
+    public init(start: MarketDate, end: MarketDate) { self.start = start; self.end = end }
+    public func validate() throws {
+        // UTC is only used to validate Gregorian components, not to turn observation days into instants.
+        _ = try start.start(in: TimeZone(secondsFromGMT: 0)!)
+        _ = try end.start(in: TimeZone(secondsFromGMT: 0)!)
+        guard start <= end else { throw ContractError.invalidRange }
+    }
+}
+/// Inclusive data-description windows. Neither axis selects a release/vintage version.
+/// Calendar observation dates are not compared to a UTC cutoff without a source timezone.
+public enum DataWindow: Sendable, Codable, Equatable {
+    case sourceEvents(DateRange)
+    case observationDates(MarketDateRange)
+    public func validate() throws {
+        switch self {
+        case let .sourceEvents(range): try range.validate()
+        case let .observationDates(range): try range.validate()
+        }
+    }
+    public func contains(_ provenance: Provenance) -> Bool {
+        guard (try? validate()) != nil else { return false }
+        switch self {
+        case let .sourceEvents(range):
+            guard let event = provenance.sourceEventAt, finite(event) else { return false }
+            return range.start <= event && event <= range.end
+        case let .observationDates(range):
+            guard let day = provenance.observationDate, (try? day.start(in: TimeZone(secondsFromGMT: 0)!)) != nil else { return false }
+            return range.start <= day && day <= range.end
+        }
+    }
+}
 public enum QueryMode: Sendable, Codable, Equatable { case latest, asOf(Date) }
 public struct ProviderRequest: Sendable, Codable, Equatable {
     public let id: UUID
     public let providerID: String, feedID: String, resourceID: String
     public let capability: ProviderCapability
     public let mode: QueryMode
-    public let range: DateRange?
+    public let range: DataWindow?
     public let usage: Usage
+    /// Version of the complete capability/configuration snapshot used for this request.
     public let configurationVersion: String, entitlementVersion: String
     public let requestedAt: Date
     public let pageToken: String?
     public init(id: UUID = UUID(), providerID: String, feedID: String, resourceID: String, capability: ProviderCapability,
-                mode: QueryMode, range: DateRange? = nil, usage: Usage, configurationVersion: String,
+                mode: QueryMode, range: DataWindow? = nil, usage: Usage, configurationVersion: String,
                 entitlementVersion: String, requestedAt: Date, pageToken: String? = nil) {
         self.id = id; self.providerID = providerID; self.feedID = feedID; self.resourceID = resourceID
         self.capability = capability; self.mode = mode; self.range = range; self.usage = usage
@@ -39,8 +73,23 @@ public struct ProviderRequest: Sendable, Codable, Equatable {
         guard nonblank(providerID), nonblank(feedID), nonblank(resourceID), nonblank(configurationVersion),
               nonblank(entitlementVersion), finite(requestedAt), pageToken == nil || nonblank(pageToken) else { throw ContractError.invalidRequest }
         try range?.validate()
+        if let range {
+            // Facts/series describe calendar observations. Other capabilities select source events
+            // (option-expiration requests select the snapshot event, not future contract expiry).
+            switch (capability, range) {
+            case (.companyFacts, .observationDates), (.macroSeries, .observationDates): break
+            case (.quote, .sourceEvents), (.bars, .sourceEvents), (.optionExpirations, .sourceEvents),
+                 (.optionChain, .sourceEvents), (.companyIdentity, .sourceEvents), (.submissions, .sourceEvents),
+                 (.ledgerMarks, .sourceEvents): break
+            default: throw ContractError.invalidRequest
+            }
+        }
         if case let .asOf(cutoff) = mode {
             guard finite(cutoff), cutoff <= requestedAt, range != nil else { throw ContractError.invalidRequest }
+            // A past observation window need not contain the later decision cutoff.
+            if case let .sourceEvents(events) = range {
+                guard events.end <= cutoff else { throw ContractError.invalidRange }
+            }
         }
     }
 }
@@ -74,6 +123,7 @@ public struct EntitlementSnapshot: Sendable {
 public enum ProviderAccess {
     public static func validate(_ request: ProviderRequest, capabilities: CapabilitySnapshot, entitlement: EntitlementSnapshot?) throws {
         try request.validate()
+        guard request.configurationVersion == capabilities.version else { throw ContractError.mismatchedRequest }
         guard capabilities.providerID == request.providerID, nonblank(capabilities.version),
               capabilities.feeds.contains(request.feedID), capabilities.capabilities.contains(request.capability) else { throw ProviderFailure.unsupported }
         if case .asOf = request.mode {
@@ -132,6 +182,9 @@ public struct ProviderResult<Item: ProviderRecord>: Sendable {
                   item.provenance.receivedAt <= receivedAt else { throw ContractError.mismatchedSource }
             if case let .asOf(cutoff) = request.mode {
                 guard item.provenance.isAvailable(asOf: cutoff) else { throw ProviderFailure.pitUnavailable }
+            }
+            if let window = request.range {
+                guard window.contains(item.provenance) else { throw ContractError.invalidRange }
             }
         }
         let incomplete = coverage.truncated || nextPageToken != nil || !coverage.missing.isEmpty

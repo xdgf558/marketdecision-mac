@@ -8,18 +8,19 @@ import DataProviders
 private let fixtureNow = Date(timeIntervalSince1970: 1_783_000_000)
 private func utc(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
 private func request(_ capability: ProviderCapability = .quote, id: UUID = UUID(), feed: String = "feed-a", resource: String = "TEST",
-                     mode: QueryMode = .latest, range: DateRange? = nil, page: String? = nil) -> ProviderRequest {
+                     mode: QueryMode = .latest, range: DataWindow? = nil, configuration: String = "caps.v1", page: String? = nil) -> ProviderRequest {
     ProviderRequest(id: id, providerID: "fixture", feedID: feed, resourceID: resource, capability: capability, mode: mode,
-                    range: range, usage: .liveAnalysis, configurationVersion: "config.v1", entitlementVersion: "rights.v1", requestedAt: fixtureNow, pageToken: page)
+                    range: range, usage: .liveAnalysis, configurationVersion: configuration, entitlementVersion: "rights.v1", requestedAt: fixtureNow, pageToken: page)
 }
 private func source(_ request: ProviderRequest, version: String = "v1", time: Date? = fixtureNow,
                     availability: AvailabilityEvidence = .unknown, kind: VersionKind = .sourceVersion,
-                    endpoint: String = "quotes/{symbol}", origin: OriginKind = .provider, license: String = "license.v1") -> Provenance {
+                    endpoint: String = EndpointDescriptor.quote.rawValue, origin: OriginKind = .provider, license: String = "license.v1",
+                    observation: MarketDate? = .init(year: 2025, month: 3, day: 31)) -> Provenance {
     let raw = Data("synthetic-\(version)".utf8)
     return Provenance(providerID: request.providerID, feedID: request.feedID, sourceEventAt: time, receivedAt: request.requestedAt,
                       availableAt: utc("2025-01-01T00:00:00Z"), evidenceRef: "fixture.evidence", origin: origin,
                       endpointDescriptor: endpoint, requestedAt: request.requestedAt, requestID: request.id,
-                      observationDate: MarketDate(year: 2025, month: 3, day: 31), versionID: version, versionKind: kind,
+                      observationDate: observation, versionID: version, versionKind: kind,
                       availability: availability, rawObjectRef: "raw.\(version)",
                       rawHash: SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined(), normalizationVersion: "normalize.v1",
                       licenseRef: license, legacySourceTimestamp: utc("2020-01-01T00:00:00Z"))
@@ -139,7 +140,7 @@ private extension Result where Failure == UnavailableReason {
         let r = request()
         #expect(throws: ProviderFailure.notEntitled) { try ProviderAccess.validate(r, capabilities: capabilities(), entitlement: nil) }
         #expect(throws: ProviderFailure.notEntitled) { try ProviderAccess.validate(r, capabilities: capabilities(), entitlement: rights(feed: "feed-b")) }
-        let historical = request(mode: .asOf(fixtureNow), range: .init(start: fixtureNow.addingTimeInterval(-10), end: fixtureNow))
+        let historical = request(mode: .asOf(fixtureNow), range: .sourceEvents(.init(start: fixtureNow.addingTimeInterval(-10), end: fixtureNow)))
         #expect(throws: ProviderFailure.unsupported) { try ProviderAccess.validate(historical, capabilities: capabilities(), entitlement: rights()) }
         try ProviderAccess.validate(historical, capabilities: capabilities(asOf: true), entitlement: rights())
         let wrongResource = request(resource: "UNVERIFIED", mode: .asOf(fixtureNow), range: historical.range)
@@ -147,8 +148,8 @@ private extension Result where Failure == UnavailableReason {
     }
     @Test func requestsRejectMissingRangeFutureCutoffAndInvalidTimes() {
         #expect(throws: ContractError.invalidRequest) { try request(mode: .asOf(fixtureNow)).validate() }
-        #expect(throws: ContractError.invalidRequest) { try request(mode: .asOf(fixtureNow.addingTimeInterval(1)), range: .init(start: fixtureNow, end: fixtureNow)).validate() }
-        #expect(throws: ContractError.invalidRange) { try request(range: .init(start: fixtureNow, end: fixtureNow.addingTimeInterval(-1))).validate() }
+        #expect(throws: ContractError.invalidRequest) { try request(mode: .asOf(fixtureNow.addingTimeInterval(1)), range: .sourceEvents(.init(start: fixtureNow, end: fixtureNow))).validate() }
+        #expect(throws: ContractError.invalidRange) { try request(range: .sourceEvents(.init(start: fixtureNow, end: fixtureNow.addingTimeInterval(-1)))).validate() }
         #expect(throws: ContractError.invalidRange) { try DateRange(start: Date(timeIntervalSince1970: .nan), end: fixtureNow).validate() }
     }
     @Test func emptyPartialCompleteAndErrorRemainDistinct() throws {
@@ -188,11 +189,11 @@ private extension Result where Failure == UnavailableReason {
     }
     @Test func asOfResponseCannotSmuggleCurrentOrUnversionedValues() throws {
         let cutoff = fixtureNow.addingTimeInterval(-60)
-        let r = request(mode: .asOf(cutoff), range: .init(start: cutoff.addingTimeInterval(-60), end: cutoff))
+        let r = request(mode: .asOf(cutoff), range: .sourceEvents(.init(start: cutoff.addingTimeInterval(-60), end: cutoff)))
         for p in [source(r), source(r, availability: .instant(fixtureNow, evidence: "new-version")), source(r, availability: .instant(cutoff, evidence: "proof"), kind: .localContent)] {
             #expect(throws: ProviderFailure.pitUnavailable) { try ProviderResult(request: r, receivedAt: fixtureNow, items: [fixtureQuote(r, source: p)], coverage: .init(expectedCount: 1)) }
         }
-        let valid = try ProviderResult(request: r, receivedAt: fixtureNow, items: [fixtureQuote(r, source: source(r, availability: .instant(cutoff, evidence: "old-version")))], coverage: .init(expectedCount: 1))
+        let valid = try ProviderResult(request: r, receivedAt: fixtureNow, items: [fixtureQuote(r, source: source(r, time: cutoff, availability: .instant(cutoff, evidence: "old-version")))], coverage: .init(expectedCount: 1))
         #expect(valid.status == .complete)
     }
     @Test func mockScenariosRemainSyntheticAndExplicitlyUnsupported() async throws {
@@ -328,6 +329,7 @@ private struct TestMarketProvider: MarketDataProvider {
     let calls: ProviderCalls
     let alterRequest: Bool
     var gate: ProviderGate? = nil
+    var chainReply: SampleChain? = nil
     func quote(request original: ProviderRequest) async throws -> ProviderResult<Quote> {
         await calls.record()
         await gate?.suspend()
@@ -336,9 +338,35 @@ private struct TestMarketProvider: MarketDataProvider {
     }
     func bars(request: ProviderRequest) async throws -> ProviderResult<SampleRecord> { throw ProviderFailure.unsupported }
     func optionExpirations(request: ProviderRequest) async throws -> ProviderResult<SampleRecord> { throw ProviderFailure.unsupported }
-    func optionChain(request: ProviderRequest) async throws -> ProviderResult<SampleChain> { throw ProviderFailure.unsupported }
+    func optionChain(request: ProviderRequest) async throws -> ProviderResult<SampleChain> {
+        await calls.record()
+        guard let chainReply else { throw ProviderFailure.unsupported }
+        return try ProviderResult(request: request, receivedAt: fixtureNow, items: [chainReply], coverage: .init(expectedCount: 1))
+    }
 }
 @Suite struct ProviderClientTests {
+    @Test func marketClientRejectsCrossFeedUnderlyingAfterDispatch() async throws {
+        let r = request(.optionChain), calls = ProviderCalls()
+        let wrongFeed = request(.optionChain, id: r.id, feed: "feed-b")
+        let bad = SampleChain(provenance: source(r), underlyingQuote: try fixtureQuote(wrongFeed), contractProvenances: [source(r)])
+        let provider = TestMarketProvider(calls: calls, alterRequest: false, chainReply: bad)
+        await #expect(throws: ContractError.mismatchedSource) { try await MarketDataClient(provider: provider, entitlement: rights()).optionChain(r) }
+        #expect(await calls.count == 1)
+        let good = SampleChain(provenance: source(r), underlyingQuote: try fixtureQuote(r), contractProvenances: [source(r)])
+        let accepted = try await MarketDataClient(provider: TestMarketProvider(calls: calls, alterRequest: false, chainReply: good), entitlement: rights()).optionChain(r)
+        #expect(accepted.result.items.first?.underlyingQuote.provenance.feedID == r.feedID)
+        #expect(await calls.count == 2)
+    }
+    @Test func configurationMismatchCannotDispatchEvenWithValidRights() async throws {
+        let calls = ProviderCalls(); let provider = TestMarketProvider(calls: calls, alterRequest: false)
+        let client = MarketDataClient(provider: provider, entitlement: rights())
+        await #expect(throws: ContractError.mismatchedRequest) { try await client.quote(request(configuration: "caps.v2")) }
+        #expect(await calls.count == 0)
+        let r = request()
+        let accepted = try await client.quote(r)
+        #expect(accepted.capabilities.version == r.configurationVersion && accepted.entitlement.version == r.entitlementVersion)
+        #expect(await calls.count == 1)
+    }
     @Test func rightsFailureBlocksDispatchAndChangedFeedIsRejectedAfterDispatch() async throws {
         let calls = ProviderCalls(); let provider = TestMarketProvider(calls: calls, alterRequest: true)
         await #expect(throws: ProviderFailure.notEntitled) { try await MarketDataClient(provider: provider, entitlement: nil).quote(request()) }
@@ -362,5 +390,102 @@ private struct TestMarketProvider: MarketDataProvider {
         await gate.waitUntilEntered(); task.cancel(); await gate.release()
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(await calls.count == 1)
+    }
+}
+
+@Suite struct DataContractClosureTests {
+    @Test func endpointCatalogRejectsCredentialLikeAndUnregisteredStringsIncludingDecodedValues() throws {
+        for endpoint in ["user:password", "Bearer-synthetic", "bearer-synthetic", "market/quote?token=synthetic", "user@host",
+                         "https://host/market/quote", "market/%71uote", "market/quote/synthetic-secret", "unknown/operation", "market/quote\n"] {
+            let invalid = source(request(), endpoint: endpoint)
+            let decoded = try JSONDecoder().decode(Provenance.self, from: JSONEncoder().encode(invalid))
+            #expect(throws: ContractError.invalidEndpoint) { try decoded.validate() }
+        }
+        for endpoint in EndpointDescriptor.allCases { try source(request(), endpoint: endpoint.rawValue).validate() }
+    }
+    @Test func chainRejectsDifferentUnderlyingFeedInTheSameCycle() throws {
+        let r = request(.optionChain)
+        let other = request(.optionChain, id: r.id, feed: "feed-b")
+        let chain = SampleChain(provenance: source(r), underlyingQuote: try fixtureQuote(other), contractProvenances: [source(r)])
+        #expect(chain.maximumQuoteSkew() == 0) // Time equality does not erase feed identity.
+        #expect(throws: ContractError.mismatchedSource) { try chain.validateRequestCycle() }
+        #expect(!chain.meetsLiveSkewPolicy())
+        let matching = SampleChain(provenance: source(r), underlyingQuote: try fixtureQuote(r), contractProvenances: [source(r)])
+        try matching.validateRequestCycle()
+        #expect(matching.meetsLiveSkewPolicy())
+    }
+    @Test func eventWindowAndDecisionCutoffAreSeparateAndBothEnforced() throws {
+        let event = utc("2025-03-31T16:00:00Z"), cutoff = utc("2025-05-15T13:00:00Z")
+        let r = request(.bars, mode: .asOf(cutoff), range: .sourceEvents(.init(start: event, end: event)))
+        try r.validate() // Old event window legitimately does not contain the later cutoff.
+        func result(time: Date?, availability: Date = cutoff) throws -> ProviderResult<SampleRecord> {
+            try ProviderResult(request: r, receivedAt: fixtureNow,
+                items: [SampleRecord(recordID: "bar", provenance: source(r, time: time, availability: .instant(availability, evidence: "release")), value: 1)],
+                coverage: .init(expectedCount: 1))
+        }
+        #expect(try result(time: event).status == .complete)
+        #expect(throws: ContractError.invalidRange) { try result(time: event.addingTimeInterval(-0.001)) }
+        #expect(throws: ContractError.invalidRange) { try result(time: event.addingTimeInterval(0.001)) }
+        #expect(throws: ContractError.invalidRange) { try result(time: nil) }
+        #expect(throws: ProviderFailure.pitUnavailable) { try result(time: event, availability: cutoff.addingTimeInterval(0.001)) }
+        #expect(throws: ContractError.invalidRange) {
+            try request(.bars, mode: .asOf(cutoff), range: .sourceEvents(.init(start: cutoff, end: cutoff.addingTimeInterval(1)))).validate()
+        }
+    }
+    @Test func calendarWindowUsesObservationDatesNotReleaseOrReceiveInstants() throws {
+        let day = MarketDate(year: 2025, month: 3, day: 31)
+        let cutoff = utc("2025-05-15T13:00:00Z")
+        let r = request(.macroSeries, mode: .asOf(cutoff), range: .observationDates(.init(start: day, end: day)))
+        try r.validate()
+        func result(_ observation: MarketDate?, release: Date = cutoff) throws -> ProviderResult<NumericObservation> {
+            let value = try NumericObservation(recordID: "observation", provenance: source(r, time: nil,
+                availability: .instant(release, evidence: "version-release"), endpoint: EndpointDescriptor.macroSeries.rawValue,
+                observation: observation), rawValue: "1.00", value: Money("1"), state: .available, unit: .ratio, currency: nil, numericPolicyRef: "v1")
+            return try ProviderResult(request: r, receivedAt: fixtureNow, items: [value], coverage: .init(expectedCount: 1))
+        }
+        #expect(try result(day).status == .complete)
+        #expect(throws: ContractError.invalidRange) { try result(nil) }
+        #expect(throws: ContractError.invalidRange) { try result(.init(year: 2025, month: 3, day: 30)) }
+        #expect(throws: ContractError.invalidRange) { try result(.init(year: 2025, month: 4, day: 1)) }
+        #expect(throws: ProviderFailure.pitUnavailable) { try result(day, release: cutoff.addingTimeInterval(1)) }
+    }
+    @Test func dataWindowValidationSurvivesSerializationAndAlsoAppliesToLatest() throws {
+        let bad = request(.macroSeries, range: .observationDates(.init(start: .init(year: 2025, month: 4, day: 1), end: .init(year: 2025, month: 3, day: 31))))
+        let decoded = try JSONDecoder().decode(ProviderRequest.self, from: JSONEncoder().encode(bad))
+        #expect(throws: ContractError.invalidRange) { try decoded.validate() }
+        #expect(throws: ContractError.invalidTime) { try MarketDateRange(start: .init(year: 2025, month: 2, day: 30), end: .init(year: 2025, month: 3, day: 1)).validate() }
+        let r = request(.bars, range: .sourceEvents(.init(start: fixtureNow, end: fixtureNow)))
+        let late = SampleRecord(recordID: "bar", provenance: source(r, time: fixtureNow.addingTimeInterval(1)), value: 1)
+        #expect(throws: ContractError.invalidRange) { try ProviderResult(request: r, receivedAt: fixtureNow, items: [late], coverage: .init(expectedCount: 1)) }
+        let roundTrip = try JSONDecoder().decode(ProviderRequest.self, from: JSONEncoder().encode(r))
+        #expect(roundTrip == r)
+    }
+    @Test func capabilitySelectsWindowAxisSoCallersCannotSwapClockSemantics() throws {
+        let observations = DataWindow.observationDates(.init(start: .init(year: 2025, month: 3, day: 31), end: .init(year: 2025, month: 3, day: 31)))
+        let events = DataWindow.sourceEvents(.init(start: fixtureNow, end: fixtureNow))
+        for capability in ProviderCapability.allCases {
+            let usesObservations = capability == .macroSeries || capability == .companyFacts
+            try request(capability, range: usesObservations ? observations : events).validate()
+            #expect(throws: ContractError.invalidRequest) { try request(capability, range: usesObservations ? events : observations).validate() }
+        }
+    }
+    @Test func numericSourceIdentityAllowsFormattingButRejectsSilentScaleChangesOrMissingRaw() throws {
+        let r = request(.macroSeries)
+        func number(raw: String?, value: String, state: ValueState = .available) throws -> NumericObservation {
+            try NumericObservation(recordID: "obs", provenance: source(r), rawValue: raw, value: Money(value), state: state,
+                                   unit: .ratio, currency: nil, numericPolicyRef: "v1")
+        }
+        #expect(try number(raw: "1.00", value: "1").value == Money("1"))
+        #expect(try number(raw: "-0.00", value: "0").value == Money("0"))
+        #expect(throws: ContractError.invalidNormalization) { try number(raw: "1", value: "2") }
+        #expect(throws: ContractError.invalidNormalization) { try number(raw: "4", value: "0.04") }
+        #expect(throws: ContractError.invalidNormalization) { try number(raw: nil, value: "0") }
+        #expect(throws: MoneyError.invalidDecimal) { try number(raw: "not-a-number", value: "0") }
+        let context = try CalculationContext(calculatedAt: fixtureNow, formulaVersion: "fixture.v1", modelVersion: "fixture.v1",
+                                            parameterVersion: "fixture.v1", inputs: [.init(recordID: "input", provenance: source(r))])
+        #expect(throws: ContractError.invalidNormalization) {
+            try NumericObservation(recordID: "computed", provenance: source(r, origin: .derived), rawValue: "1", value: Money("2"),
+                state: .available, unit: .ratio, currency: nil, numericPolicyRef: "v1", calculation: context)
+        }
     }
 }
