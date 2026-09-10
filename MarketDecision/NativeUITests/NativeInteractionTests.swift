@@ -50,10 +50,6 @@ import XCTest
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == %@", NSNumber(value: enabled)), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
-    private func waitFocused(_ element: XCUIElement) {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true"), object: element)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed, windowInventory)
-    }
     private func waitNoSheet(in window: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet(in: window))
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
@@ -79,8 +75,8 @@ import XCTest
         XCTAssertFalse(delete.isEnabled)
         app.typeKey("l", modifierFlags: .command)
         app.typeKey(.tab, modifierFlags: [])
-        let check = main.buttons["credentialCheck"]
-        waitFocused(check) // Disabled Save/Delete are absent from the focus order.
+        // A successful Check clears the deletion message. Merely leaving the input
+        // enabled would not prove that Tab skipped the two disabled write controls.
         app.typeKey(.return, modifierFlags: [])
         let checked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: message)
         XCTAssertEqual(XCTWaiter.wait(for: [checked], timeout: 10), .completed)
@@ -137,8 +133,6 @@ import XCTest
         XCTAssertTrue(sheet(in: main).exists) // Raising the other window must not consume confirmation.
         independent.buttons["credentialCheck"].click()
         waitNoSheet(in: main)
-        waitFocused(independent.secureTextFields["credentialInput"])
-        // Direct input focus proves abort did not make the old parent key again.
         // Check completion must retain the initiating window and restore its input.
         app.typeText("SYNTHETIC-UI-settings")
         waitEnabled(independent.buttons["credentialSave"])

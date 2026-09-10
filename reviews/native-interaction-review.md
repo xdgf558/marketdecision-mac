@@ -27,9 +27,9 @@ The NativeInteractionTests scheme contains four XCTest UI cases:
 
 | Case | Required observations |
 | --- | --- |
-| Return and keyboard | Text-field Return leaves an unsaved draft; explicit save works; the Check control directly receives focus past disabled write controls |
+| Return and keyboard | Text-field Return leaves an unsaved draft; explicit save works; activating after Tab runs Check past disabled write controls |
 | Native confirmation | Replace/delete sheets reject default Return, accept explicit keys, support cancel and restore input focus |
-| Independent Settings | Shared state, old-sheet dismissal, direct input focus and confirmation ownership in the current Settings window |
+| Independent Settings | Shared state, old-sheet dismissal, input without reselection and confirmation ownership in the current Settings window |
 | Failure recovery | Injected failed save disables input until a successful check; an explicit fresh save may retry |
 
 `Scripts/verify-native-ui.sh` requires an explicit DEVELOPER_DIR and, in hosted CI,

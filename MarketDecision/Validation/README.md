@@ -77,5 +77,7 @@ requires review; do not widen the checker merely to make a changed Xcode pass.
 Native sheets are always queried through their owning window. The independent
 Settings window is found by its stable credential controls and absence of the main
 navigation, not a private SwiftUI window identifier; failures print a bounded window
-inventory. The test directly requires the independent window to remain focused and
-to own its confirmation after another page's older sheet is invalidated.
+inventory. Xcode 16.4 does not expose usable `hasFocus` through XCUIElement on this
+runner, so focus is proved behaviorally: input must land in the independent page
+without another click, enable only its Save control, and its next confirmation must
+belong to that window after another page's older sheet is invalidated.
