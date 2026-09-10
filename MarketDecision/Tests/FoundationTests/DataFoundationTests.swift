@@ -277,17 +277,16 @@ private extension Result where Failure == UnavailableReason {
         let mixedCycle = SampleChain(provenance: source(r), underlyingQuote: underlying, contractProvenances: [source(request(.optionChain))])
         #expect(throws: ContractError.mismatchedSource) { try mixedCycle.validateRequestCycle() }
     }
-    @Test func computedNumbersRequireExactInputsAndConfigurationWhileInvalidRawTextIsPreserved() throws {
+    @Test func computedNumbersRequireExactInputsAndConfigurationWhileInvalidRawTextIsPreserved() async throws {
         let r = request(.macroSeries)
-        let context = try CalculationContext(calculatedAt: fixtureNow, formulaVersion: "fixture-sum.v1", modelVersion: "fixture.v1",
-                                             parameterVersion: "fixture-parameters.v1", inputs: [.init(recordID: "input", provenance: source(r))])
+        let bound = try await resolvedSample()
+        let context = try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "input", provenance: source(r))])
         let computed = try NumericObservation(recordID: "result", provenance: source(r, origin: .derived), rawValue: nil, value: Money("1"),
-                                              state: .available, unit: .ratio, currency: nil, numericPolicyRef: "v1", calculation: context)
+                                              state: .available, unit: .ratio, currency: nil, numericPolicyRef: Money.numericPolicyVersion, calculation: context, calculationOutput: "result")
         #expect(computed.calculation?.inputs.first?.provenance.versionID == "v1")
         #expect(throws: ContractError.invalidIdentity) { try NumericObservation(recordID: "result", provenance: source(r, origin: .derived), rawValue: nil,
             value: Money("1"), state: .available, unit: .ratio, currency: nil, numericPolicyRef: "v1") }
-        #expect(throws: ContractError.invalidTime) { try CalculationContext(calculatedAt: fixtureNow.addingTimeInterval(-1), formulaVersion: "v1",
-            modelVersion: "v1", parameterVersion: "v1", inputs: [.init(recordID: "input", provenance: source(r))]) }
+        #expect(throws: ContractError.invalidTime) { try CalculationContext(calculatedAt: fixtureNow.addingTimeInterval(-1), model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "input", provenance: source(r))]) }
         let invalid = try NumericObservation(recordID: "obs", provenance: source(r), rawValue: "not-a-number", value: nil, state: .invalid,
                                              unit: .ratio, currency: nil, numericPolicyRef: "v1", reasons: ["parseFailure"])
         #expect(invalid.rawValue == "not-a-number" && invalid.value == nil)
@@ -469,7 +468,7 @@ private struct TestMarketProvider: MarketDataProvider {
             #expect(throws: ContractError.invalidRequest) { try request(capability, range: usesObservations ? events : observations).validate() }
         }
     }
-    @Test func numericSourceIdentityAllowsFormattingButRejectsSilentScaleChangesOrMissingRaw() throws {
+    @Test func numericSourceIdentityAllowsFormattingButRejectsSilentScaleChangesOrMissingRaw() async throws {
         let r = request(.macroSeries)
         func number(raw: String?, value: String, state: ValueState = .available) throws -> NumericObservation {
             try NumericObservation(recordID: "obs", provenance: source(r), rawValue: raw, value: Money(value), state: state,
@@ -481,11 +480,49 @@ private struct TestMarketProvider: MarketDataProvider {
         #expect(throws: ContractError.invalidNormalization) { try number(raw: "4", value: "0.04") }
         #expect(throws: ContractError.invalidNormalization) { try number(raw: nil, value: "0") }
         #expect(throws: MoneyError.invalidDecimal) { try number(raw: "not-a-number", value: "0") }
-        let context = try CalculationContext(calculatedAt: fixtureNow, formulaVersion: "fixture.v1", modelVersion: "fixture.v1",
-                                            parameterVersion: "fixture.v1", inputs: [.init(recordID: "input", provenance: source(r))])
+        let bound = try await resolvedSample()
+        let context = try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "input", provenance: source(r))])
         #expect(throws: ContractError.invalidNormalization) {
             try NumericObservation(recordID: "computed", provenance: source(r, origin: .derived), rawValue: "1", value: Money("2"),
-                state: .available, unit: .ratio, currency: nil, numericPolicyRef: "v1", calculation: context)
+                state: .available, unit: .ratio, currency: nil, numericPolicyRef: Money.numericPolicyVersion, calculation: context, calculationOutput: "result")
         }
+    }
+}
+
+@Suite struct RegisteredCalculationTests {
+    @Test func contextRejectsUnknownMissingOrWrongUnitInputs() async throws {
+        let bound = try await resolvedSample(), p = source(request(.macroSeries))
+        for inputs: [CalculationInputReference] in [[], [.init(role: "unknown", unit: .ratio, recordID: "a", provenance: p)],
+            [.init(role: "input", unit: .usd, recordID: "a", provenance: p)]] {
+            #expect(throws: RegistryError.invalidInputs) { try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: inputs) }
+        }
+        let accepted = try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "a", provenance: p)])
+        #expect(accepted.model.definition.reference == bound.definition.reference)
+        #expect(accepted.model.parameters.reference == bound.parameters.reference)
+    }
+    @Test func repeatedRecordsCannotMasqueradeAsMultipleInputs() async throws {
+        let params = sampleParameters(), registry = ModelRegistry()
+        let definition = sampleModel(parameters: params, inputs: [.init(name: "input", unit: "ratio", role: .required, allowsMultiple: true)])
+        try await registry.register(params); try await registry.register(definition)
+        let bound = try await registry.resolve(reference: definition.reference, at: fixtureNow)
+        let p = source(request(.macroSeries))
+        let one = CalculationInputReference(role: "input", unit: .ratio, recordID: "a", provenance: p)
+        #expect(throws: RegistryError.invalidInputs) { try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [one, one]) }
+        let two = CalculationInputReference(role: "input", unit: .ratio, recordID: "b", provenance: p)
+        #expect(try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [one, two]).inputs.count == 2)
+    }
+    @Test func outputMustMatchRegisteredNameUnitAndNumericPolicy() async throws {
+        let bound = try await resolvedSample(), r = request(.macroSeries)
+        let context = try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "a", provenance: source(r))])
+        func result(output: String?, unit: ValueUnit = .ratio, policy: String = Money.numericPolicyVersion) throws -> NumericObservation {
+            try NumericObservation(recordID: "result", provenance: source(r, origin: .derived), rawValue: nil,
+                value: Money("1"), state: .available, unit: unit, currency: unit == .usd ? "USD" : nil,
+                numericPolicyRef: policy, calculation: context, calculationOutput: output)
+        }
+        #expect(try result(output: "result").calculationOutput == "result")
+        #expect(throws: ContractError.invalidNormalization) { try result(output: nil) }
+        #expect(throws: ContractError.invalidNormalization) { try result(output: "wrong") }
+        #expect(throws: ContractError.invalidNormalization) { try result(output: "result", unit: .usd) }
+        #expect(throws: ContractError.invalidNormalization) { try result(output: "result", policy: "unrelated") }
     }
 }
