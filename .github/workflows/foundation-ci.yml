@@ -48,6 +48,7 @@ jobs:
             echo "- Native interaction suite (four cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
+            echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'
             echo '- Native UI uses shared production views in a separate in-memory test app; no signed Keychain, VoiceOver speech or real IME composition evidence.'
             echo '- No notarization, performance or full private acceptance evidence. No artifact uploads.'
             echo '- CI success does not close Phase 0 or DATA-001.'

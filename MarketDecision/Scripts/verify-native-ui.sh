@@ -19,12 +19,17 @@ trap 'rm -rf "$result_dir"' EXIT
 xcodebuild -version
 sw_vers
 uname -m
+host="$project_root/DerivedDataNativeUI/Build/Products/Debug/MarketDecisionUITestHost.app"
 xcodebuild -project "$project_root/App/MarketDecision.xcodeproj" -scheme NativeInteractionTests \
   -configuration Debug -destination "platform=macOS,arch=$(uname -m)" \
   -derivedDataPath "$project_root/DerivedDataNativeUI" -jobs 4 \
+  CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES build-for-testing
+python3 "$project_root/Scripts/check-native-ui-result.py" --host-only "$host"
+xcodebuild -project "$project_root/App/MarketDecision.xcodeproj" -scheme NativeInteractionTests \
+  -configuration Debug -destination "platform=macOS,arch=$(uname -m)" \
+  -derivedDataPath "$project_root/DerivedDataNativeUI" \
   -parallel-testing-enabled NO -test-timeouts-enabled YES -maximum-test-execution-time-allowance 90 \
   -resultBundlePath "$result_dir/Results.xcresult" \
-  CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES test
-python3 "$project_root/Scripts/check-native-ui-result.py" "$result_dir/Results.xcresult" "$report"
-python3 "$project_root/Scripts/check-demo-entitlements.py" "$project_root/DerivedDataNativeUI/Build/Products/Debug/MarketDecisionUITestHost.app"
+  CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES test-without-building
+python3 "$project_root/Scripts/check-native-ui-result.py" "$result_dir/Results.xcresult" "$report" "$host"
 echo 'Native UI: synthetic in-memory host only; Keychain, VoiceOver speech and real IME composition NOT EXECUTED.'

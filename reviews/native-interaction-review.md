@@ -26,9 +26,17 @@ The NativeInteractionTests scheme contains four XCTest UI cases:
 
 `Scripts/verify-native-ui.sh` requires an explicit DEVELOPER_DIR and, in hosted CI,
 the actual OS major must be 15. It requires xcodebuild success plus xcresult aggregate
-and individual case results: exactly four passes, no skips. Seven checker mutation
+and individual case results: exactly four passes, no skips. Seven result mutation
 tests reject empty, missing, duplicated, failed or skipped results. Unknown result
 schemas fail. An unsuccessful/unavailable runner is not runtime evidence.
+
+The test host is built and checked before execution, then checked again afterward.
+Xcode adds read-only access to `/` and three test-service Mach lookup exceptions
+to this isolated host. A separate verifier requires that exact identity and
+permission set; five mutation tests reject shipping identity, network/write scope,
+invalid sandbox flags and changed exceptions. The XCTest runner also has its own
+Xcode automation permissions. These are not shipping permissions; the production
+sandbox verifier is unchanged. Native execution is not production sandbox proof.
 
 The existing 133 Swift Testing declarations remain separate: 132 executed cases
 and one required Keychain skip (NOT EXECUTED). Native UI cases are not added to

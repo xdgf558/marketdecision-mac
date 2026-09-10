@@ -66,3 +66,9 @@ the foundation catalog's `build_only` label remains specific to its Swift Testin
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain
 behavior. Local screenshots and the complete acceptance mapping remain private.
+
+The isolated UI host receives Xcode-generated read-only-root and test-service
+exceptions. Its separate exact permission/identity check runs before and after
+native execution, with five rejection tests in addition to the seven result
+checks. The production permission verifier is unchanged; XCTest automation does
+not establish shipping-app sandbox behavior.

@@ -30,5 +30,36 @@ class NativeResultTests(unittest.TestCase):
     def test_terminal_status_must_pass(self):
         self.tree['testNodes'][0]['result'] = 'Skipped'; self.rejected()
 
+class NativeHostPermissionTests(unittest.TestCase):
+    def setUp(self):
+        self.identity = 'local.marketdecision.ui-test-host'
+        self.entitlements = {
+            'com.apple.security.app-sandbox': True,
+            'com.apple.security.get-task-allow': True,
+            'com.apple.security.temporary-exception.files.absolute-path.read-only': ['/'],
+            'com.apple.security.temporary-exception.mach-lookup.global-name': [
+                'com.apple.testmanagerd', 'com.apple.dt.testmanagerd.runner', 'com.apple.coresymbolicationd'],
+        }
+    def rejected(self):
+        with self.assertRaises(ValueError):
+            result.validate_host_entitlements(self.identity, self.entitlements)
+    def test_exact_test_host_only(self):
+        result.validate_host_entitlements(self.identity, self.entitlements)
+        self.identity = 'local.marketdecision.development'; self.rejected()
+    def test_network_or_write_permission_rejected(self):
+        for key in ['com.apple.security.network.client', 'com.apple.security.temporary-exception.files.absolute-path.read-write']:
+            self.entitlements[key] = True; self.rejected(); del self.entitlements[key]
+    def test_sandbox_must_be_boolean_true(self):
+        for value in [False, 1, 'true', None]:
+            self.entitlements['com.apple.security.app-sandbox'] = value; self.rejected()
+    def test_changed_or_missing_read_scope_rejected(self):
+        key = 'com.apple.security.temporary-exception.files.absolute-path.read-only'
+        self.entitlements[key] = ['/tmp/']; self.rejected()
+        del self.entitlements[key]; self.rejected()
+    def test_unknown_or_duplicate_service_rejected(self):
+        key = 'com.apple.security.temporary-exception.mach-lookup.global-name'
+        self.entitlements[key].append('other.service'); self.rejected()
+        self.entitlements[key] = ['com.apple.testmanagerd'] * 3; self.rejected()
+
 if __name__ == '__main__':
     unittest.main()
