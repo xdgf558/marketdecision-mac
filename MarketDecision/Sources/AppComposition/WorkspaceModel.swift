@@ -41,7 +41,9 @@ import SecuritySupport
                 environment = ready
                 credentials = ready.makeCredentialSettings()
             } catch {
-                let cancelled = Task.isCancelled || error is CancellationError
+                // Cancellation is owned by this refresh task. A provider or factory may
+                // use CancellationError as an ordinary failure without cancelling us.
+                let cancelled = Task.isCancelled
                 log.write(cancelled ? .localPreparationCancelled : .localPreparationFailed)
                 initializationError = cancelled ? "初始化已取消，请重试。" : "本地数据暂时不可用，请重试。"
                 message = initializationError
@@ -61,7 +63,7 @@ import SecuritySupport
             return true
         } catch {
             quote = nil
-            let cancelled = Task.isCancelled || error is CancellationError
+            let cancelled = Task.isCancelled
             log.write(cancelled ? .providerRequestCancelled : .providerRequestFailed)
             message = cancelled ? "刷新已取消" : "演示数据暂时不可用，请重试。"
             return false

@@ -176,7 +176,8 @@
     {"selector": "FoundationTests.WorkspaceRuntimeTests/localFactoryBuildsOnlyFoundationDatabaseAndSyntheticProvider()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
     {"selector": "FoundationTests.WorkspaceRuntimeTests/overlappingRefreshReturnsFalseWithoutExtraFactoryOrProviderCalls()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
     {"selector": "FoundationTests.WorkspaceRuntimeTests/preparationFailureUsesClosedLogAndRetriesWithSharedSettingsSink()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.WorkspaceRuntimeTests/providerCancellationIsNotReportedAsFailure()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.WorkspaceRuntimeTests/preparationReportedCancellationWithoutTaskCancellationIsFailure()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.WorkspaceRuntimeTests/providerReportedCancellationWithoutTaskCancellationIsFailure()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"},
     {"selector": "FoundationTests.WorkspaceRuntimeTests/providerErrorClearsPriorSuccessWithoutDescribingNSErrorAndCanRetry()", "source": "Tests/FoundationTests/WorkspaceRuntimeTests.swift", "execution": "required"}
   ]
 }

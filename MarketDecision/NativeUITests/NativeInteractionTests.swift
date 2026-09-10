@@ -18,11 +18,15 @@ import XCTest
         XCTAssertTrue(settings.waitForExistence(timeout: 15))
         settings.click()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertEqual(input.label, "输入凭据")
         waitEnabled(input)
     }
     private var input: XCUIElement { app.secureTextFields["credentialInput"].firstMatch }
     private var save: XCUIElement { app.buttons["credentialSave"].firstMatch }
     private var delete: XCUIElement { app.buttons["credentialDelete"].firstMatch }
+    private var credentialMessage: XCUIElement {
+        app.descendants(matching: .any)["credentialMessage"].firstMatch
+    }
     private var mainWindow: XCUIElement {
         app.windows.containing(.button, identifier: "pageSettings").firstMatch
     }
@@ -69,7 +73,7 @@ import XCTest
         XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
         waitNoSheet(in: main); waitEnabled(delete, false)
-        let message = app.staticTexts["credentialMessage"].firstMatch
+        let message = credentialMessage
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertFalse(save.isEnabled)
         XCTAssertFalse(delete.isEnabled)
@@ -96,9 +100,12 @@ import XCTest
         app.typeText("SYNTHETIC-UI-replacement")
         waitEnabled(save)
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
+        let replacement = sheet(in: main)
+        XCTAssertTrue(replacement.waitForExistence(timeout: 5))
+        XCTAssertTrue(replacement.staticTexts["替换本机凭据？"].exists)
+        XCTAssertTrue(replacement.buttons["替换"].exists && replacement.buttons["取消"].exists)
         app.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(sheet(in: main).exists)
+        XCTAssertTrue(replacement.exists)
         app.typeKey(.escape, modifierFlags: [])
         waitNoSheet(in: main)
         app.typeText("-after-cancel")
@@ -150,7 +157,9 @@ import XCTest
         app.typeKey("s", modifierFlags: .command)
         waitEnabled(input, false)
         XCTAssertFalse(save.isEnabled); XCTAssertFalse(delete.isEnabled)
-        XCTAssertTrue(app.staticTexts["credentialMessage"].firstMatch.waitForExistence(timeout: 5))
+        let failureMessage = credentialMessage
+        XCTAssertTrue(failureMessage.waitForExistence(timeout: 5))
+        XCTAssertEqual(failureMessage.label, "保存失败，未确认凭据是否已保存。请检查钥匙串状态后重试。")
         app.typeKey("r", modifierFlags: [.command, .shift])
         waitEnabled(input)
         // Check completion restores focus, and a fresh explicit save may retry.
