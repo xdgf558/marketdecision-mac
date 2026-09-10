@@ -71,7 +71,11 @@ The isolated UI host receives Xcode-generated read-only-root and test-service
 exceptions. Its separate exact permission/identity check runs before and after
 native execution, with five rejection tests in addition to the seven result
 checks. The production permission verifier is unchanged; XCTest automation does
-not establish shipping-app sandbox behavior.
+not establish shipping-app sandbox behavior. Any added exception fails closed and
+requires review; do not widen the checker merely to make a changed Xcode pass.
 
-The independent Settings test also requires input focus and its own confirmation
-sheet after another page’s older sheet is invalidated.
+Native sheets are always queried through their owning window. The independent
+Settings window is found by its stable credential controls and absence of the main
+navigation, not a private SwiftUI window identifier; failures print a bounded window
+inventory. The test directly requires the independent window to remain focused and
+to own its confirmation after another page's older sheet is invalidated.

@@ -23,13 +23,39 @@ import XCTest
     private var input: XCUIElement { app.secureTextFields["credentialInput"].firstMatch }
     private var save: XCUIElement { app.buttons["credentialSave"].firstMatch }
     private var delete: XCUIElement { app.buttons["credentialDelete"].firstMatch }
-    private var sheet: XCUIElement { app.sheets.firstMatch }
+    private var mainWindow: XCUIElement {
+        app.windows.containing(.button, identifier: "pageSettings").firstMatch
+    }
+    private func sheet(in window: XCUIElement) -> XCUIElement { window.sheets.firstMatch }
+    private var windowInventory: String {
+        app.windows.allElementsBoundByIndex.enumerated().map { index, window in
+            "#\(index) id=\(window.identifier) title=\(window.title) credentialInput=\(window.secureTextFields["credentialInput"].exists) mainNavigation=\(window.buttons["pageSettings"].exists)"
+        }.joined(separator: "\n")
+    }
+    private func independentSettingsWindow() -> XCUIElement {
+        let candidates = app.windows.containing(.secureTextField, identifier: "credentialInput")
+        guard candidates.element(boundBy: 1).waitForExistence(timeout: 10) else {
+            XCTFail("Expected a second credential Settings window. Windows:\n\(windowInventory)")
+            return candidates.element(boundBy: 1)
+        }
+        guard let independent = candidates.allElementsBoundByIndex.first(where: {
+            !$0.buttons["pageSettings"].exists
+        }) else {
+            XCTFail("Could not distinguish independent Settings from the main window. Windows:\n\(windowInventory)")
+            return candidates.element(boundBy: 1)
+        }
+        return independent
+    }
     private func waitEnabled(_ element: XCUIElement, _ enabled: Bool = true) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == %@", NSNumber(value: enabled)), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
-    private func waitNoSheet() {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet)
+    private func waitFocused(_ element: XCUIElement) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasFocus == true"), object: element)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed, windowInventory)
+    }
+    private func waitNoSheet(in window: XCUIElement) {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet(in: window))
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
     private func firstSave() {
@@ -41,19 +67,20 @@ import XCTest
     }
     func testReturnDoesNotSaveAndTabSkipsDisabledControls() {
         launchSettings()
+        let main = mainWindow
         firstSave()
         delete.click()
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
-        waitNoSheet(); waitEnabled(delete, false)
+        waitNoSheet(in: main); waitEnabled(delete, false)
         let message = app.staticTexts["credentialMessage"].firstMatch
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertFalse(save.isEnabled)
         XCTAssertFalse(delete.isEnabled)
         app.typeKey("l", modifierFlags: .command)
         app.typeKey(.tab, modifierFlags: [])
-        // A successful Check clears the deletion message. Merely leaving the input
-        // enabled would not prove that Tab skipped the two disabled write controls.
+        let check = main.buttons["credentialCheck"]
+        waitFocused(check) // Disabled Save/Delete are absent from the focus order.
         app.typeKey(.return, modifierFlags: [])
         let checked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: message)
         XCTAssertEqual(XCTWaiter.wait(for: [checked], timeout: 10), .completed)
@@ -68,58 +95,59 @@ import XCTest
         waitEnabled(save, false)
     }
     func testNativeReplaceDeleteRequireExplicitKeysAndRestoreFocus() {
-        launchSettings(); firstSave()
+        launchSettings(); let main = mainWindow; firstSave()
         // Type without refocusing: successful save must return focus to this page's input.
         app.typeText("SYNTHETIC-UI-replacement")
         waitEnabled(save)
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(sheet.exists)
+        XCTAssertTrue(sheet(in: main).exists)
         app.typeKey(.escape, modifierFlags: [])
-        waitNoSheet()
+        waitNoSheet(in: main)
         app.typeText("-after-cancel")
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("r", modifierFlags: .command)
-        waitNoSheet(); waitEnabled(save, false)
+        waitNoSheet(in: main); waitEnabled(save, false)
         delete.click()
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey(.return, modifierFlags: [])
-        XCTAssertTrue(sheet.exists)
+        XCTAssertTrue(sheet(in: main).exists)
         app.typeKey("d", modifierFlags: .command)
-        waitNoSheet(); waitEnabled(delete, false)
+        waitNoSheet(in: main); waitEnabled(delete, false)
         app.typeText("SYNTHETIC-UI-after-delete")
         waitEnabled(save)
     }
     func testIndependentSettingsSharesStateAndInvalidatesOldSheet() {
         launchSettings(); firstSave()
-        let main = app.windows.containing(.button, identifier: "pageSettings").firstMatch
+        let main = mainWindow
         app.typeKey(",", modifierFlags: .command)
-        let independent = app.windows["com_apple_SwiftUI_Settings_window"]
-        XCTAssertTrue(independent.waitForExistence(timeout: 10))
+        let independent = independentSettingsWindow()
         waitEnabled(independent.buttons["credentialDelete"])
         // Each page has its own draft/confirmation while sharing the credential model.
         main.buttons["pageSettings"].click()
         main.secureTextFields["credentialInput"].click()
         app.typeText("SYNTHETIC-UI-stale")
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         // The main window can fully cover Settings on a small runner display.
         // Raise the existing Settings scene before clicking its controls.
         app.typeKey(",", modifierFlags: .command)
-        XCTAssertTrue(sheet.exists) // Raising the other window must not consume confirmation.
+        XCTAssertTrue(sheet(in: main).exists) // Raising the other window must not consume confirmation.
         independent.buttons["credentialCheck"].click()
-        waitNoSheet()
+        waitNoSheet(in: main)
+        waitFocused(independent.secureTextFields["credentialInput"])
+        // Direct input focus proves abort did not make the old parent key again.
         // Check completion must retain the initiating window and restore its input.
         app.typeText("SYNTHETIC-UI-settings")
         waitEnabled(independent.buttons["credentialSave"])
         // Commands must come from the key Settings scene, not the other page.
         app.typeKey("l", modifierFlags: .command)
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(independent.sheets.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet(in: independent).waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
-        waitNoSheet()
+        waitNoSheet(in: independent)
     }
     func testFailedSaveRequiresCheckBeforeRetry() {
         launchSettings(failFirstSave: true)

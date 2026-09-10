@@ -14,7 +14,8 @@ expected = {
 
 def validate_host_entitlements(bundle_id, entitlements):
     # Xcode adds these automation exceptions to the separate UI host. Never
-    # accept them for the shipping bundle or broaden the production verifier.
+    # accept them for the shipping bundle. This is an exact fail-closed set:
+    # review Xcode changes rather than widening it merely to make CI pass.
     keys = {'com.apple.security.app-sandbox', 'com.apple.security.get-task-allow',
             'com.apple.security.temporary-exception.files.absolute-path.read-only',
             'com.apple.security.temporary-exception.mach-lookup.global-name'}

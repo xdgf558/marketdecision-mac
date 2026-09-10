@@ -214,8 +214,7 @@ struct CredentialSettingsSection: View {
                 .accessibilityLabel(model.presence == .saved ? "输入新凭据以替换" : "输入凭据")
                 .accessibilityHint("安全文本，不显示已保存的凭据。按 Command S 保存或打开替换确认；回车不保存。")
                 .focused($focusedControl, equals: .input)
-                // Return belongs to text entry/IME candidate confirmation, never persistence.
-                .onSubmit { }
+                .onSubmit(ignoreCredentialTextSubmission)
                 .disabled(model.isBusy || model.presence == .unknown)
             HStack {
                 Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
@@ -318,6 +317,9 @@ struct CredentialSettingsSection: View {
         flow.clearFocusRequest()
         focusedControl = nil
     }
+    /// Return commits text or an input-method candidate. Persistence stays on
+    /// the explicit button and Command-S paths.
+    private func ignoreCredentialTextSubmission() {}
     private func restoreInputFocus() {
         guard scenePhase == .active else { return }
         focusedControl = nil
@@ -409,16 +411,21 @@ private struct CredentialConfirmationHost: NSViewRepresentable {
         }
         func dismiss() {
             guard let current = rendered else { return }
-            rendered = nil
             let parent = current.alert.window.sheetParent
-            let activeWindow = NSApp.isActive ? NSApp.keyWindow : nil
+            // Capture the user's key window before endSheet can reactivate the
+            // old parent. Never activate an application that is in the background.
+            let keyWindowBeforeAbort = NSApp.isActive ? NSApp.keyWindow : nil
+            // An abort only removes the native projection. Clearing rendered
+            // first makes the completion a no-op, so it can never authorize a
+            // save/delete. Flow invalidation or disappearance owns business state.
+            rendered = nil
             parent?.endSheet(current.alert.window, returnCode: .abort)
             // Ending an old sheet can reactivate its parent on macOS 15. Preserve
             // the other window the user was working in; do not activate the app.
-            if NSApp.isActive, let activeWindow, activeWindow !== parent,
-               activeWindow !== current.alert.window, activeWindow.isVisible,
-               !activeWindow.isMiniaturized {
-                activeWindow.makeKeyAndOrderFront(nil)
+            if NSApp.isActive, let keyWindowBeforeAbort, keyWindowBeforeAbort !== parent,
+               keyWindowBeforeAbort !== current.alert.window, keyWindowBeforeAbort.isVisible,
+               !keyWindowBeforeAbort.isMiniaturized {
+                keyWindowBeforeAbort.makeKeyAndOrderFront(nil)
             }
         }
     }

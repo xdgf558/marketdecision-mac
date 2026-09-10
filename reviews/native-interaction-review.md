@@ -8,6 +8,11 @@ The accessibility hint describes this behavior, and controls have stable test ID
 Programmatic invalidation also preserves another currently active application
 window when aborting an old sheet, so its parent does not take later input.
 This does not activate an inactive application or authorize storage writes.
+The native host samples the key window before aborting, clears its rendered ID
+before `endSheet`, and drops the resulting callback. This is a fixed invariant:
+abort or invalidation only ends the native panel and can never authorize save or
+delete. A temporarily detached host either renders the still-current confirmation
+again when reattached or is cleared by the owning page's disappearance.
 
 ## Native execution scope
 
@@ -22,9 +27,9 @@ The NativeInteractionTests scheme contains four XCTest UI cases:
 
 | Case | Required observations |
 | --- | --- |
-| Return and keyboard | Text-field Return leaves an unsaved draft; explicit save works; disabled write controls are skipped |
+| Return and keyboard | Text-field Return leaves an unsaved draft; explicit save works; the Check control directly receives focus past disabled write controls |
 | Native confirmation | Replace/delete sheets reject default Return, accept explicit keys, support cancel and restore input focus |
-| Independent Settings | Shared state, older sheet dismissal after another page checks, current Settings command scope |
+| Independent Settings | Shared state, old-sheet dismissal, direct input focus and confirmation ownership in the current Settings window |
 | Failure recovery | Injected failed save disables input until a successful check; an explicit fresh save may retry |
 
 `Scripts/verify-native-ui.sh` requires an explicit DEVELOPER_DIR and, in hosted CI,
@@ -37,7 +42,8 @@ The test host is built and checked before execution, then checked again afterwar
 Xcode adds read-only access to `/` and three test-service Mach lookup exceptions
 to this isolated host. A separate verifier requires that exact identity and
 permission set; five mutation tests reject shipping identity, network/write scope,
-invalid sandbox flags and changed exceptions. The XCTest runner also has its own
+invalid sandbox flags and changed exceptions. Added exceptions fail closed and
+must be reviewed rather than accepted only to restore CI. The XCTest runner also has its own
 Xcode automation permissions. These are not shipping permissions; the production
 sandbox verifier is unchanged. Native execution is not production sandbox proof.
 
