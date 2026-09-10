@@ -41,12 +41,22 @@ import XCTest
     }
     func testReturnDoesNotSaveAndTabSkipsDisabledControls() {
         launchSettings()
+        firstSave()
+        delete.click()
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        app.typeKey("d", modifierFlags: .command)
+        waitNoSheet(); waitEnabled(delete, false)
+        let message = app.staticTexts["credentialMessage"].firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertFalse(save.isEnabled)
         XCTAssertFalse(delete.isEnabled)
         app.typeKey("l", modifierFlags: .command)
         app.typeKey(.tab, modifierFlags: [])
-        // Tab goes to Check when both write actions are disabled. Return performs a check.
+        // A successful Check clears the deletion message. Merely leaving the input
+        // enabled would not prove that Tab skipped the two disabled write controls.
         app.typeKey(.return, modifierFlags: [])
+        let checked = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: message)
+        XCTAssertEqual(XCTWaiter.wait(for: [checked], timeout: 10), .completed)
         waitEnabled(input)
         app.typeKey("l", modifierFlags: .command)
         app.typeText("SYNTHETIC-UI-return")
@@ -95,6 +105,10 @@ import XCTest
         app.typeText("SYNTHETIC-UI-stale")
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        // The main window can fully cover Settings on a small runner display.
+        // Raise the existing Settings scene before clicking its controls.
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(sheet.exists) // Raising the other window must not consume confirmation.
         independent.buttons["credentialCheck"].click()
         waitNoSheet()
         // Commands must come from the key Settings scene, not the other page.
