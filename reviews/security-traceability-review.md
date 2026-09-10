@@ -22,14 +22,14 @@ This change adds typed event logging at existing boundaries and fresh test accou
 - Only the existing Keychain test may be NOT EXECUTED; its skip must be observed.
   Verification inputs are hashed before/after the run; stale reports are removed first.
   Reports stay in the ignored build folder, with no CI artifact upload.
-- Ten Python checker tests exercise inventory, event and log-boundary rejection paths.
+- Eleven Python checker tests exercise inventory, event and log-boundary rejection paths.
   Common direct logging/error formatting is rejected; the unchanged Debug diagnostic
   has a source-hash exception. This guard is not full taint analysis or a secret scanner.
 
 ## Evidence and count correction
 
 The current test inventory is **125 declared functions: 124 executed successfully,
-1 Keychain test skipped (NOT EXECUTED)**, plus 10 checker and 4 UTC Python tests.
+1 Keychain test skipped (NOT EXECUTED)**, plus 11 checker and 4 UTC Python tests.
 Swift Testing's console total includes skipped tests. Earlier notes incorrectly called
 those totals passing regular tests: PR23's 97 was 96 executed + 1 skipped; PR24's 119
 was 118 executed + 1 skipped. Existing logs were re-counted; old commits were not rerun.
@@ -49,3 +49,5 @@ Private specifications, full traceability, task lists, audit screenshots and mem
 remain local. LICENSE, entitlements, Keychain implementation and storage plans are unchanged.
 Review/merge does not close Phase 0, DATA-001, DATA-000 or G5, approve the full acceptance
 catalog, procure data, or start the next business phase.
+
+Toolchain follow-up: Swift Testing 6.1 cannot give distinct case IDs to the two existing tuple-based fixtures. Their input containers now use Encodable string arrays with identical values/assertions. Duplicate-case rejection remains enforced and has a dedicated regression; no event validation was bypassed.

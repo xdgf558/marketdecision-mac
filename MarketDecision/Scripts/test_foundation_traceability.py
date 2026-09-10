@@ -52,6 +52,15 @@ class EventAccountingTests(unittest.TestCase):
             else: xs[4], xs[5] = xs[5], xs[4]
             with self.subTest(mode=mode), self.assertRaises(TraceError): validate_events(xs, EXPECTED)
 
+
+    def test_duplicate_case_identity_cannot_mask_distinct_execution(self):
+        xs = records(True)
+        # Swift Testing 6.1 emits the same nil identity for non-Encodable tuple arguments.
+        xs[4]['payload']['_testCase']['id'] = 'argumentIDs: nil'
+        xs[5]['payload']['_testCase']['id'] = 'argumentIDs: nil'
+        xs[6:6] = copy.deepcopy(xs[4:6])
+        with self.assertRaises(TraceError): validate_events(xs, EXPECTED)
+
 class SourceAccountingTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory(); self.addCleanup(self.folder.cleanup)

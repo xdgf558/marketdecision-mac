@@ -48,6 +48,7 @@ func resolvedSample() async throws -> ResolvedModel {
         #expect(try Money("-0.1").multiplied(by: "-0.2") == Money("0.02"))
         #expect(try Money("-1") < Money("0"))
     }
+    // Encodable arrays keep case IDs distinct on Swift Testing 6.1 as well as newer SDKs.
     @Test(arguments: [
         ("1", "3", "0.333333333333333333"), ("2", "3", "0.666666666666666667"),
         ("-2", "3", "-0.666666666666666667"), ("2", "-3", "-0.666666666666666667"),
@@ -60,9 +61,9 @@ func resolvedSample() async throws -> ResolvedModel {
         ("1.0000000000000000005000000000000000001", "1", "1.000000000000000001"),
         ("1.0000000000000000004999999999999999999", "1", "1"),
         ("99999999999999999999.999999999999999999", "1", "99999999999999999999.999999999999999999")
-    ])
-    func exactDivision(_ vector: (String, String, String)) throws {
-        #expect(try Money(vector.0).divided(by: vector.1) == Money(vector.2))
+    ].map { [$0.0, $0.1, $0.2] })
+    func exactDivision(_ vector: [String]) throws {
+        #expect(try Money(vector[0]).divided(by: vector[1]) == Money(vector[2]))
     }
     @Test func decimalInputNeverSilentlyUnderflowsOrAcceptsPartialText() throws {
         for text in ["0." + String(repeating: "0", count: 200) + "1", "1\n", " 1", "+1", "1,25", "١", "1e-10"] {

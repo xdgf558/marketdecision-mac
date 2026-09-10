@@ -104,7 +104,7 @@ def validate_events(records, expected):
         require(names.count('testStarted') == names.count('testEnded') == 1 and names[0] == 'testStarted' and names[-1] == 'testEnded' and 'testSkipped' not in names, 'Required test not fully executed')
         starts = [e['_testCase']['id'] for e in test_events if e['kind'] == 'testCaseStarted']
         ends = [e['_testCase']['id'] for e in test_events if e['kind'] == 'testCaseEnded']
-        require(len(set(starts)) == len(starts) and sorted(starts) == sorted(ends), 'Incomplete parameter cases')
+        require(len(set(starts)) == len(starts) and sorted(starts) == sorted(ends), 'Incomplete or duplicate parameter cases: ' + selector)
         for case in starts:
             start_at = next(i for i, e in enumerate(test_events) if e['kind'] == 'testCaseStarted' and e['_testCase']['id'] == case)
             end_at = next(i for i, e in enumerate(test_events) if e['kind'] == 'testCaseEnded' and e['_testCase']['id'] == case)

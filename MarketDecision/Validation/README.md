@@ -36,3 +36,5 @@ codec's fixture stdout is outside the application logging boundary.
 Private requirements, full acceptance cases, target-device UI, signed Keychain,
 real suppliers/backup recovery and performance need their own evidence. Public CI
 success cannot close those gates or authorize the next phase.
+
+Parameterized fixtures must provide distinct encodable arguments on both selected toolchains. Existing tuple fixtures use string arrays with unchanged values because Swift Testing 6.1 gives non-Encodable tuples the same unavailable case identity. The verifier continues to reject duplicate case identities.
