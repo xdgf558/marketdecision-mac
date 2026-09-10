@@ -2,22 +2,48 @@ import Foundation
 import Testing
 import CoreDomain
 import DataContracts
-import Persistence
+@testable import Persistence
 import GRDB
 
 private let snapshotTime = try! MillisecondInstant(iso8601: "2026-09-10T01:02:03.123Z")
 private let snapshotNamespace = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
-private func object(_ id: String = "input", value: String = "1", refs: [ObjectReference] = [], mayStore: Bool = true, mayBackup: Bool = true) -> FrozenObject {
+private func object(_ id: String = "input", value: String = "1", refs: [ObjectReference] = [], mayStore: Bool = true,
+                    mayBackup: Bool = true, synthetic: Bool = true) -> FrozenObject {
     FrozenObject(identity: .init(id: id, version: "1"), kind: .input, payload: .object([.init("value", .string(value))]), references: refs,
-                 capturedAt: snapshotTime, permission: .init(mayStore: mayStore, mayBackup: mayBackup, evidenceReference: "synthetic.permission"), synthetic: true)
+                 capturedAt: snapshotTime, permission: .init(mayStore: mayStore, mayBackup: mayBackup, evidenceReference: "fixture.permission"), synthetic: synthetic)
 }
 private func ref(_ object: FrozenObject, role: String = "input") throws -> ObjectReference {
     ObjectReference(role: role, target: object.identity, contentHash: try object.contentHash())
 }
-private func bundle(value: String = "1", rooted: Bool = true) throws -> SnapshotBundle {
-    let input = object(value: value), result = try object("result", refs: [ref(input)])
+private func bundle(value: String = "1", rooted: Bool = true, synthetic: Bool = true) throws -> SnapshotBundle {
+    let input = object(value: value, synthetic: synthetic), result = try object("result", refs: [ref(input)], synthetic: synthetic)
     return try SnapshotBundle(sourceNamespace: snapshotNamespace, objects: [result, input],
         roots: rooted ? [SnapshotRoot(identity: .init(id: "research", version: "1"), kind: .researchRun, references: [ref(result)])] : [])
+}
+
+private let businessRequestID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+private func businessDocument(_ version: String = "v1", available: String = "2025-01-02T21:00:00.000Z",
+                              payload: String = #"{"close":"100.125"}"#) throws -> SourceDocument {
+    try SourceDocument(reference: "raw/aapl/\(version).json", providerID: "fixture", feedID: "daily",
+                       endpoint: .bars, receivedAt: MillisecondInstant(iso8601: "2025-01-10T12:00:00.000Z"),
+                       availableAt: MillisecondInstant(iso8601: available), mediaType: "application/json",
+                       evidenceRef: "fixture.evidence", licenseRef: "fixture.license", payload: Data(payload.utf8))
+}
+private func businessObservation(document: SourceDocument, version: String = "v1", value: String = "100.125",
+                                 recordID: String = "AAPL/2025-01-02") throws -> SeriesObservation {
+    let day = MarketDate(year: 2025, month: 1, day: 2)
+    let provenance = Provenance(providerID: document.providerID, feedID: document.feedID,
+        sourceEventAt: try day.start(in: TimeZone(identifier: "America/New_York")!), receivedAt: document.receivedAt.date,
+        availableAt: nil, evidenceRef: document.evidenceRef, origin: .provider,
+        endpointDescriptor: document.endpoint.rawValue, requestedAt: document.receivedAt.date.addingTimeInterval(-1),
+        requestID: businessRequestID, observationDate: day, versionID: version, versionKind: .sourceVersion,
+        availability: .instant(document.availableAt.date, evidence: "fixture.release"),
+        rawObjectRef: document.reference, rawHash: document.contentHash, normalizationVersion: "identity.v1",
+        licenseRef: document.licenseRef, attribution: "Fixture")
+    return try SeriesObservation(seriesID: "equity/aapl/close",
+        value: NumericObservation(recordID: recordID, provenance: provenance, rawValue: value, value: Money(value),
+                                  state: .available, unit: .usdPerShare, currency: "USD",
+                                  numericPolicyRef: Money.numericPolicyVersion))
 }
 private func inventory(_ bundle: SnapshotBundle) throws -> BackupInventory {
     try BackupInventory(entries: bundle.objects.map {
@@ -241,6 +267,133 @@ private final class CodecTestBundleAnchor: NSObject {}
     }
 }
 
+@Suite struct BusinessDataStoreTests {
+    private func temporaryPath() throws -> (URL, String) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return (folder, folder.appendingPathComponent("business.sqlite").path)
+    }
+
+    @Test func sourceAndObservationPersistExactlyAcrossReopenAndReplayIsANoop() async throws {
+        let (folder, path) = try temporaryPath(); defer { try? FileManager.default.removeItem(at: folder) }
+        let store = try BusinessDataStore(path: path), document = try businessDocument()
+        let value = try businessObservation(document: document), before = await store.revision()
+        let first = try await store.ingest(document: document, observations: [value], expectedRevision: before)
+        #expect(first.insertedDocuments == 1 && first.insertedObservations == 1 && first.revision != before)
+        let replay = try await store.ingest(document: document, observations: [value], expectedRevision: first.revision)
+        #expect(replay.insertedDocuments == 0 && replay.insertedObservations == 0 && replay.revision == first.revision)
+        #expect(try await store.sourceDocument(reference: document.reference).payload == document.payload)
+        let reopened = try BusinessDataStore(path: path)
+        #expect(await reopened.revision() == first.revision)
+        let range = MarketDateRange(start: .init(year: 2025, month: 1, day: 2), end: .init(year: 2025, month: 1, day: 2))
+        let selected = try await reopened.observations(seriesID: value.seriesID, range: range,
+                                                       asOf: document.availableAt.date)
+        let expectedValue = try Money("100.125")
+        #expect(selected.count == 1 && selected[0].value == expectedValue)
+        let sqlite = try DatabaseStore(path: path)
+        #expect(try sqlite.read { try String.fetchOne($0, sql: "SELECT typeof(canonical_value) FROM p1_observations") } == "text")
+        #expect(try sqlite.read { try String.fetchOne($0, sql: "SELECT canonical_value FROM p1_observations") } == "100.125")
+    }
+
+    @Test func pointInTimeSelectionUsesVersionAvailabilityAndNeverFallsBackToLatest() async throws {
+        let store = try BusinessDataStore(path: ":memory:")
+        let v1 = try businessDocument("v1", available: "2025-01-02T21:00:00.000Z", payload: #"{"close":"100"}"#)
+        let v2 = try businessDocument("v2", available: "2025-01-05T21:00:00.000Z", payload: #"{"close":"101"}"#)
+        var revision = await store.revision()
+        revision = try await store.ingest(document: v1, observations: [businessObservation(document: v1, version: "v1", value: "100")], expectedRevision: revision).revision
+        revision = try await store.ingest(document: v2, observations: [businessObservation(document: v2, version: "v2", value: "101")], expectedRevision: revision).revision
+        let range = MarketDateRange(start: .init(year: 2025, month: 1, day: 2), end: .init(year: 2025, month: 1, day: 2))
+        #expect(try await store.observations(seriesID: "equity/aapl/close", range: range,
+            asOf: MillisecondInstant(iso8601: "2025-01-02T20:59:59.999Z").date).isEmpty)
+        let old = try await store.observations(seriesID: "equity/aapl/close", range: range,
+            asOf: MillisecondInstant(iso8601: "2025-01-03T00:00:00.000Z").date)
+        let expectedOld = try Money("100"), expectedLatest = try Money("101")
+        #expect(old.first?.value == expectedOld)
+        let latest = try await store.observations(seriesID: "equity/aapl/close", range: range,
+            asOf: MillisecondInstant(iso8601: "2025-01-06T00:00:00.000Z").date)
+        let unchanged = await store.revision()
+        #expect(latest.first?.value == expectedLatest && unchanged == revision)
+    }
+
+    @Test func immutableIdentityConflictAndSourceMismatchRollbackTheWholeIngest() async throws {
+        let store = try BusinessDataStore(path: ":memory:"), document = try businessDocument()
+        let value = try businessObservation(document: document), before = await store.revision()
+        let committed = try await store.ingest(document: document, observations: [value], expectedRevision: before)
+        let changedDocument = try businessDocument(payload: #"{"close":"999"}"#)
+        await #expect(throws: BusinessStoreError.immutableConflict) {
+            try await store.ingest(document: changedDocument, observations: [], expectedRevision: committed.revision)
+        }
+        let other = try businessDocument("other", payload: #"{"close":"1"}"#)
+        await #expect(throws: BusinessStoreError.sourceMismatch) {
+            try await store.ingest(document: other, observations: [value], expectedRevision: committed.revision)
+        }
+        #expect(try await store.counts() == .init(sourceDocuments: 1, observations: 1, snapshotObjects: 0, snapshotRoots: 0))
+        #expect(await store.revision() == committed.revision)
+    }
+
+    @Test func cachePurgeCannotBreakAFrozenResearchSnapshotAndPersistsAcrossRestart() async throws {
+        let (folder, path) = try temporaryPath(); defer { try? FileManager.default.removeItem(at: folder) }
+        let store = try BusinessDataStore(path: path), document = try businessDocument()
+        var revision = await store.revision()
+        revision = try await store.ingest(document: document, observations: [businessObservation(document: document)], expectedRevision: revision).revision
+        let frozen = try bundle(synthetic: false)
+        try await store.freeze(frozen, expectedRevision: revision)
+        let snapshotRevision = await store.revision(), expected = try frozen.objects.first { $0.identity.id == "input" }!.contentHash()
+        let purge = try await store.purgeCache(seriesIDs: ["equity/aapl/close"], expectedRevision: snapshotRevision)
+        #expect(purge.removedDocuments == 1 && purge.removedObservations == 1)
+        #expect(try await store.counts() == .init(sourceDocuments: 0, observations: 0, snapshotObjects: 2, snapshotRoots: 1))
+        #expect(try await store.content(at: address("input"), expectedHash: expected) == frozen.objects.first { $0.identity.id == "input" }!.contentBytes())
+        let reopened = try BusinessDataStore(path: path)
+        #expect(try await reopened.content(at: address("input"), expectedHash: expected) == frozen.objects.first { $0.identity.id == "input" }!.contentBytes())
+    }
+
+    @Test func realSnapshotCommitRollsBackRetainsApprovalAndCommitsExactlyOnce() async throws {
+        let (folder, path) = try temporaryPath(); defer { try? FileManager.default.removeItem(at: folder) }
+        let store = try BusinessDataStore(path: path), original = try bundle(synthetic: false)
+        try await store.freeze(original, expectedRevision: store.revision())
+        let before = await store.revision(), incoming = try bundle(value: "2", synthetic: false)
+        let plan = try await store.prepareRestore(incoming, inventory: inventory(incoming), mode: .replace, expectedRevision: before)
+        await store.injectFailureOnNextCommit()
+        await #expect(throws: BusinessStoreError.injectedFailure) { try await store.commit(approve(plan)) }
+        #expect(await store.revision() == before)
+        let oldInput = original.objects.first { $0.identity.id == "input" }!
+        #expect(try await store.content(at: address("input"), expectedHash: oldInput.contentHash()) == oldInput.contentBytes())
+        let committed = try await store.commit(approve(plan))
+        #expect(committed.operation == .restoreReplace && committed.revision != before)
+        await #expect(throws: SnapshotError.unknownPlan) { try await store.commit(approve(plan)) }
+        let newInput = incoming.objects.first { $0.identity.id == "input" }!, imported = plan.importedAddresses[newInput.identity]!
+        let reopened = try BusinessDataStore(path: path)
+        #expect(try await reopened.content(at: imported, expectedHash: newInput.contentHash()) == newInput.contentBytes())
+    }
+
+    @Test func rootedGraphBlocksCleanupUntilRootAndDependentsAreHandled() async throws {
+        let store = try BusinessDataStore(path: ":memory:"), data = try bundle(synthetic: false)
+        try await store.freeze(data, expectedRevision: store.revision())
+        await #expect(throws: SnapshotError.protectedObject) {
+            try await store.prepareDeletion(.unreferencedCache([address("input")]), expectedRevision: store.revision())
+        }
+        let deleteRoot = try await store.prepareDeletion(.roots([address("research")]), expectedRevision: store.revision())
+        _ = try await store.commit(approve(deleteRoot))
+        await #expect(throws: SnapshotError.protectedObject) {
+            try await store.prepareDeletion(.unreferencedCache([address("input")]), expectedRevision: store.revision())
+        }
+        let cleanup = try await store.prepareDeletion(.unreferencedCache([address("input"), address("result")]), expectedRevision: store.revision())
+        _ = try await store.commit(approve(cleanup))
+        #expect(try await store.counts().snapshotObjects == 0)
+    }
+
+    @Test func businessMutationMakesPreparedPlanStaleAndStaleApprovalIsConsumed() async throws {
+        let store = try BusinessDataStore(path: ":memory:"), data = try bundle(synthetic: false)
+        try await store.freeze(data, expectedRevision: store.revision())
+        let plan = try await store.prepareDeletion(.allBusiness, expectedRevision: store.revision())
+        let document = try businessDocument(), revision = await store.revision()
+        _ = try await store.ingest(document: document, observations: [businessObservation(document: document)], expectedRevision: revision)
+        await #expect(throws: SnapshotError.stalePlan) { try await store.commit(approve(plan)) }
+        await #expect(throws: SnapshotError.unknownPlan) { try await store.commit(approve(plan)) }
+        #expect(try await store.counts() == .init(sourceDocuments: 1, observations: 1, snapshotObjects: 2, snapshotRoots: 1))
+    }
+}
+
 @Suite struct BackupBoundaryTests {
     private func entry(path: String = "objects/a.json", bytes: Int64 = 100, compressed: Int64 = 100,
                        kind: ArchiveEntryKind = .regularFile, contentClass: ArchiveContentClass = .business, id: String = "a") -> BackupObjectEntry {
@@ -318,11 +471,25 @@ private final class CodecTestBundleAnchor: NSObject {}
         }
         #expect(throws: Failure.injected) { try DatabaseStore(path: path, migrations: [first, failing]) }
         let reopened = try DatabaseStore(path: path, migrations: [first])
-        #expect(try reopened.migrationVersions() == ["foundation.v1","synthetic.v1"])
+        #expect(try reopened.migrationVersions() == ["business.p1.v1","foundation.v1","synthetic.v1"])
         #expect(try reopened.read { try String.fetchOne($0, sql: "SELECT value FROM fixture") } == "original")
         #expect(try reopened.read { try !$0.tableExists("transient_fixture") })
         let successful = DatabaseMigration(identifier: "synthetic.v2") { try $0.execute(sql: "ALTER TABLE fixture ADD COLUMN note TEXT") }
-        #expect(try DatabaseStore(path: path, migrations: [first, successful]).migrationVersions() == ["foundation.v1","synthetic.v1","synthetic.v2"])
+        #expect(try DatabaseStore(path: path, migrations: [first, successful]).migrationVersions() == ["business.p1.v1","foundation.v1","synthetic.v1","synthetic.v2"])
+    }
+    @Test func phaseOneSchemaUpgradesFoundationDatabaseWithoutErasingExistingRows() throws {
+        let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("fixture.sqlite").path
+        let legacy = try DatabaseQueue(path: path); var migrator = DatabaseMigrator()
+        migrator.registerMigration("foundation.v1") { db in
+            try db.execute(sql: "CREATE TABLE retained_fixture (value TEXT NOT NULL)")
+            try db.execute(sql: "INSERT INTO retained_fixture VALUES ('keep')")
+        }
+        try migrator.migrate(legacy)
+        let upgraded = try DatabaseStore(path: path)
+        #expect(try upgraded.migrationVersions() == ["business.p1.v1", "foundation.v1"])
+        #expect(try upgraded.read { try String.fetchOne($0, sql: "SELECT value FROM retained_fixture") } == "keep")
+        #expect(try upgraded.read { try $0.tableExists("p1_observations") && $0.tableExists("p1_snapshot_objects") })
     }
     @Test func transactionsRollbackWithoutErasureAndKeepDecimalTextExact() throws {
         let store = try DatabaseStore(path: ":memory:")
@@ -346,7 +513,7 @@ private final class CodecTestBundleAnchor: NSObject {}
         let store = try DatabaseStore(path: path)
         try store.transaction { try $0.execute(sql: "INSERT INTO grdb_migrations VALUES ('future.v9')") }
         #expect(throws: MigrationError.unsupportedHistory) { try DatabaseStore(path: path) }
-        #expect(try store.migrationVersions() == ["foundation.v1","future.v9"])
+        #expect(try store.migrationVersions() == ["business.p1.v1","foundation.v1","future.v9"])
         let plan = [DatabaseMigration(identifier: "missing.v1") { _ in }, DatabaseMigration(identifier: "future.v9") { _ in }]
         #expect(throws: MigrationError.unsupportedHistory) { try DatabaseStore(path: path, migrations: plan) }
         #expect(throws: MigrationError.invalidCatalog) { try DatabaseStore(path: ":memory:", migrations: [.init(identifier: "foundation.v1") { _ in }]) }

@@ -14,12 +14,13 @@ private func request(_ capability: ProviderCapability = .quote, id: UUID = UUID(
 }
 private func source(_ request: ProviderRequest, version: String = "v1", time: Date? = fixtureNow,
                     availability: AvailabilityEvidence = .unknown, kind: VersionKind = .sourceVersion,
-                    endpoint: String = EndpointDescriptor.quote.rawValue, origin: OriginKind = .provider, license: String = "license.v1",
+                    endpoint: String? = nil, origin: OriginKind = .provider, license: String = "license.v1",
                     observation: MarketDate? = .init(year: 2025, month: 3, day: 31)) -> Provenance {
     let raw = Data("synthetic-\(version)".utf8)
     return Provenance(providerID: request.providerID, feedID: request.feedID, sourceEventAt: time, receivedAt: request.requestedAt,
                       availableAt: utc("2025-01-01T00:00:00Z"), evidenceRef: "fixture.evidence", origin: origin,
-                      endpointDescriptor: endpoint, requestedAt: request.requestedAt, requestID: request.id,
+                      endpointDescriptor: endpoint ?? request.capability.endpointDescriptor.rawValue,
+                      requestedAt: request.requestedAt, requestID: request.id,
                       observationDate: observation, versionID: version, versionKind: kind,
                       availability: availability, rawObjectRef: "raw.\(version)",
                       rawHash: SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined(), normalizationVersion: "normalize.v1",
@@ -177,6 +178,11 @@ private extension Result where Failure == UnavailableReason {
         #expect(throws: ContractError.mismatchedRequest) { try result.validate(matching: request()) }
         #expect(throws: ContractError.mismatchedSource) {
             try ProviderResult(request: r, receivedAt: fixtureNow, items: [fixtureQuote(r, source: source(request(feed: "feed-b")))], coverage: .init(expectedCount: 1))
+        }
+        #expect(throws: ContractError.mismatchedSource) {
+            try ProviderResult(request: r, receivedAt: fixtureNow,
+                items: [fixtureQuote(r, source: source(r, endpoint: EndpointDescriptor.companyFacts.rawValue))],
+                coverage: .init(expectedCount: 1))
         }
         let session = try ProviderSession(request: r, capabilities: capabilities(), entitlement: rights())
         let wrongSymbol = try ProviderResult(request: r, receivedAt: fixtureNow, items: [fixtureQuote(r, symbol: "OTHER")], coverage: .init(expectedCount: 1))

@@ -8,10 +8,13 @@ public struct AppEnvironment: Sendable {
     public let quotes: any QuoteProvider
     public let models: ModelRegistry
     public let database: DatabaseStore
+    public let businessData: BusinessDataStore
     public let log: SafeLog
     public let credentials: any CredentialStorage
-    public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage, log: SafeLog = SafeLog()) {
-        self.quotes = quotes; self.database = database; self.credentials = credentials; self.models = ModelRegistry(); self.log = log
+    public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
+                log: SafeLog = SafeLog()) throws {
+        self.quotes = quotes; self.database = database; self.businessData = try BusinessDataStore(database: database)
+        self.credentials = credentials; self.models = ModelRegistry(); self.log = log
     }
     @MainActor public func makeCredentialSettings() -> CredentialSettingsModel {
         CredentialSettingsModel(store: credentials, log: log)

@@ -8,7 +8,7 @@ import SecuritySupport
 /// Compiled only into the independently identified UI test app, never the shipping app.
 enum NativeUITestEnvironment {
     static func prepare(log: SafeLog) async throws -> AppEnvironment {
-        AppEnvironment(quotes: MockQuoteProvider(), database: try DatabaseStore(path: ":memory:"),
+        try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"),
             credentials: SyntheticUIStore(failFirstSave: CommandLine.arguments.contains("--synthetic-fail-first-save")), log: log)
     }
 }

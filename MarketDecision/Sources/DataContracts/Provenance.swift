@@ -25,6 +25,23 @@ public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
     case companyIdentity = "fundamentals/company-identity", submissions = "fundamentals/submissions"
     case companyFacts = "fundamentals/company-facts", macroSeries = "macro/series", ledgerMarks = "ledger/marks"
     case brokerImport = "import/broker", calculation = "derived/calculation", syntheticQuote = "synthetic/quote"
+
+    /// The provider capability represented by this closed operation. Local-only operations
+    /// intentionally return nil and cannot satisfy a provider response contract.
+    public var providerCapability: ProviderCapability? {
+        switch self {
+        case .quote, .syntheticQuote: .quote
+        case .bars: .bars
+        case .optionExpirations: .optionExpirations
+        case .optionChain: .optionChain
+        case .companyIdentity: .companyIdentity
+        case .submissions: .submissions
+        case .companyFacts: .companyFacts
+        case .macroSeries: .macroSeries
+        case .ledgerMarks: .ledgerMarks
+        case .brokerImport, .calculation: nil
+        }
+    }
 }
 
 /// Calendar date, not an instant. Construction and decoding do not imply validation.

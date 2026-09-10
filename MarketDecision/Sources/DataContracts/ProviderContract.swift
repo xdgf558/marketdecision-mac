@@ -2,6 +2,20 @@ import Foundation
 
 public enum ProviderCapability: String, Sendable, Codable, CaseIterable {
     case quote, bars, optionExpirations, optionChain, companyIdentity, submissions, companyFacts, macroSeries, ledgerMarks
+
+    public var endpointDescriptor: EndpointDescriptor {
+        switch self {
+        case .quote: .quote
+        case .bars: .bars
+        case .optionExpirations: .optionExpirations
+        case .optionChain: .optionChain
+        case .companyIdentity: .companyIdentity
+        case .submissions: .submissions
+        case .companyFacts: .companyFacts
+        case .macroSeries: .macroSeries
+        case .ledgerMarks: .ledgerMarks
+        }
+    }
 }
 public enum ProviderFailure: String, Error, Sendable, Codable {
     case authInvalid, notEntitled, rateLimited, unsupported, pitUnavailable, offline, malformedResponse, symbolUnavailable
@@ -179,7 +193,9 @@ public struct ProviderResult<Item: ProviderRecord>: Sendable {
             try item.provenance.validate()
             guard item.provenance.providerID == request.providerID, item.provenance.feedID == request.feedID,
                   item.provenance.requestID == request.id, item.provenance.requestedAt == request.requestedAt,
-                  item.provenance.receivedAt <= receivedAt else { throw ContractError.mismatchedSource }
+                  item.provenance.receivedAt <= receivedAt,
+                  item.provenance.endpointDescriptor.flatMap(EndpointDescriptor.init(rawValue:))?.providerCapability == request.capability
+            else { throw ContractError.mismatchedSource }
             if case let .asOf(cutoff) = request.mode {
                 guard item.provenance.isAvailable(asOf: cutoff) else { throw ProviderFailure.pitUnavailable }
             }
