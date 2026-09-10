@@ -16,8 +16,10 @@ public struct RegistryReference: Sendable, Equatable, Codable, Hashable {
     public let version: String
     public let revisionID: UUID
     public let contentHash: String
-    public init(id: String, version: String, revisionID: UUID, contentHash: String) {
+    public let fingerprintVersion: String
+    public init(id: String, version: String, revisionID: UUID, contentHash: String, fingerprintVersion: String) {
         self.id = id; self.version = version; self.revisionID = revisionID; self.contentHash = contentHash
+        self.fingerprintVersion = fingerprintVersion
     }
 }
 
@@ -44,7 +46,7 @@ public struct ParameterSet: Sendable, Equatable, Codable {
             case let .unspecified(reference): fields += ["unspecified", reference]
             }
         }
-        return RegistryReference(id: id, version: version, revisionID: revisionID, contentHash: fingerprint(fields))
+        return RegistryReference(id: id, version: version, revisionID: revisionID, contentHash: fingerprint(fields), fingerprintVersion: "parameters.v1")
     }
     public func validate() throws {
         guard clean(id), clean(version), clean(dispositionReference), values.keys.allSatisfy(clean) else {
@@ -88,13 +90,13 @@ public struct ModelDefinition: Sendable, Equatable, Codable {
     public let state: DefinitionState
     public let dispositionReference: String
     public let knownLimitations: [String], testFixtures: [String]
-    public let introducedAt: Date, deprecatedAt: Date?
+    public let introducedAt: MillisecondInstant, deprecatedAt: MillisecondInstant?
 
     public init(id: String, version: String, revisionID: UUID, owner: String, purpose: String,
                 inputs: [ModelInput], outputs: [ModelOutput], formula: String, formulaVersion: String,
                 implementationReference: String, defaultParameters: RegistryReference,
                 numericPolicyVersion: String, state: DefinitionState, dispositionReference: String,
-                knownLimitations: [String], testFixtures: [String], introducedAt: Date, deprecatedAt: Date? = nil) {
+                knownLimitations: [String], testFixtures: [String], introducedAt: MillisecondInstant, deprecatedAt: MillisecondInstant? = nil) {
         self.id = id; self.version = version; self.revisionID = revisionID; self.owner = owner; self.purpose = purpose
         self.inputs = inputs; self.outputs = outputs; self.formula = formula; self.formulaVersion = formulaVersion
         self.implementationReference = implementationReference; self.defaultParameters = defaultParameters
@@ -103,27 +105,26 @@ public struct ModelDefinition: Sendable, Equatable, Codable {
         self.introducedAt = introducedAt; self.deprecatedAt = deprecatedAt
     }
     public var reference: RegistryReference {
-        var fields = ["model.v1", id, version, revisionID.uuidString, owner, purpose, formula, formulaVersion,
+        var fields = ["model.v2.utc-ms", id, version, revisionID.uuidString, owner, purpose, formula, formulaVersion,
                       implementationReference, defaultParameters.id, defaultParameters.version,
-                      defaultParameters.revisionID.uuidString, defaultParameters.contentHash, numericPolicyVersion,
-                      state.rawValue, dispositionReference, String(introducedAt.timeIntervalSince1970),
-                      deprecatedAt.map { String($0.timeIntervalSince1970) } ?? "none", String(inputs.count)]
+                      defaultParameters.revisionID.uuidString, defaultParameters.contentHash, defaultParameters.fingerprintVersion, numericPolicyVersion,
+                      state.rawValue, dispositionReference, introducedAt.iso8601,
+                      deprecatedAt.map(\.iso8601) ?? "none", String(inputs.count)]
         for input in inputs { fields += [input.name, input.unit, input.role.rawValue, input.allowsMultiple ? "many" : "one"] }
         fields.append(String(outputs.count))
         for output in outputs { fields += [output.name, output.unit] }
         fields.append(String(knownLimitations.count)); fields += knownLimitations
         fields.append(String(testFixtures.count)); fields += testFixtures
-        return RegistryReference(id: id, version: version, revisionID: revisionID, contentHash: fingerprint(fields))
+        return RegistryReference(id: id, version: version, revisionID: revisionID, contentHash: fingerprint(fields), fingerprintVersion: "model.v2.utc-ms")
     }
     public func validate() throws {
         guard [id, version, owner, purpose, formula, formulaVersion, implementationReference, numericPolicyVersion,
                dispositionReference].allSatisfy(clean), !inputs.isEmpty, !outputs.isEmpty, !testFixtures.isEmpty,
               inputs.allSatisfy({ clean($0.name) && clean($0.unit) }), outputs.allSatisfy({ clean($0.name) && clean($0.unit) }),
               Set(inputs.map(\.name)).count == inputs.count, Set(outputs.map(\.name)).count == outputs.count,
-              knownLimitations.allSatisfy(clean), testFixtures.allSatisfy(clean),
-              introducedAt.timeIntervalSince1970.isFinite else { throw RegistryError.invalidDefinition }
+              knownLimitations.allSatisfy(clean), testFixtures.allSatisfy(clean) else { throw RegistryError.invalidDefinition }
         if let deprecatedAt {
-            guard deprecatedAt.timeIntervalSince1970.isFinite, deprecatedAt > introducedAt else { throw RegistryError.invalidDefinition }
+            guard deprecatedAt > introducedAt else { throw RegistryError.invalidDefinition }
         }
     }
 }
@@ -137,8 +138,8 @@ public struct ResolvedModel: Sendable {
         self.definition = definition; self.parameters = parameters
     }
     public func validateForCalculation(at date: Date) throws {
-        guard date.timeIntervalSince1970.isFinite, date >= definition.introducedAt,
-              definition.deprecatedAt.map({ date < $0 }) ?? true else { throw RegistryError.inactiveModel }
+        guard date.timeIntervalSince1970.isFinite, date >= definition.introducedAt.date,
+              definition.deprecatedAt.map({ date < $0.date }) ?? true else { throw RegistryError.inactiveModel }
         guard definition.state == .approved, parameters.state == .approved else { throw RegistryError.unapproved }
         guard definition.numericPolicyVersion == Money.numericPolicyVersion else { throw RegistryError.unsupportedNumericPolicy }
     }

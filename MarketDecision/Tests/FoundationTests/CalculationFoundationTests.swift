@@ -21,7 +21,7 @@ func sampleModel(parameters: ParameterSet, version: String = "1", state: Definit
                     implementationReference: "synthetic-only", defaultParameters: parameters.reference,
                     numericPolicyVersion: policy, state: state, dispositionReference: "synthetic.disposition",
                     knownLimitations: ["No financial model or provider qualification"], testFixtures: ["synthetic.identity"],
-                    introducedAt: registryFixtureDate, deprecatedAt: deprecatedAt)
+                    introducedAt: try! MillisecondInstant(rounding: registryFixtureDate), deprecatedAt: deprecatedAt.map { try! MillisecondInstant(rounding: $0) })
 }
 func resolvedSample() async throws -> ResolvedModel {
     let registry = ModelRegistry(), parameters = sampleParameters()
@@ -117,7 +117,7 @@ func resolvedSample() async throws -> ResolvedModel {
         await #expect(throws: RegistryError.duplicateVersion) { try await registry.register(model) }
         let bound = try await registry.resolve(reference: model.reference, at: registryFixtureDate)
         #expect(bound.parameters == parameters && bound.definition == model)
-        let wrong = RegistryReference(id: model.id, version: model.version, revisionID: model.revisionID, contentHash: String(repeating: "0", count: 64))
+        let wrong = RegistryReference(id: model.id, version: model.version, revisionID: model.revisionID, contentHash: String(repeating: "0", count: 64), fingerprintVersion: model.reference.fingerprintVersion)
         await #expect(throws: RegistryError.referenceMismatch) { try await registry.resolve(reference: wrong, at: registryFixtureDate) }
         await #expect(throws: RegistryError.unknownVersion) { try await registry.definition(id: model.id, version: "latest") }
     }
