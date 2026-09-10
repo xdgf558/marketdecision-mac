@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AppComposition
+import CoreDomain
 import DataContracts
 
 enum AppPage: String, CaseIterable, Identifiable {
@@ -116,7 +117,7 @@ struct WorkspaceContent: View {
             VStack(spacing: 2) {
                 quoteRow(name: "名称", bid: "买价 (Bid)", ask: "卖价 (Ask)", state: "数据状态", header: true)
                 if let quote = model.quote {
-                    quoteRow(name: quote.symbol, bid: quote.bid.amount.formatted(.number.precision(.fractionLength(2))), ask: quote.ask.amount.formatted(.number.precision(.fractionLength(2))), state: "演示数据", header: false)
+                    quoteRow(name: quote.symbol, bid: display(quote.bid), ask: display(quote.ask), state: "演示数据", header: false)
                 } else {
                     Text(model.isLoading ? "正在载入演示数据…" : "暂无演示数据")
                         .foregroundStyle(.secondary).padding(22).frame(maxWidth: .infinity, alignment: .leading)
@@ -148,6 +149,11 @@ struct WorkspaceContent: View {
         .padding(.horizontal, 20).padding(.vertical, header ? 16 : 20)
         .background(header ? Color.primary.opacity(0.045) : Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
         .overlay(RoundedRectangle(cornerRadius: 9).stroke(header ? Color.clear : Color.primary.opacity(0.09)))
+    }
+    /// Quote text follows the same locale-independent fixed-scale policy as the
+    /// calculation layer. A valid Money value always has a canonical fallback.
+    private func display(_ value: CoreDomain.Money) -> String {
+        (try? value.fixedString(at: .accounting)) ?? value.decimalString
     }
 }
 

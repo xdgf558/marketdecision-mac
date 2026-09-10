@@ -168,9 +168,17 @@ public actor MockSnapshotStore: SnapshotStorage {
     public func commit(_ approval: PlanApproval) throws -> StorageCommit {
         guard let candidate = plans[approval.planID] else { throw SnapshotError.unknownPlan }
         guard candidate.summary.digest == approval.digest else { throw SnapshotError.approvalMismatch }
-        plans.removeValue(forKey: approval.planID)
-        try checkRevision(candidate.summary.baseRevision)
+        do {
+            try checkRevision(candidate.summary.baseRevision)
+        } catch {
+            // A stale candidate can never become valid again. Require a fresh plan.
+            plans.removeValue(forKey: approval.planID)
+            throw error
+        }
+        // A transient storage failure leaves the exact approved candidate available
+        // for an idempotent retry. No state or revision has changed at this point.
         if failNextCommit { failNextCommit = false; throw MockCommitError.injectedFailure }
+        plans.removeValue(forKey: approval.planID)
         objects = candidate.objects; roots = candidate.roots; currentRevision = UUID()
         return StorageCommit(revision: currentRevision, operation: candidate.summary.operation)
     }

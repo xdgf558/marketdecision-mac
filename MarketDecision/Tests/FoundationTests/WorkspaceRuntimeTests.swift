@@ -115,15 +115,25 @@ private actor RuntimePreparation {
         #expect(model.message == "演示数据已刷新" && model.quote != nil)
         #expect(await prepare.gate.calls == 1)
     }
-    @Test func providerCancellationIsNotReportedAsFailure() async throws {
+    @Test func providerReportedCancellationWithoutTaskCancellationIsFailure() async throws {
         let capture = RuntimeLog()
         let quotes = RuntimeQuotes(value: try await MockQuoteProvider().quote(for: "DEMO"))
         await quotes.fail(with: CancellationError())
         let prepare = RuntimePreparation(quotes: quotes)
         let model = WorkspaceModel(log: SafeLog(sink: capture)) { try await prepare.make(log: $0) }
         #expect(await model.refresh() == false)
-        #expect(model.message == "刷新已取消" && model.quote == nil)
-        #expect(capture.messages == ["providerRequestCancelled"])
+        #expect(model.message == "演示数据暂时不可用，请重试。" && model.quote == nil)
+        #expect(capture.messages == ["providerRequestFailed"])
+    }
+    @Test func preparationReportedCancellationWithoutTaskCancellationIsFailure() async throws {
+        let capture = RuntimeLog()
+        let quotes = RuntimeQuotes(value: try await MockQuoteProvider().quote(for: "DEMO"))
+        let prepare = RuntimePreparation(quotes: quotes, firstError: CancellationError())
+        let model = WorkspaceModel(log: SafeLog(sink: capture)) { try await prepare.make(log: $0) }
+        #expect(await model.refresh() == false)
+        #expect(model.initializationError == "本地数据暂时不可用，请重试。")
+        #expect(model.message == model.initializationError && model.credentials == nil)
+        #expect(capture.messages == ["localPreparationFailed"])
     }
     @Test func cancelledProviderCannotPublishItsLateSuccess() async throws {
         let capture = RuntimeLog(), gate = RuntimeGate(blocked: true)
@@ -175,8 +185,10 @@ private actor RuntimePreparation {
         let quotes = RuntimeQuotes(value: try await MockQuoteProvider().quote(for: "DEMO"))
         let prepare = RuntimePreparation(quotes: quotes)
         let model = WorkspaceModel(log: SafeLog(sink: capture)) { try await prepare.make(log: $0) }
-        let refresh = Task { await model.refresh() }
-        refresh.cancel() // MainActor child cannot start before this test yields.
+        let refresh = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await model.refresh()
+        }
         #expect(await refresh.value == false)
         #expect(await prepare.gate.calls == 0)
         #expect(capture.messages == ["localPreparationCancelled"])

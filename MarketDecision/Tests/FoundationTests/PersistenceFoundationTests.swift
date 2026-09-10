@@ -205,6 +205,12 @@ private final class CodecTestBundleAnchor: NSObject {}
         #expect(await store.revision() == before)
         #expect(await store.counts().objects == 2)
         for item in data.objects { #expect(try await store.content(at: .init(namespace: snapshotNamespace, identity: item.identity), expectedHash: item.contentHash()) == item.contentBytes()) }
+        let retried = try await store.commit(approve(fail))
+        #expect(retried.operation == .replace && retried.revision != before)
+        for item in incoming.objects {
+            #expect(try await store.content(at: fail.importedAddresses[item.identity]!, expectedHash: item.contentHash()) == item.contentBytes())
+        }
+        await #expect(throws: SnapshotError.unknownPlan) { try await store.commit(approve(fail)) }
     }
     @Test func replacementRemovesPriorGraphOnlyOnSuccessfulCommit() async throws {
         let store = MockSnapshotStore(), data = try bundle(), incoming = try bundle(value: "2")
