@@ -10,8 +10,8 @@ import AppComposition
 import GRDB
 
 @Suite struct MoneyTests {
-    @Test(arguments: [("1.005", "1"), ("1.015", "1.02"), ("-1.005", "-1")])
-    func halfEven(_ pair: (String, String)) throws { #expect(try Money(pair.0).posted() == Money(pair.1)) }
+    @Test(arguments: [["1.005", "1"], ["1.015", "1.02"], ["-1.005", "-1"]])
+    func halfEven(_ pair: [String]) throws { #expect(try Money(pair[0]).posted() == Money(pair[1])) }
     @Test(arguments: ["0.01", "-0.01", "10.01", "-10.01"])
     func allocationConservesCents(_ input: String) throws {
         let value = try Money(input); let result = try value.allocatedEqually(to: ["c", "b", "a"])
