@@ -61,11 +61,12 @@ import GRDB
 
 @Suite struct RegistryTests {
     @Test func versionCannotBeOverwritten() async throws {
-        let registry = ModelRegistry(); let item = ModelDefinition(id: "sample", version: "1", parameterSet: "PARAMETERS_V1", inputRoles: ["price"])
+        let registry = ModelRegistry(); let parameters = sampleParameters(); let item = sampleModel(parameters: parameters)
+        try await registry.register(parameters)
         try await registry.register(item)
         await #expect(throws: RegistryError.duplicateVersion) { try await registry.register(item) }
-        #expect(try await registry.definition(id: "sample", version: "1") == item)
-        await #expect(throws: RegistryError.unknownVersion) { try await registry.definition(id: "sample", version: "latest") }
+        #expect(try await registry.definition(id: item.id, version: "1") == item)
+        await #expect(throws: RegistryError.unknownVersion) { try await registry.definition(id: item.id, version: "latest") }
     }
 }
 
