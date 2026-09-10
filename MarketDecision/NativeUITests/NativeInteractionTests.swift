@@ -24,6 +24,9 @@ import XCTest
     private var input: XCUIElement { app.secureTextFields["credentialInput"].firstMatch }
     private var save: XCUIElement { app.buttons["credentialSave"].firstMatch }
     private var delete: XCUIElement { app.buttons["credentialDelete"].firstMatch }
+    private var credentialMessage: XCUIElement {
+        app.descendants(matching: .any)["credentialMessage"].firstMatch
+    }
     private var mainWindow: XCUIElement {
         app.windows.containing(.button, identifier: "pageSettings").firstMatch
     }
@@ -70,7 +73,7 @@ import XCTest
         XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
         waitNoSheet(in: main); waitEnabled(delete, false)
-        let message = app.staticTexts["credentialMessage"].firstMatch
+        let message = credentialMessage
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertFalse(save.isEnabled)
         XCTAssertFalse(delete.isEnabled)
@@ -154,7 +157,7 @@ import XCTest
         app.typeKey("s", modifierFlags: .command)
         waitEnabled(input, false)
         XCTAssertFalse(save.isEnabled); XCTAssertFalse(delete.isEnabled)
-        let failureMessage = app.staticTexts["credentialMessage"].firstMatch
+        let failureMessage = credentialMessage
         XCTAssertTrue(failureMessage.waitForExistence(timeout: 5))
         XCTAssertEqual(failureMessage.label, "保存失败，未确认凭据是否已保存。请检查钥匙串状态后重试。")
         app.typeKey("r", modifierFlags: [.command, .shift])
