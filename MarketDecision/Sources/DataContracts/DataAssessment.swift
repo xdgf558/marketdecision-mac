@@ -105,7 +105,11 @@ public struct CalculationContext: Sendable {
         self.parameterVersion = parameterVersion; self.inputs = inputs
     }
 }
-/// Financial data only: raw/normalized decimal text stays exact; no formula execution here.
+/// This foundation value accepts identity normalization only: rawValue is the source decimal
+/// in the same unit/currency as value. Formatting may differ; numerical values must be equal.
+/// Source documents and their original units remain at rawObjectRef. Unit/scale conversions
+/// need a separately defined transformation contract, not an arbitrary normalizationVersion.
+/// Derived values may omit rawValue because their exact inputs are in CalculationContext.
 public struct NumericObservation: ProviderRecord, Sendable {
     public let recordID: String
     public let provenance: Provenance
@@ -129,7 +133,11 @@ public struct NumericObservation: ProviderRecord, Sendable {
         case .partial: throw UnavailableReason.specializedPolicyRequired // No generic partial-number semantics.
         default: guard value == nil, !reasons.isEmpty, reasons.allSatisfy(nonblank) else { throw ContractError.invalidCoverage }
         }
-        if state == .available, let rawValue { _ = try Money(rawValue) }
+        if state == .available {
+            if let rawValue {
+                guard try Money(rawValue) == value else { throw ContractError.invalidNormalization }
+            } else if provenance.origin != .derived { throw ContractError.invalidNormalization }
+        }
         if state == .available && provenance.origin == .derived && calculation == nil { throw ContractError.invalidIdentity }
         if let calculation {
             guard provenance.origin == .derived, calculation.calculatedAt <= provenance.receivedAt else { throw ContractError.invalidTime }
@@ -155,6 +163,7 @@ public extension OptionChainRecord {
         try provenance.validate(); try underlyingQuote.provenance.validate()
         guard provenance.requestID == underlyingQuote.provenance.requestID,
               provenance.providerID == underlyingQuote.provenance.providerID,
+              provenance.feedID == underlyingQuote.provenance.feedID,
               provenance.requestedAt == underlyingQuote.provenance.requestedAt,
               underlyingQuote.provenance.receivedAt <= provenance.receivedAt else { throw ContractError.mismatchedSource }
         for contract in contractProvenances {
