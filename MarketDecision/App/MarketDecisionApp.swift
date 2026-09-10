@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppComposition
 import DataContracts
+import SecuritySupport
 
 @MainActor @Observable final class WorkspaceModel {
     private(set) var credentials: CredentialSettingsModel?
@@ -11,6 +12,7 @@ import DataContracts
     private(set) var initializationError: String?
     var message: String?
     private var environment: AppEnvironment?
+    private let log = SafeLog()
 
     private func prepare() async {
         guard environment == nil, !isPreparing else { return }
@@ -27,6 +29,7 @@ import DataContracts
             environment = ready
             credentials = ready.makeCredentialSettings()
         } catch {
+            log.write(.localPreparationFailed)
             initializationError = "本地数据暂时不可用，请重试。"
         }
     }
@@ -41,8 +44,10 @@ import DataContracts
             quote = try await environment.quotes.quote(for: "DEMO")
             message = "演示数据已刷新"
         } catch is CancellationError {
+            log.write(.providerRequestCancelled)
             message = "刷新已取消"
         } catch {
+            log.write(.providerRequestFailed)
             message = "演示数据暂时不可用，请重试。"
         }
     }

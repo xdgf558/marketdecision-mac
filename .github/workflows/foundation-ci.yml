@@ -23,7 +23,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Tests and module boundaries
+      - name: Tests, traceability and module boundaries
         id: tests
         run: bash MarketDecision/Scripts/verify-ci.sh tests
       - name: Debug and Release build checks
@@ -37,7 +37,7 @@ jobs:
         run: |
           {
             echo '## Foundation CI evidence'
-            echo "- Tests/UTC/module checks: $TEST_OUTCOME"
+            echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
             echo "- Debug/Release build and artifact checks: $BUILD_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'

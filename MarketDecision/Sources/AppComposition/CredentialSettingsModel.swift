@@ -11,9 +11,10 @@ import SecuritySupport
     public private(set) var message: String?
     public private(set) var hasError = false
     private let store: any CredentialStorage
+    private let log: SafeLog
     private let reference = "reserved-data-service"
 
-    public init(store: any CredentialStorage) { self.store = store }
+    public init(store: any CredentialStorage, log: SafeLog = SafeLog()) { self.store = store; self.log = log }
 
     @discardableResult public func refresh() async -> Bool {
         guard !isBusy else { return false }
@@ -22,10 +23,12 @@ import SecuritySupport
         defer { isBusy = false }
         do {
             presence = try await store.contains(reference: reference) ? .saved : .absent
+            log.write(.credentialCheckSucceeded)
             message = nil
             hasError = false
             return true
         } catch {
+            log.write(.credentialReadFailed)
             fail("无法检查钥匙串状态。请解锁设备后重试。")
             return false
         }
@@ -34,6 +37,7 @@ import SecuritySupport
     @discardableResult public func save(_ secret: String, expectedRevision: UUID) async -> Bool {
         guard !isBusy, presence != .unknown, expectedRevision == revision else { return false }
         guard !secret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            log.write(.credentialInputRejected)
             message = "请输入凭据，不能只包含空白。"
             hasError = true
             return false
@@ -44,11 +48,13 @@ import SecuritySupport
         do {
             // Preserve the supplied bytes; do not silently trim a credential.
             try await store.save(Data(secret.utf8), reference: reference)
+            log.write(.credentialSaved)
             presence = .saved
             message = "凭据已保存到本机钥匙串；尚未验证服务连接。"
             hasError = false
             return true
         } catch {
+            log.write(.credentialSaveFailed)
             fail("保存失败，未确认凭据是否已保存。请检查钥匙串状态后重试。")
             return false
         }
@@ -61,11 +67,13 @@ import SecuritySupport
         defer { isBusy = false }
         do {
             try await store.delete(reference: reference)
+            log.write(.credentialDeleted)
             presence = .absent
             message = "本机凭据已删除。"
             hasError = false
             return true
         } catch {
+            log.write(.credentialDeleteFailed)
             fail("删除失败，未确认凭据是否已删除。请检查钥匙串状态后重试。")
             return false
         }
