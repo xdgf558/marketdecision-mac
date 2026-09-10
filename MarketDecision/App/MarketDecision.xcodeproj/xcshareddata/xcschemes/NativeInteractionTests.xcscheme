@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1640" version="1.3">
+<BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries>
+<BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000042" BuildableName="MarketDecisionUITestHost.app" BlueprintName="MarketDecisionUITestHost" ReferencedContainer="container:MarketDecision.xcodeproj"/></BuildActionEntry>
+</BuildActionEntries></BuildAction>
+<TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"><Testables><TestableReference skipped="NO" parallelizable="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000060" BuildableName="NativeInteractionTests.xctest" BlueprintName="NativeInteractionTests" ReferencedContainer="container:MarketDecision.xcodeproj"/></TestableReference></Testables></TestAction>
+</Scheme>

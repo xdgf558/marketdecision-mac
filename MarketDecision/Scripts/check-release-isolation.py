@@ -8,7 +8,8 @@ app = pathlib.Path(sys.argv[1])
 entitlements = plistlib.loads(subprocess.check_output(['codesign', '-d', '--entitlements', ':-', str(app)], stderr=subprocess.DEVNULL))
 if entitlements.get('com.apple.security.get-task-allow', False):
     raise SystemExit('FAIL: Release allows debugger attachment')
-markers = [b'--keychain-diagnostic', b'KeychainDiagnostic', b'local.marketdecision.app-diagnostic.', b'PASS app restart/']
+markers = [b'--keychain-diagnostic', b'KeychainDiagnostic', b'local.marketdecision.app-diagnostic.', b'PASS app restart/',
+           b'NativeUITestEnvironment', b'SyntheticUIStore', b'SYNTHETIC-UI-', b'--synthetic-fail-first-save']
 images = []
 for folder in [app / 'Contents/MacOS', app / 'Contents/Frameworks']:
     if folder.exists():

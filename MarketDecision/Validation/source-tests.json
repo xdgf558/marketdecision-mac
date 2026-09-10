@@ -3,7 +3,7 @@
   "scope": "Public source and synthetic test accounting only; private requirements remain local.",
   "sources": [
     {"path": "App/KeychainDiagnostic.swift", "kind": "build_only", "suites": [], "reason": "Native application/Debug diagnostic build only. UI and account-signed runtime are not executed by these tests."},
-    {"path": "App/MarketDecisionApp.swift", "kind": "build_only", "suites": [], "reason": "Native application/Debug diagnostic build only. UI and account-signed runtime are not executed by these tests."},
+    {"path": "App/MarketDecisionApp.swift", "kind": "build_only", "suites": [], "reason": "Not executed by this Swift Testing catalog; NativeInteractionTests separately exercise shared views in a synthetic host. Signed Keychain and VoiceOver remain separate."},
     {"path": "Sources/AIInsights/Module.swift", "kind": "shell", "suites": [], "reason": "Module boundary placeholder; no business implementation."},
     {"path": "Sources/AlertEngine/Module.swift", "kind": "shell", "suites": [], "reason": "Module boundary placeholder; no business implementation."},
     {"path": "Sources/AppComposition/AppEnvironment.swift", "kind": "tested", "suites": ["FoundationTests.CredentialSettingsTests", "FoundationTests.SecurityBoundaryTests", "FoundationTests.WorkspaceRuntimeTests"], "reason": "Mapped regression suites; not line coverage or full feature acceptance."},

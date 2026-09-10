@@ -11,7 +11,7 @@ enum AppPage: String, CaseIterable, Identifiable {
 
 @main enum MarketDecisionEntry {
     @MainActor static func main() async {
-        #if DEBUG
+        #if DEBUG && !UI_TEST_HOST
         if CommandLine.arguments.contains("--keychain-diagnostic") {
             exit(await KeychainDiagnostic.run(CommandLine.arguments))
         }
@@ -21,8 +21,16 @@ enum AppPage: String, CaseIterable, Identifiable {
 }
 
 struct MarketDecisionApp: App {
-    @State private var model = WorkspaceModel()
+    @State private var model: WorkspaceModel
     @AppStorage("appearance") private var appearance = "system"
+    init() {
+        #if UI_TEST_HOST
+        // A separate test-only target. Shipping Debug/Release never select this factory.
+        _model = State(initialValue: WorkspaceModel(prepareEnvironment: NativeUITestEnvironment.prepare))
+        #else
+        _model = State(initialValue: WorkspaceModel())
+        #endif
+    }
     var body: some Scene {
         WindowGroup("MarketDecision") {
             RootView(model: model)
@@ -58,6 +66,7 @@ struct RootView: View {
                     .accessibilityAddTraits(page == item ? .isSelected : [])
                     .keyboardShortcut(item == .workspace ? "1" : "2", modifiers: .command)
                     .help(item == .workspace ? "工作台（⌘1）" : "设置（⌘2）")
+                    .accessibilityIdentifier(item == .workspace ? "pageWorkspace" : "pageSettings")
                 }
                 Spacer()
             }
@@ -154,6 +163,7 @@ struct SettingsContent: View {
                     Text("浅色").tag("light")
                     Text("深色").tag("dark")
                 }
+                .accessibilityIdentifier("appearanceMode")
             }
             Section("数据服务") {
                 LabeledContent("数据模式", value: "合成演示")
@@ -195,15 +205,16 @@ struct CredentialSettingsSection: View {
     var body: some View {
         Section("服务凭据") {
             LabeledContent("本机状态", value: model.presence == .saved ? "已保存" : model.presence == .absent ? "未保存" : "待检查")
+                .accessibilityIdentifier("credentialPresence")
             Text("预留的数据服务凭据，仅存入本机钥匙串，不会显示已保存的内容。保存不代表已连接或验证服务。")
                 .foregroundStyle(.secondary)
             SecureField(model.presence == .saved ? "输入新凭据以替换" : "输入凭据", text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("credentialInput")
                 .accessibilityLabel(model.presence == .saved ? "输入新凭据以替换" : "输入凭据")
-                .accessibilityHint("安全文本，不显示已保存的凭据。Command S 保存或打开替换确认。")
+                .accessibilityHint("安全文本，不显示已保存的凭据。按 Command S 保存或打开替换确认；回车不保存。")
                 .focused($focusedControl, equals: .input)
-                .onSubmit { requestSave() }
+                .onSubmit(ignoreCredentialTextSubmission)
                 .disabled(model.isBusy || model.presence == .unknown)
             HStack {
                 Button(model.presence == .saved ? "替换凭据…" : "保存凭据") {
@@ -216,6 +227,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(!canSave)
                     .help(model.presence == .saved ? "替换凭据（⌘S），仍需确认" : "保存凭据（⌘S）")
+                    .accessibilityIdentifier("credentialSave")
                 Button("删除凭据…", role: .destructive) { requestDelete() }
                     .focusable(model.presence == .saved && !model.isBusy)
                     .focused($focusedControl, equals: .delete)
@@ -224,6 +236,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(model.isBusy || model.presence != .saved)
                     .help("删除凭据（⇧⌘⌫），仍需确认")
+                    .accessibilityIdentifier("credentialDelete")
                 Spacer()
                 Button("检查状态") { checkStatus() }
                     .focusable(!model.isBusy)
@@ -233,6 +246,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(model.isBusy)
                     .help("检查钥匙串状态（⇧⌘R）")
+                    .accessibilityIdentifier("credentialCheck")
             }
             if let confirmationNotice = flow.confirmationNotice { Text(confirmationNotice).foregroundStyle(.secondary) }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
@@ -240,6 +254,7 @@ struct CredentialSettingsSection: View {
                 Label(message, systemImage: model.hasError ? "exclamationmark.triangle" : "checkmark.circle")
                     .foregroundStyle(model.hasError ? Color.red : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("credentialMessage")
             }
         }
         .focusedSceneValue(\.credentialActions, CredentialSceneActions(
@@ -302,6 +317,9 @@ struct CredentialSettingsSection: View {
         flow.clearFocusRequest()
         focusedControl = nil
     }
+    /// Return commits text or an input-method candidate. Persistence stays on
+    /// the explicit button and Command-S paths.
+    private func ignoreCredentialTextSubmission() {}
     private func restoreInputFocus() {
         guard scenePhase == .active else { return }
         focusedControl = nil
@@ -393,8 +411,22 @@ private struct CredentialConfirmationHost: NSViewRepresentable {
         }
         func dismiss() {
             guard let current = rendered else { return }
+            let parent = current.alert.window.sheetParent
+            // Capture the user's key window before endSheet can reactivate the
+            // old parent. Never activate an application that is in the background.
+            let keyWindowBeforeAbort = NSApp.isActive ? NSApp.keyWindow : nil
+            // An abort only removes the native projection. Clearing rendered
+            // first makes the completion a no-op, so it can never authorize a
+            // save/delete. Flow invalidation or disappearance owns business state.
             rendered = nil
-            current.alert.window.sheetParent?.endSheet(current.alert.window, returnCode: .abort)
+            parent?.endSheet(current.alert.window, returnCode: .abort)
+            // Ending an old sheet can reactivate its parent on macOS 15. Preserve
+            // the other window the user was working in; do not activate the app.
+            if NSApp.isActive, let keyWindowBeforeAbort, keyWindowBeforeAbort !== parent,
+               keyWindowBeforeAbort !== current.alert.window, keyWindowBeforeAbort.isVisible,
+               !keyWindowBeforeAbort.isMiniaturized {
+                keyWindowBeforeAbort.makeKeyAndOrderFront(nil)
+            }
         }
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }

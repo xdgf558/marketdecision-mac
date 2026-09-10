@@ -49,3 +49,35 @@ is exercised with a temporary database and the synthetic provider, without Keych
 access. This does not automate native scene lifecycle, commands, sheets or actual
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
+
+The separate `Scripts/verify-native-ui.sh` runs four XCTest UI cases in
+`NativeUITests/NativeInteractionTests.swift`. The independently identified
+MarketDecisionUITestHost compiles the same native views with a compile-time-only
+factory using synthetic quotes, an in-memory database and an in-memory credential
+presence store. Neither shipping configuration compiles that factory. UI tests
+are separate from the 133 Swift Testing declarations; the xcresult summary and
+individual case results must both report four passes with no skips. Unknown result
+formats fail. A failed or unavailable runner is not a passed platform check.
+
+Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
+paths, native replace/delete sheets, shared state in independent Settings, stale
+sheet dismissal and failure/check/retry. Native scene wiring is exercised here;
+the foundation catalog's `build_only` label remains specific to its Swift Testing
+accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
+real input-method composition, visual/contrast compliance or signed Keychain
+behavior. Local screenshots and the complete acceptance mapping remain private.
+
+The isolated UI host receives Xcode-generated read-only-root and test-service
+exceptions. Its separate exact permission/identity check runs before and after
+native execution, with five rejection tests in addition to the seven result
+checks. The production permission verifier is unchanged; XCTest automation does
+not establish shipping-app sandbox behavior. Any added exception fails closed and
+requires review; do not widen the checker merely to make a changed Xcode pass.
+
+Native sheets are always queried through their owning window. The independent
+Settings window is found by its stable credential controls and absence of the main
+navigation, not a private SwiftUI window identifier; failures print a bounded window
+inventory. Xcode 16.4 does not expose usable `hasFocus` through XCUIElement on this
+runner, so focus is proved behaviorally: input must land in the independent page
+without another click, enable only its Save control, and its next confirmation must
+belong to that window after another page's older sheet is invalidated.
