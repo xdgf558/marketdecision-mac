@@ -115,7 +115,7 @@ import XCTest
         app.typeKey("l", modifierFlags: .command)
         app.typeText("SYNTHETIC-UI-settings")
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(independent.sheets.firstMatch.waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
         waitNoSheet()
     }
