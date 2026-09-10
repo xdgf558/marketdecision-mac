@@ -49,3 +49,20 @@ is exercised with a temporary database and the synthetic provider, without Keych
 access. This does not automate native scene lifecycle, commands, sheets or actual
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
+
+The separate `Scripts/verify-native-ui.sh` runs four XCTest UI cases in
+`NativeUITests/NativeInteractionTests.swift`. The independently identified
+MarketDecisionUITestHost compiles the same native views with a compile-time-only
+factory using synthetic quotes, an in-memory database and an in-memory credential
+presence store. Neither shipping configuration compiles that factory. UI tests
+are separate from the 133 Swift Testing declarations; the xcresult summary and
+individual case results must both report four passes with no skips. Unknown result
+formats fail. A failed or unavailable runner is not a passed platform check.
+
+Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
+paths, native replace/delete sheets, shared state in independent Settings, stale
+sheet dismissal and failure/check/retry. Native scene wiring is exercised here;
+the foundation catalog's `build_only` label remains specific to its Swift Testing
+accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
+real input-method composition, visual/contrast compliance or signed Keychain
+behavior. Local screenshots and the complete acceptance mapping remain private.
