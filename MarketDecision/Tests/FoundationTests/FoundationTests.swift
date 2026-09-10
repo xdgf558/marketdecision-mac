@@ -33,10 +33,10 @@ import GRDB
 @Suite struct ContractTests {
     let now = Date(timeIntervalSince1970: 1_783_000_000)
     func quote(tier: Timeliness = .realtime, flags: Set<QualityFlag> = [], age: Double? = 0, bid: String = "1", ask: String = "2") throws -> Quote {
-        Quote(symbol: "TEST", bid: try Money(bid), ask: try Money(ask), provenance: Provenance(providerID: "test", feedID: "qualified-fixture", sourceEventAt: age.map { now.addingTimeInterval(-$0) }, receivedAt: now, availableAt: nil, evidenceRef: "synthetic-test-contract", origin: .provider), timeliness: tier, quality: flags, qualifiedUsages: [.liveAnalysis])
+        Quote(symbol: "TEST", bid: try Money(bid), ask: try Money(ask), provenance: Provenance(providerID: "test", feedID: "qualified-fixture", sourceEventAt: age.map { now.addingTimeInterval(-$0) }, receivedAt: now, availableAt: nil, evidenceRef: "synthetic-test-contract", origin: .provider, endpointDescriptor: "fixture/quote", requestedAt: now, requestID: UUID(), versionID: "v1", versionKind: .sourceVersion, rawObjectRef: "fixture.raw", rawHash: String(repeating: "a", count: 64), normalizationVersion: "fixture.v1", licenseRef: "fixture.license"), timeliness: tier, quality: flags, qualifiedUsages: [.liveAnalysis])
     }
     func reason(_ quote: Quote, usage: Usage = .liveAnalysis) -> UnavailableReason? {
-        if case let .failure(reason) = quote.eligibility(for: usage, at: now) { return reason }; return nil
+        if case let .failure(reason) = quote.eligibility(for: usage, at: now, entitlement: EntitlementSnapshot(providerID: "test", feedID: "qualified-fixture", version: "fixture.v1", evidenceRef: "synthetic-rights", licenseRef: "fixture.license", capabilities: [.quote], usages: [.liveAnalysis], validFrom: now, validThrough: now)) { return reason }; return nil
     }
     @Test func sixtySecondBoundary() throws {
         #expect(try reason(quote(age: 60)) == nil)
