@@ -101,6 +101,7 @@ public struct CalculationContext: Sendable {
     public let inputs: [CalculationInputReference]
     public init(calculatedAt: Date, model: ResolvedModel, inputs: [CalculationInputReference]) throws {
         try model.validateForCalculation(at: calculatedAt)
+        guard !inputs.isEmpty else { throw RegistryError.invalidInputs }
         try model.validateInputs(inputs.map(\.role))
         var seen = Set<[String]>()
         for input in inputs {

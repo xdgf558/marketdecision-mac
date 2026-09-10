@@ -499,6 +499,12 @@ private struct TestMarketProvider: MarketDataProvider {
         let accepted = try CalculationContext(calculatedAt: fixtureNow, model: bound, inputs: [.init(role: "input", unit: .ratio, recordID: "a", provenance: p)])
         #expect(accepted.model.definition.reference == bound.definition.reference)
         #expect(accepted.model.parameters.reference == bound.parameters.reference)
+        // Even an all-optional schema cannot remove the foundation's nonempty-input contract.
+        let registry = ModelRegistry(), params = sampleParameters()
+        let optional = sampleModel(parameters: params, inputs: [.init(name: "input", unit: "ratio", role: .optional)])
+        try await registry.register(params); try await registry.register(optional)
+        let optionalBound = try await registry.resolve(reference: optional.reference, at: fixtureNow)
+        #expect(throws: RegistryError.invalidInputs) { try CalculationContext(calculatedAt: fixtureNow, model: optionalBound, inputs: []) }
     }
     @Test func repeatedRecordsCannotMasqueradeAsMultipleInputs() async throws {
         let params = sampleParameters(), registry = ModelRegistry()
