@@ -260,6 +260,8 @@ struct CredentialSettingsSection: View {
                 Label(message, systemImage: model.hasError ? "exclamationmark.triangle" : "checkmark.circle")
                     .foregroundStyle(model.hasError ? Color.red : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(message)
                     .accessibilityIdentifier("credentialMessage")
             }
         }
