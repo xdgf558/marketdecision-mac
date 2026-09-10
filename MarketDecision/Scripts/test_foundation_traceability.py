@@ -105,4 +105,16 @@ class SourceAccountingTests(unittest.TestCase):
         (self.root/self.catalog['sources'][0]['path']).write_text('// changed')
         self.assertNotEqual(before,input_hashes(self.root))
 
+    def test_error_interpolation_and_explicit_catch_aliases_fail(self):
+        target = self.root/'Sources/Unsafe.swift'
+        samples = [r'message = "\(error)"', r'message = #"\#(error)"#',
+                   'message = """\\(\n error)"""', r'message = "\(prefix + error)"',
+                   r'catch let failure { message = "\(failure)" }',
+                   'catch let failure { message = String(reflecting: failure) }']
+        for code in samples:
+            target.write_text(code)
+            with self.subTest(code=code), self.assertRaises(TraceError): validate_log_boundary(self.root)
+        target.write_text(r'let label = "\(record.id)"')
+        validate_log_boundary(self.root)
+
 if __name__ == '__main__': unittest.main()

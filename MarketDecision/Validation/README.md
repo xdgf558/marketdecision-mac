@@ -29,7 +29,9 @@ Logging accepts only a closed event type, through the same renderer used by the
 system sink and injected test sinks. Tests exercise credentials and error descriptions
 containing synthetic sensitive material, ambiguous write/delete failures, rejection,
 recovery and shared injection. The narrow source guard rejects common unreviewed output
-APIs/raw error formatting; it is not a Swift parser, full taint analysis or secret scanner.
+APIs/raw error formatting, including ordinary/raw-string interpolation of `error`
+and explicit catch aliases. It is lexical: assignment aliases and arbitrary Swift
+expressions are not fully traced. It is not a Swift parser, full taint analysis or secret scanner.
 The unchanged Debug-only diagnostic has a pinned source exception. The test-only
 codec's fixture stdout is outside the application logging boundary.
 
@@ -38,3 +40,12 @@ real suppliers/backup recovery and performance need their own evidence. Public C
 success cannot close those gates or authorize the next phase.
 
 Parameterized fixtures must provide distinct encodable arguments on both selected toolchains. Existing tuple fixtures use string arrays with unchanged values because Swift Testing 6.1 gives non-Encodable tuples the same unavailable case identity. The verifier continues to reject duplicate case identities.
+
+The production `WorkspaceModel` is execution-tested through injected preparation,
+quote providers and a shared event sink. Coverage includes failed/cancelled preparation,
+provider failure after a previous success, retry, already-cancelled and overlapping
+requests, and late responses from cancellation-ignoring dependencies. The local factory
+is exercised with a temporary database and the synthetic provider, without Keychain
+access. This does not automate native scene lifecycle, commands, sheets or actual
+Unified Log collection; the app entry remains `build_only` for those surfaces.
+Array-backed numeric fixtures assert their required lengths before indexing.
