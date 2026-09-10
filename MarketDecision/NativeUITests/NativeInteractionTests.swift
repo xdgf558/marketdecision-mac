@@ -111,11 +111,13 @@ import XCTest
         XCTAssertTrue(sheet.exists) // Raising the other window must not consume confirmation.
         independent.buttons["credentialCheck"].click()
         waitNoSheet()
+        // Check completion must retain the initiating window and restore its input.
+        app.typeText("SYNTHETIC-UI-settings")
+        waitEnabled(independent.buttons["credentialSave"])
         // Commands must come from the key Settings scene, not the other page.
         app.typeKey("l", modifierFlags: .command)
-        app.typeText("SYNTHETIC-UI-settings")
         app.typeKey("s", modifierFlags: .command)
-        XCTAssertTrue(independent.sheets.firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(independent.sheets.firstMatch.waitForExistence(timeout: 5))
         app.typeKey(.escape, modifierFlags: [])
         waitNoSheet()
     }

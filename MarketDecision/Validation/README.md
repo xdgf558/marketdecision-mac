@@ -72,3 +72,6 @@ exceptions. Its separate exact permission/identity check runs before and after
 native execution, with five rejection tests in addition to the seven result
 checks. The production permission verifier is unchanged; XCTest automation does
 not establish shipping-app sandbox behavior.
+
+The independent Settings test also requires input focus and its own confirmation
+sheet after another page’s older sheet is invalidated.

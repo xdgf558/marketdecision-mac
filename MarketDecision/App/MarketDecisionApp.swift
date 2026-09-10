@@ -410,7 +410,16 @@ private struct CredentialConfirmationHost: NSViewRepresentable {
         func dismiss() {
             guard let current = rendered else { return }
             rendered = nil
-            current.alert.window.sheetParent?.endSheet(current.alert.window, returnCode: .abort)
+            let parent = current.alert.window.sheetParent
+            let activeWindow = NSApp.isActive ? NSApp.keyWindow : nil
+            parent?.endSheet(current.alert.window, returnCode: .abort)
+            // Ending an old sheet can reactivate its parent on macOS 15. Preserve
+            // the other window the user was working in; do not activate the app.
+            if NSApp.isActive, let activeWindow, activeWindow !== parent,
+               activeWindow !== current.alert.window, activeWindow.isVisible,
+               !activeWindow.isMiniaturized {
+                activeWindow.makeKeyAndOrderFront(nil)
+            }
         }
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }

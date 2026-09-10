@@ -5,6 +5,9 @@ input-method candidate confirmation must not implicitly persist a credential;
 the Save button and Command-S remain explicit entry points. Existing enabled-state
 focus, confirmation IDs/revisions and Command-R/Command-D confirmation remain.
 The accessibility hint describes this behavior, and controls have stable test IDs.
+Programmatic invalidation also preserves another currently active application
+window when aborting an old sheet, so its parent does not take later input.
+This does not activate an inactive application or authorize storage writes.
 
 ## Native execution scope
 
