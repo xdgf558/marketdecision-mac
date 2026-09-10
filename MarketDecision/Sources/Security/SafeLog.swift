@@ -4,7 +4,7 @@ import OSLog
 public enum SecurityEvent: String, Sendable, CaseIterable {
     case credentialSaved, credentialDeleted, credentialReadFailed, providerRequestFailed
     case credentialCheckSucceeded, credentialSaveFailed, credentialDeleteFailed, credentialInputRejected
-    case localPreparationFailed, providerRequestCancelled
+    case localPreparationFailed, providerRequestCancelled, localPreparationCancelled
 }
 /// The only payload is a closed event. Both production output and test sinks use this renderer.
 public struct SafeLogRecord: Sendable, Equatable {

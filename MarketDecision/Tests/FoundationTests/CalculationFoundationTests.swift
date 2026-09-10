@@ -63,6 +63,7 @@ func resolvedSample() async throws -> ResolvedModel {
         ("99999999999999999999.999999999999999999", "1", "99999999999999999999.999999999999999999")
     ].map { [$0.0, $0.1, $0.2] })
     func exactDivision(_ vector: [String]) throws {
+        try #require(vector.count == 3, "A division fixture requires dividend, divisor and expected result")
         #expect(try Money(vector[0]).divided(by: vector[1]) == Money(vector[2]))
     }
     @Test func decimalInputNeverSilentlyUnderflowsOrAcceptsPartialText() throws {

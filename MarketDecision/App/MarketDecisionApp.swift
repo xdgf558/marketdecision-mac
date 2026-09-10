@@ -2,56 +2,6 @@ import SwiftUI
 import AppKit
 import AppComposition
 import DataContracts
-import SecuritySupport
-
-@MainActor @Observable final class WorkspaceModel {
-    private(set) var credentials: CredentialSettingsModel?
-    var quote: Quote?
-    var isLoading = false
-    private(set) var isPreparing = false
-    private(set) var initializationError: String?
-    var message: String?
-    private var environment: AppEnvironment?
-    private let log = SafeLog()
-
-    private func prepare() async {
-        guard environment == nil, !isPreparing else { return }
-        isPreparing = true
-        initializationError = nil
-        defer { isPreparing = false }
-        do {
-            let ready = try await Task.detached {
-                let folder = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    .appendingPathComponent("MarketDecision", isDirectory: true)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-                return try AppEnvironment.mock(databasePath: folder.appendingPathComponent("foundation.sqlite").path)
-            }.value
-            environment = ready
-            credentials = ready.makeCredentialSettings()
-        } catch {
-            log.write(.localPreparationFailed)
-            initializationError = "本地数据暂时不可用，请重试。"
-        }
-    }
-
-    func refresh() async {
-        guard !isLoading else { return }
-        isLoading = true
-        defer { isLoading = false }
-        await prepare()
-        guard let environment else { message = initializationError; return }
-        do {
-            quote = try await environment.quotes.quote(for: "DEMO")
-            message = "演示数据已刷新"
-        } catch is CancellationError {
-            log.write(.providerRequestCancelled)
-            message = "刷新已取消"
-        } catch {
-            log.write(.providerRequestFailed)
-            message = "演示数据暂时不可用，请重试。"
-        }
-    }
-}
 
 enum AppPage: String, CaseIterable, Identifiable {
     case workspace = "工作台", settings = "设置"
@@ -210,7 +160,7 @@ struct SettingsContent: View {
                 Text("演示数据不会用于真实分析，尚未连接真实数据源。")
                     .foregroundStyle(.secondary)
                 Button("测试演示连接") {
-                    Task { await model.refresh(); connectionMessage = model.quote == nil ? "演示连接失败，请重试。" : "演示连接正常；未访问真实数据服务。" }
+                    Task { let succeeded = await model.refresh(); connectionMessage = succeeded ? "演示连接正常；未访问真实数据服务。" : "演示连接失败，请重试。" }
                 }.disabled(model.isLoading || model.isPreparing || model.credentials == nil)
                 if let connectionMessage { Text(connectionMessage).foregroundStyle(.secondary) }
             }

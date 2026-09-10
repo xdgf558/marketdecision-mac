@@ -51,11 +51,15 @@ def validate_catalog(root, catalog):
 def validate_log_boundary(root):
     # Deliberately limited source guard, not a Swift parser or full taint/secret scanner.
     sinks = re.compile(r'\b(?:Logger|OSLog|NSLog|os_log|print|debugPrint|dump|fputs)\s*\(|FileHandle\.standard(?:Output|Error)')
-    raw_error = re.compile(r'\.localizedDescription\b|String\s*\(\s*(?:describing|reflecting)\s*:\s*error\b')
     for name in source_inventory(root):
         if name.startswith('Tools/'):
             continue # Test-only codec writes its synthetic fixture to stdout; not in the application.
         text = safe_file(root, name).read_text()
+        # Also check ordinary/raw/multiline interpolation and explicit catch-let aliases.
+        # Lexical guard only: it does not follow assignments or parse all Swift expressions.
+        error_names = {'error'} | set(re.findall(r'\bcatch\s+(?:let|var)\s+(\w+)', text))
+        names = '(?:' + '|'.join(re.escape(n) for n in sorted(error_names)) + ')'
+        raw_error = re.compile(r'\.localizedDescription\b|String\s*\(\s*(?:describing|reflecting)\s*:\s*' + names + r'\b|\\#*\([^\"]*?\b' + names + r'\b')
         require(not raw_error.search(text), 'Raw error formatting enters application source: ' + name)
         if name not in ['Sources/Security/SafeLog.swift', 'App/KeychainDiagnostic.swift']:
             require(not sinks.search(text), 'Unreviewed output API in application source: ' + name)

@@ -56,7 +56,7 @@ private actor BoundaryCredentials: CredentialStorage {
         for event in SecurityEvent.allCases { log.write(event) }
         #expect(capture.messages == ["credentialSaved", "credentialDeleted", "credentialReadFailed", "providerRequestFailed",
             "credentialCheckSucceeded", "credentialSaveFailed", "credentialDeleteFailed", "credentialInputRejected",
-            "localPreparationFailed", "providerRequestCancelled"])
+            "localPreparationFailed", "providerRequestCancelled", "localPreparationCancelled"])
     }
     @Test func sensitiveErrorsNeverEnterLogsOrDisplayAndCheckCanRecover() async {
         let capture = LogCapture(), store = BoundaryCredentials(error: SensitiveFailure(capture: capture))
