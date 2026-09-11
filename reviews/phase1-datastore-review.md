@@ -23,6 +23,10 @@ Exact numeric values remain decimal text in SQLite. Observation payloads use sor
 
 Closed endpoint descriptors are now mapped to provider capabilities. A provider response whose endpoint does not match the dispatched capability is rejected before publication.
 
+This slice contains no production adapter or production ingest call site. Direct calls to `BusinessDataStore.ingest` exist only in synthetic tests. The provider contract verifies endpoint/capability equality when accepting a response, while the store independently rechecks provider/feed/endpoint and source metadata coherence. The first real adapter pipeline must pass provider-result acceptance before constructing storage records; this review does not claim end-to-end adapter-to-store proof.
+
+Frozen research objects own copied bytes in the snapshot tables and do not retain source-cache rows through a foreign key. Cache purge can therefore remove an unreferenced source document without changing frozen snapshot bytes. A workflow that must retain an original filing or PDF must freeze those source bytes into its research graph or prohibit their purge; that product policy is outside this slice.
+
 Prepared restore/delete plans are process-local and expire on restart. The database and immutable graphs persist; an old approval is intentionally not treated as a durable authorization token. Snapshot graph rewrites currently use one database transaction and have not received scale or crash-injection performance qualification.
 
 ## Verification

@@ -178,6 +178,9 @@ public actor BusinessDataStore: SnapshotStorage {
 
     /// Document and observation rows enter together. Replaying identical bytes is a no-op;
     /// reusing an immutable identity with different bytes or metadata fails the whole transaction.
+    /// Production pipelines must accept the provider result against its dispatched request before
+    /// calling this storage boundary. This method rechecks document/observation coherence, but it
+    /// cannot infer the original request capability; direct callers in this slice are synthetic tests.
     @discardableResult
     public func ingest(document: SourceDocument, observations: [SeriesObservation], expectedRevision: UUID) throws -> BusinessIngestReceipt {
         try observations.forEach { try Self.validate($0, against: document) }
