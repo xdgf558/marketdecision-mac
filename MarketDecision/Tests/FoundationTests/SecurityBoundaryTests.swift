@@ -112,7 +112,7 @@ private actor BoundaryCredentials: CredentialStorage {
     }
     @Test func environmentSharesInjectedLogWithoutExposingSecretOrReference() async throws {
         let capture = LogCapture(), store = BoundaryCredentials(error: SensitiveFailure(capture: capture))
-        let environment = AppEnvironment(quotes: MockQuoteProvider(), database: try DatabaseStore(path: ":memory:"), credentials: store, log: SafeLog(sink: capture))
+        let environment = try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"), credentials: store, log: SafeLog(sink: capture))
         let first = environment.makeCredentialSettings(), second = environment.makeCredentialSettings()
         await first.refresh(); #expect(await first.save(privateFixture, expectedRevision: first.revision))
         await second.refresh(); #expect(await second.delete(expectedRevision: second.revision))

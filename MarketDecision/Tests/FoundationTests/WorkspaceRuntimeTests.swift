@@ -76,7 +76,7 @@ private actor RuntimePreparation {
     func make(log: SafeLog) async throws -> AppEnvironment {
         await gate.enter()
         if let firstError { self.firstError = nil; throw firstError }
-        return AppEnvironment(quotes: quotes, database: try DatabaseStore(path: ":memory:"), credentials: store, log: log)
+        return try AppEnvironment(quotes: quotes, database: DatabaseStore(path: ":memory:"), credentials: store, log: log)
     }
 }
 
@@ -198,7 +198,8 @@ private actor RuntimePreparation {
         defer { try? FileManager.default.removeItem(at: folder) }
         let capture = RuntimeLog()
         let ready = try await AppEnvironment.prepareLocal(log: SafeLog(sink: capture), directory: folder)
-        #expect(try ready.database.migrationVersions() == ["foundation.v1"])
+        #expect(try ready.database.migrationVersions() == ["business.p1.v1", "foundation.v1"])
+        #expect(try await ready.businessData.counts() == .init(sourceDocuments: 0, observations: 0, snapshotObjects: 0, snapshotRoots: 0))
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("foundation.sqlite").path))
         let quote = try await ready.quotes.quote(for: "DEMO")
         #expect(quote.quality.contains(.synthetic))

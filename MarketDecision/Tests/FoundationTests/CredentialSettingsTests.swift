@@ -27,7 +27,7 @@ private actor MemoryCredentials: CredentialStorage {
 @Suite @MainActor struct CredentialSettingsTests {
     @Test func environmentInjectsTheSameStoreAcrossSettingsModels() async throws {
         let store = MemoryCredentials()
-        let environment = AppEnvironment(quotes: MockQuoteProvider(), database: try DatabaseStore(path: ":memory:"), credentials: store)
+        let environment = try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"), credentials: store)
         let first = environment.makeCredentialSettings()
         let second = environment.makeCredentialSettings()
         await first.refresh()
