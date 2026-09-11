@@ -20,9 +20,13 @@ public protocol FundamentalsProvider: ProviderIdentity {
     associatedtype Identity: ProviderRecord
     associatedtype Submission: ProviderRecord
     associatedtype Facts: ProviderRecord
-    func companyIdentity(request: ProviderRequest) async throws -> ProviderResult<Identity>
-    func submissions(request: ProviderRequest) async throws -> ProviderResult<Submission>
-    func companyFacts(request: ProviderRequest) async throws -> ProviderResult<Facts>
+    associatedtype FilingIndex: ProviderRecord
+    associatedtype FilingDocument: ProviderRecord
+    func companyIdentity(request: ProviderRequest) async throws -> ProviderPayloadResponse<Identity>
+    func submissions(request: ProviderRequest) async throws -> ProviderPayloadResponse<Submission>
+    func companyFacts(request: ProviderRequest) async throws -> ProviderPayloadResponse<Facts>
+    func filingIndex(request: ProviderRequest) async throws -> ProviderPayloadResponse<FilingIndex>
+    func filingDocument(request: ProviderRequest) async throws -> ProviderPayloadResponse<FilingDocument>
 }
 public protocol MacroDataProvider: ProviderIdentity {
     var supportsVintages: Bool { get }

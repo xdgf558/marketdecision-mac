@@ -315,6 +315,11 @@ public actor BusinessDataStore: SnapshotStorage {
                 WHERE NOT EXISTS (SELECT 1 FROM p1_observations WHERE source_reference = p1_source_documents.reference)
                   AND NOT EXISTS (SELECT 1 FROM p1_market_sessions WHERE source_reference = p1_source_documents.reference)
                   AND NOT EXISTS (SELECT 1 FROM p1_company_events WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_sec_identities WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_sec_submissions WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_sec_facts WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_sec_filing_indexes WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_sec_filing_documents WHERE source_reference = p1_source_documents.reference)
                 """)
             let afterObservations = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_observations")!
             let afterDocuments = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_source_documents")!
