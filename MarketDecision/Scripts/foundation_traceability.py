@@ -11,7 +11,8 @@ def require(condition, message):
 
 def source_inventory(root):
     return {str(p.relative_to(root)) for folder in ['Sources', 'App', 'Tools']
-            for p in (root / folder).rglob('*.swift')}
+            for p in (root / folder).rglob('*')
+            if p.is_file() and (p.suffix == '.swift' or ('Resources' in p.parts and p.suffix == '.json'))}
 
 def safe_file(root, name):
     p = PurePosixPath(name)

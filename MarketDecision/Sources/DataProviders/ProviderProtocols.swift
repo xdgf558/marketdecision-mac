@@ -32,6 +32,12 @@ public protocol LedgerValuationProvider: ProviderIdentity {
     associatedtype Mark: ProviderRecord
     func marks(request: ProviderRequest) async throws -> ProviderResult<Mark>
 }
+public protocol MarketCalendarProvider: ProviderIdentity {
+    func sessions(request: ProviderRequest) async throws -> CalendarProviderResponse<MarketSessionRecord>
+}
+public protocol CorporateEventsProvider: ProviderIdentity {
+    func events(request: ProviderRequest) async throws -> CalendarProviderResponse<CorporateEventRecord>
+}
 /// No importer or write implementation is included in the foundation contracts.
 public struct ImportPreviewToken: Sendable, Equatable {
     public let id: UUID, baseRevision: UUID

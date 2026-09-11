@@ -469,7 +469,7 @@ private struct TestMarketProvider: MarketDataProvider {
         let observations = DataWindow.observationDates(.init(start: .init(year: 2025, month: 3, day: 31), end: .init(year: 2025, month: 3, day: 31)))
         let events = DataWindow.sourceEvents(.init(start: fixtureNow, end: fixtureNow))
         for capability in ProviderCapability.allCases {
-            let usesObservations = capability == .macroSeries || capability == .companyFacts
+            let usesObservations = capability == .macroSeries || capability == .companyFacts || capability == .marketCalendar
             try request(capability, range: usesObservations ? observations : events).validate()
             #expect(throws: ContractError.invalidRequest) { try request(capability, range: usesObservations ? events : observations).validate() }
         }

@@ -2,6 +2,7 @@ import Foundation
 import GRDB
 import CoreDomain
 import DataContracts
+import DataProviders
 
 public enum BusinessStoreError: Error, Equatable {
     case invalidSourceDocument
@@ -41,7 +42,7 @@ public struct SourceDocument: Sendable {
         self.contentHash = digest(payload)
     }
 
-    fileprivate var metadataHash: String {
+    var metadataHash: String {
         get throws {
             digest(try CanonicalValue.object([
                 .init("reference", .string(reference)), .init("provider", .string(providerID)),
@@ -146,8 +147,8 @@ private struct SQLiteCandidate: Sendable {
 /// Phase 1 SQLite boundary for raw source records, point-in-time observations and immutable
 /// snapshot graphs. All mutations compare a persisted revision inside the same transaction.
 public actor BusinessDataStore: SnapshotStorage {
-    private let database: DatabaseStore
-    private var currentRevision: UUID
+    let database: DatabaseStore
+    var currentRevision: UUID
     private var plans: [UUID: SQLiteCandidate] = [:]
     private var failNextCommit = false
 
@@ -312,6 +313,8 @@ public actor BusinessDataStore: SnapshotStorage {
             try db.execute(sql: """
                 DELETE FROM p1_source_documents
                 WHERE NOT EXISTS (SELECT 1 FROM p1_observations WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_market_sessions WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_company_events WHERE source_reference = p1_source_documents.reference)
                 """)
             let afterObservations = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_observations")!
             let afterDocuments = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_source_documents")!

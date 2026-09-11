@@ -15,7 +15,7 @@ public struct DatabaseMigration: Sendable {
 public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
     public init(path: String, migrations: [DatabaseMigration] = []) throws {
-        let coreMigrations = [Self.phase1BusinessMigration]
+        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -146,5 +146,47 @@ public struct DatabaseStore: Sendable {
                     REFERENCES p1_snapshot_objects(namespace, object_id, object_version) ON DELETE RESTRICT
             ) WITHOUT ROWID
             """)
+    }
+
+    private static let phase1CalendarMigration = DatabaseMigration(identifier: "business.p1.v2") { db in
+        try db.execute(sql: """
+            CREATE TABLE p1_market_sessions (
+                market TEXT NOT NULL,
+                session_date TEXT NOT NULL,
+                record_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                available_at_ms INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                opens_at_ms INTEGER,
+                closes_at_ms INTEGER,
+                source_reference TEXT NOT NULL,
+                record_hash TEXT NOT NULL,
+                record_json BLOB NOT NULL,
+                PRIMARY KEY (market, session_date, version_id),
+                FOREIGN KEY (source_reference) REFERENCES p1_source_documents(reference) ON DELETE RESTRICT,
+                CHECK (length(record_hash) = 64)
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: "CREATE INDEX p1_market_sessions_asof ON p1_market_sessions (market, session_date, available_at_ms)")
+        try db.execute(sql: """
+            CREATE TABLE p1_company_events (
+                record_id TEXT NOT NULL,
+                version_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                event_date TEXT,
+                availability_known INTEGER NOT NULL CHECK (availability_known IN (0, 1)),
+                available_at_ms INTEGER,
+                source_reference TEXT NOT NULL,
+                record_hash TEXT NOT NULL,
+                record_json BLOB NOT NULL,
+                PRIMARY KEY (record_id, version_id),
+                FOREIGN KEY (source_reference) REFERENCES p1_source_documents(reference) ON DELETE RESTRICT,
+                CHECK (length(record_hash) = 64),
+                CHECK ((availability_known = 0 AND available_at_ms IS NULL) OR
+                       (availability_known = 1 AND available_at_ms IS NOT NULL))
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: "CREATE INDEX p1_company_events_lookup ON p1_company_events (symbol, kind, event_date, availability_known, available_at_ms)")
     }
 }

@@ -1,12 +1,16 @@
 import Foundation
 
 public enum ProviderCapability: String, Sendable, Codable, CaseIterable {
-    case quote, bars, optionExpirations, optionChain, companyIdentity, submissions, companyFacts, macroSeries, ledgerMarks
+    case quote, bars, marketCalendar, earningsCalendar, dividends
+    case optionExpirations, optionChain, companyIdentity, submissions, companyFacts, macroSeries, ledgerMarks
 
     public var endpointDescriptor: EndpointDescriptor {
         switch self {
         case .quote: .quote
         case .bars: .bars
+        case .marketCalendar: .marketCalendar
+        case .earningsCalendar: .earningsCalendar
+        case .dividends: .dividends
         case .optionExpirations: .optionExpirations
         case .optionChain: .optionChain
         case .companyIdentity: .companyIdentity
@@ -91,10 +95,10 @@ public struct ProviderRequest: Sendable, Codable, Equatable {
             // Facts/series describe calendar observations. Other capabilities select source events
             // (option-expiration requests select the snapshot event, not future contract expiry).
             switch (capability, range) {
-            case (.companyFacts, .observationDates), (.macroSeries, .observationDates): break
+            case (.companyFacts, .observationDates), (.macroSeries, .observationDates), (.marketCalendar, .observationDates): break
             case (.quote, .sourceEvents), (.bars, .sourceEvents), (.optionExpirations, .sourceEvents),
                  (.optionChain, .sourceEvents), (.companyIdentity, .sourceEvents), (.submissions, .sourceEvents),
-                 (.ledgerMarks, .sourceEvents): break
+                 (.ledgerMarks, .sourceEvents), (.earningsCalendar, .sourceEvents), (.dividends, .sourceEvents): break
             default: throw ContractError.invalidRequest
             }
         }

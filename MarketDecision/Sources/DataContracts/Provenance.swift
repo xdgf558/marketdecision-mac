@@ -21,6 +21,8 @@ public enum LegacyDataTier: String, Sendable { case realtime, delayed, endOfDay,
 /// Concrete endpoint configuration belongs to the adapter configuration version.
 public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
     case quote = "market/quote", bars = "market/bars"
+    case marketCalendar = "calendar/market-sessions"
+    case earningsCalendar = "calendar/earnings", dividends = "calendar/dividends"
     case optionExpirations = "market/option-expirations", optionChain = "market/option-chain"
     case companyIdentity = "fundamentals/company-identity", submissions = "fundamentals/submissions"
     case companyFacts = "fundamentals/company-facts", macroSeries = "macro/series", ledgerMarks = "ledger/marks"
@@ -32,6 +34,9 @@ public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
         switch self {
         case .quote, .syntheticQuote: .quote
         case .bars: .bars
+        case .marketCalendar: .marketCalendar
+        case .earningsCalendar: .earningsCalendar
+        case .dividends: .dividends
         case .optionExpirations: .optionExpirations
         case .optionChain: .optionChain
         case .companyIdentity: .companyIdentity
@@ -45,7 +50,7 @@ public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
 }
 
 /// Calendar date, not an instant. Construction and decoding do not imply validation.
-public struct MarketDate: Sendable, Codable, Comparable {
+public struct MarketDate: Sendable, Codable, Comparable, Hashable {
     public let year: Int, month: Int, day: Int
     public init(year: Int, month: Int, day: Int) { self.year = year; self.month = month; self.day = day }
     public static func < (lhs: Self, rhs: Self) -> Bool {
@@ -57,6 +62,34 @@ public struct MarketDate: Sendable, Codable, Comparable {
               calendar.component(.year, from: date) == year, calendar.component(.month, from: date) == month,
               calendar.component(.day, from: date) == day else { throw ContractError.invalidTime }
         return date
+    }
+    public var iso8601: String { String(format: "%04d-%02d-%02d", year, month, day) }
+    public init(iso8601 value: String) throws {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
+        else { throw ContractError.invalidTime }
+        self.init(year: year, month: month, day: day)
+        _ = try start(in: TimeZone(secondsFromGMT: 0)!)
+    }
+    public func addingDays(_ count: Int) throws -> Self {
+        let zone = TimeZone(secondsFromGMT: 0)!
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        guard let value = calendar.date(byAdding: .day, value: count, to: try start(in: zone)) else { throw ContractError.invalidTime }
+        let components = calendar.dateComponents([.year, .month, .day], from: value)
+        guard let year = components.year, let month = components.month, let day = components.day else { throw ContractError.invalidTime }
+        return Self(year: year, month: month, day: day)
+    }
+    public func days(through end: Self) throws -> [Self] {
+        guard self <= end else { throw ContractError.invalidRange }
+        var result: [Self] = [], cursor = self
+        while cursor <= end {
+            guard result.count < 100_000 else { throw ContractError.invalidRange }
+            result.append(cursor)
+            if cursor == end { break }
+            cursor = try cursor.addingDays(1)
+        }
+        return result
     }
 }
 
