@@ -471,11 +471,11 @@ private final class CodecTestBundleAnchor: NSObject {}
         }
         #expect(throws: Failure.injected) { try DatabaseStore(path: path, migrations: [first, failing]) }
         let reopened = try DatabaseStore(path: path, migrations: [first])
-        #expect(try reopened.migrationVersions() == ["business.p1.v1","foundation.v1","synthetic.v1"])
+        #expect(try reopened.migrationVersions() == ["business.p1.v1","business.p1.v2","foundation.v1","synthetic.v1"])
         #expect(try reopened.read { try String.fetchOne($0, sql: "SELECT value FROM fixture") } == "original")
         #expect(try reopened.read { try !$0.tableExists("transient_fixture") })
         let successful = DatabaseMigration(identifier: "synthetic.v2") { try $0.execute(sql: "ALTER TABLE fixture ADD COLUMN note TEXT") }
-        #expect(try DatabaseStore(path: path, migrations: [first, successful]).migrationVersions() == ["business.p1.v1","foundation.v1","synthetic.v1","synthetic.v2"])
+        #expect(try DatabaseStore(path: path, migrations: [first, successful]).migrationVersions() == ["business.p1.v1","business.p1.v2","foundation.v1","synthetic.v1","synthetic.v2"])
     }
     @Test func phaseOneSchemaUpgradesFoundationDatabaseWithoutErasingExistingRows() throws {
         let folder = try temporaryFolder(); defer { try? FileManager.default.removeItem(at: folder) }
@@ -487,7 +487,7 @@ private final class CodecTestBundleAnchor: NSObject {}
         }
         try migrator.migrate(legacy)
         let upgraded = try DatabaseStore(path: path)
-        #expect(try upgraded.migrationVersions() == ["business.p1.v1", "foundation.v1"])
+        #expect(try upgraded.migrationVersions() == ["business.p1.v1", "business.p1.v2", "foundation.v1"])
         #expect(try upgraded.read { try String.fetchOne($0, sql: "SELECT value FROM retained_fixture") } == "keep")
         #expect(try upgraded.read { try $0.tableExists("p1_observations") && $0.tableExists("p1_snapshot_objects") })
     }
@@ -513,7 +513,7 @@ private final class CodecTestBundleAnchor: NSObject {}
         let store = try DatabaseStore(path: path)
         try store.transaction { try $0.execute(sql: "INSERT INTO grdb_migrations VALUES ('future.v9')") }
         #expect(throws: MigrationError.unsupportedHistory) { try DatabaseStore(path: path) }
-        #expect(try store.migrationVersions() == ["business.p1.v1","foundation.v1","future.v9"])
+        #expect(try store.migrationVersions() == ["business.p1.v1","business.p1.v2","foundation.v1","future.v9"])
         let plan = [DatabaseMigration(identifier: "missing.v1") { _ in }, DatabaseMigration(identifier: "future.v9") { _ in }]
         #expect(throws: MigrationError.unsupportedHistory) { try DatabaseStore(path: path, migrations: plan) }
         #expect(throws: MigrationError.invalidCatalog) { try DatabaseStore(path: ":memory:", migrations: [.init(identifier: "foundation.v1") { _ in }]) }
