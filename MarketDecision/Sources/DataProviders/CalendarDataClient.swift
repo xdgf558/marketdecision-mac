@@ -24,35 +24,41 @@ public struct ProviderRawPayload: Sendable {
     public var contentHash: String { digest(bytes) }
 }
 
-public struct CalendarProviderResponse<Item: ProviderRecord>: Sendable {
+public struct ProviderPayloadResponse<Item: ProviderRecord>: Sendable {
     public let result: ProviderResult<Item>
     public let rawPayload: ProviderRawPayload
-    public init(result: ProviderResult<Item>, rawPayload: ProviderRawPayload) {
-        self.result = result; self.rawPayload = rawPayload
+    public let continuationTokens: [String]
+    public init(result: ProviderResult<Item>, rawPayload: ProviderRawPayload, continuationTokens: [String] = []) {
+        self.result = result; self.rawPayload = rawPayload; self.continuationTokens = continuationTokens
     }
 }
+public typealias CalendarProviderResponse<Item: ProviderRecord> = ProviderPayloadResponse<Item>
 
 /// The only public input accepted by calendar/event persistence. Its initializer is internal,
 /// so production code can obtain it only after ProviderSession accepts the exact response.
 public struct AcceptedProviderPayload<Item: ProviderRecord>: Sendable {
     public let exchange: ProviderExchange<Item>
     public let rawPayload: ProviderRawPayload
-    init(exchange: ProviderExchange<Item>, rawPayload: ProviderRawPayload) {
-        self.exchange = exchange; self.rawPayload = rawPayload
+    public let continuationTokens: [String]
+    init(exchange: ProviderExchange<Item>, rawPayload: ProviderRawPayload, continuationTokens: [String]) {
+        self.exchange = exchange; self.rawPayload = rawPayload; self.continuationTokens = continuationTokens
     }
 }
 
-private func accept<Item: ProviderRecord>(_ response: CalendarProviderResponse<Item>,
-                                          using session: ProviderSession) throws -> AcceptedProviderPayload<Item> {
+func acceptProviderPayload<Item: ProviderRecord>(_ response: ProviderPayloadResponse<Item>,
+                                                 using session: ProviderSession) throws -> AcceptedProviderPayload<Item> {
     let exchange = try session.accept(response.result)
     let raw = response.rawPayload
-    guard raw.storageAvailableAt <= response.result.receivedAt,
+    guard Set(response.continuationTokens).count == response.continuationTokens.count,
+          response.continuationTokens.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
+          response.result.nextPageToken == response.continuationTokens.first,
+          raw.storageAvailableAt <= response.result.receivedAt,
           raw.licenseRef == exchange.entitlement.licenseRef,
           exchange.result.items.allSatisfy({ item in
               item.provenance.rawObjectRef == raw.reference && item.provenance.rawHash == raw.contentHash
                   && item.provenance.evidenceRef == raw.evidenceRef && item.provenance.licenseRef == raw.licenseRef
           }) else { throw ContractError.mismatchedSource }
-    return AcceptedProviderPayload(exchange: exchange, rawPayload: raw)
+    return AcceptedProviderPayload(exchange: exchange, rawPayload: raw, continuationTokens: response.continuationTokens)
 }
 
 public struct MarketCalendarClient<Provider: MarketCalendarProvider>: Sendable {
@@ -65,7 +71,7 @@ public struct MarketCalendarClient<Provider: MarketCalendarProvider>: Sendable {
         let session = try ProviderSession(request: request, capabilities: provider.capabilitySnapshot, entitlement: entitlement)
         let response = try await provider.sessions(request: request)
         try Task.checkCancellation()
-        return try accept(response, using: session)
+        return try acceptProviderPayload(response, using: session)
     }
 }
 
@@ -80,6 +86,6 @@ public struct CorporateEventsClient<Provider: CorporateEventsProvider>: Sendable
         let session = try ProviderSession(request: request, capabilities: provider.capabilitySnapshot, entitlement: entitlement)
         let response = try await provider.events(request: request)
         try Task.checkCancellation()
-        return try accept(response, using: session)
+        return try acceptProviderPayload(response, using: session)
     }
 }

@@ -10,23 +10,23 @@ let package = Package(
         .target(name: "CoreCalculations", dependencies: ["CoreDomain"], path: "Sources/CoreCalculations"),
         .target(name: "DataContracts", dependencies: ["CoreDomain"], path: "Sources/DataContracts"),
         .target(name: "DataProviders", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/DataProviders"),
-        .target(name: "SECProvider", dependencies: ["DataProviders"], path: "Sources/SECProvider"),
+        .target(name: "SECProvider", dependencies: ["CoreDomain", "DataContracts", "DataProviders"], path: "Sources/SECProvider"),
         .target(name: "MarketDataProviders", dependencies: ["CoreDomain", "DataContracts", "DataProviders"], path: "Sources/MarketDataProviders",
                 resources: [.process("Resources")]),
         .target(name: "MacroProviders", dependencies: ["DataProviders"], path: "Sources/MacroProviders"),
-        .target(name: "FundamentalsEngine", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/FundamentalsEngine"),
+        .target(name: "FundamentalsEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/FundamentalsEngine"),
         .target(name: "OptionsAnalytics", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/OptionsAnalytics"),
         .target(name: "BacktestEngine", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/BacktestEngine"),
         .target(name: "PortfolioEngine", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/PortfolioEngine"),
         .target(name: "DecisionJournal", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/DecisionJournal"),
         .target(name: "AlertEngine", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AlertEngine"),
-        .target(name: "Persistence", dependencies: ["CoreDomain", "DataContracts", "DataProviders", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),
+        .target(name: "Persistence", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "FundamentalsEngine", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),
         .target(name: "SecuritySupport", dependencies: [], path: "Sources/Security"),
         .target(name: "AIInsights", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AIInsights"),
         .target(name: "UIComponents", dependencies: [], path: "Sources/UIComponents"),
         .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "Persistence", "SecuritySupport"], path: "Sources/AppComposition"),
         .executableTarget(name: "FoundationCodecProbe", dependencies: ["CoreDomain"], path: "Tools/FoundationCodecProbe"),
-        .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "MarketDataProviders", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")])
+        .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "MarketDataProviders", "FundamentalsEngine", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")])
     ],
     swiftLanguageModes: [.v6]
 )

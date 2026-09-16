@@ -3,24 +3,6 @@ import CoreDomain
 import DataContracts
 import DataProviders
 
-public struct HTTPPayload: Sendable {
-    public let statusCode: Int
-    public let mediaType: String?
-    public let body: Data
-    public init(statusCode: Int, mediaType: String?, body: Data) {
-        self.statusCode = statusCode; self.mediaType = mediaType; self.body = body
-    }
-}
-public protocol HTTPTransport: Sendable { func send(_ request: URLRequest) async throws -> HTTPPayload }
-public struct URLSessionHTTPTransport: HTTPTransport {
-    public init() {}
-    public func send(_ request: URLRequest) async throws -> HTTPPayload {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ProviderFailure.malformedResponse }
-        return HTTPPayload(statusCode: http.statusCode, mediaType: http.mimeType, body: data)
-    }
-}
-
 public enum AlphaVantageAdapterError: Error, Equatable { case invalidConfiguration, malformedCSV }
 
 /// Free-key candidate adapter. It exposes provider responses only; callers must separately supply

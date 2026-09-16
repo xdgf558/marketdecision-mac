@@ -79,8 +79,8 @@ import GRDB
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let path = folder.appendingPathComponent("test.sqlite").path
-        #expect(try DatabaseStore(path: path).migrationVersions() == ["business.p1.v1", "business.p1.v2", "foundation.v1"])
-        #expect(try DatabaseStore(path: path).migrationVersions() == ["business.p1.v1", "business.p1.v2", "foundation.v1"])
+        #expect(try DatabaseStore(path: path).migrationVersions() == ["business.p1.v1", "business.p1.v2", "business.p1.v3", "foundation.v1"])
+        #expect(try DatabaseStore(path: path).migrationVersions() == ["business.p1.v1", "business.p1.v2", "business.p1.v3", "foundation.v1"])
     }
     @Test func failedMigrationRollsBack() throws {
         let db = try DatabaseQueue(); var migrator = DatabaseMigrator()

@@ -2,7 +2,8 @@ import Foundation
 
 public enum ProviderCapability: String, Sendable, Codable, CaseIterable {
     case quote, bars, marketCalendar, earningsCalendar, dividends
-    case optionExpirations, optionChain, companyIdentity, submissions, companyFacts, macroSeries, ledgerMarks
+    case optionExpirations, optionChain, companyIdentity, submissions, companyFacts, filingIndex, filingDocument
+    case macroSeries, ledgerMarks
 
     public var endpointDescriptor: EndpointDescriptor {
         switch self {
@@ -16,6 +17,8 @@ public enum ProviderCapability: String, Sendable, Codable, CaseIterable {
         case .companyIdentity: .companyIdentity
         case .submissions: .submissions
         case .companyFacts: .companyFacts
+        case .filingIndex: .filingIndex
+        case .filingDocument: .filingDocument
         case .macroSeries: .macroSeries
         case .ledgerMarks: .ledgerMarks
         }
@@ -98,6 +101,7 @@ public struct ProviderRequest: Sendable, Codable, Equatable {
             case (.companyFacts, .observationDates), (.macroSeries, .observationDates), (.marketCalendar, .observationDates): break
             case (.quote, .sourceEvents), (.bars, .sourceEvents), (.optionExpirations, .sourceEvents),
                  (.optionChain, .sourceEvents), (.companyIdentity, .sourceEvents), (.submissions, .sourceEvents),
+                 (.filingIndex, .sourceEvents), (.filingDocument, .sourceEvents),
                  (.ledgerMarks, .sourceEvents), (.earningsCalendar, .sourceEvents), (.dividends, .sourceEvents): break
             default: throw ContractError.invalidRequest
             }

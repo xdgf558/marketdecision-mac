@@ -25,7 +25,9 @@ public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
     case earningsCalendar = "calendar/earnings", dividends = "calendar/dividends"
     case optionExpirations = "market/option-expirations", optionChain = "market/option-chain"
     case companyIdentity = "fundamentals/company-identity", submissions = "fundamentals/submissions"
-    case companyFacts = "fundamentals/company-facts", macroSeries = "macro/series", ledgerMarks = "ledger/marks"
+    case companyFacts = "fundamentals/company-facts"
+    case filingIndex = "fundamentals/filing-index", filingDocument = "fundamentals/filing-document"
+    case macroSeries = "macro/series", ledgerMarks = "ledger/marks"
     case brokerImport = "import/broker", calculation = "derived/calculation", syntheticQuote = "synthetic/quote"
 
     /// The provider capability represented by this closed operation. Local-only operations
@@ -42,6 +44,8 @@ public enum EndpointDescriptor: String, Sendable, Codable, CaseIterable {
         case .companyIdentity: .companyIdentity
         case .submissions: .submissions
         case .companyFacts: .companyFacts
+        case .filingIndex: .filingIndex
+        case .filingDocument: .filingDocument
         case .macroSeries: .macroSeries
         case .ledgerMarks: .ledgerMarks
         case .brokerImport, .calculation: nil
