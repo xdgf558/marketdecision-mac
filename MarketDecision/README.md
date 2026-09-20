@@ -1,43 +1,34 @@
-# Phase 0 native foundation
+# Native foundation and Phase 1 data slices
 
-This is a local-first SwiftUI foundation demo, not a completed investment application. The macOS deployment target is 15.0. Development validation used Xcode 27 beta 6 (27A5252f), Swift 6.4, as explicitly selected for this iteration; that is not a release-toolchain qualification.
+MarketDecision is a local-first macOS SwiftUI application. The deployment target is macOS 15.0. Phase 0 has been approved; Phase 1 and its exit gate remain open. The running application still shows a synthetic DEMO quote and settings, with no real market provider or financial-analysis workflow connected.
 
 ## Build and test
 
-Open `App/MarketDecision.xcodeproj` and select the shared `MarketDecision` scheme. The development bundle identifier is the placeholder `local.marketdecision.development`.
-
-From the repository root, set `DEVELOPER_DIR` to your installed Xcode's `Contents/Developer` directory, then run:
+Open `App/MarketDecision.xcodeproj` and select `MarketDecision`. Select an installed Xcode explicitly for validation:
 
 ```sh
-bash MarketDecision/Scripts/verify-local.sh
+DEVELOPER_DIR=<selected Xcode>/Contents/Developer bash MarketDecision/Scripts/verify-ci.sh all
 ```
 
-The script requires an explicit toolchain path, runs a structural boundary/pin check, the included Swift tests and an arm64 Debug build. It does not install tools, accept licenses or change global `xcode-select`. Initial dependency resolution needs network access. GRDB 7.11.1 is pinned to an exact revision in both resolution files.
+Run this from the clean public repository. It checks the tracked-file boundary, module boundaries, UTC/traceability checks, the fixed Swift test catalog, Debug/Release builds, effective demo permissions and Release diagnostic isolation. Initial resolution requires network access to the pinned GRDB 7.11.1 dependency. It does not install tools or change global xcode-select. Local development uses the user-selected Xcode 27 beta 6; hosted CI uses its separately declared toolchain. CI status must be checked for the exact commit.
 
-## Implemented slice
+The optional native interaction check is `bash MarketDecision/Scripts/verify-native-ui.sh` with the same explicit `DEVELOPER_DIR`. It uses a separate synthetic in-memory host and is not production Keychain or sandbox evidence. See [CI scope](Scripts/CI.md) and [test accounting](Validation/README.md).
 
-- Native workspace and settings navigation, visibly synthetic DEMO quote, refresh, mock connection test and persistent appearance preference. UI remains iterative.
-- Swift 6 package targets and dependency injection through AppEnvironment. Future analytics engines are empty boundaries.
-- Quote-provider protocol, deterministic mock, basic provenance and four-axis data types. Real-data qualification, full timestamp/vintage/NBBO policies and provider families remain incomplete.
-- Decimal-string amounts, posting rounding, equal allocation and encoding; full numeric/unit/division policy is not complete.
-- Version-protected model registration, without the complete governance/result-envelope system.
-- One SQLite/GRDB store with migration metadata and no business schema. No automatic erase on migration failure. Complete backup/restore is not implemented.
-- Keychain wrapper and allowlisted log events. Logical Security compiles as SecuritySupport to avoid a collision with Apple's framework name.
+## Current implementation
 
-## Evidence and known gaps
+- SwiftUI DEMO workspace and credential settings, version-bound confirmations, closed security events and injected runtime dependencies.
+- Exact decimal arithmetic, immutable model/parameter references, provenance, capability/rights/request acceptance and explicit PIT availability rules.
+- SQLite source bytes, typed records, immutable research snapshots, transactional migrations and local restore/deletion plans. This is not a ZIP backup or crash/performance qualification.
+- Candidate calendar/events and SEC adapters, core financial normalization, and a candidate stock quote/daily-bar adapter. Adapters are exercised with synthetic HTTP responses and are not installed in the application startup path.
 
-The local implementation was built for arm64 and cross-built for x86_64 in Debug. The arm64 app was launched and basic refresh/settings/light/dark interactions were inspected. Cross-compilation is not Intel runtime support, macOS 15 runtime verification, a universal-release promise or a performance result. Debug ad-hoc signing is not Developer ID/notarization or hardened-runtime qualification.
+The IEX stock slice explicitly requests USD, raw daily bars, a single exchange and no automatic symbol-history mapping. Quotes retain timestamp/quality; stale or invalid quotes are not upgraded. Daily aggregates are not official settlement marks, adjusted return series or historical fills. Historical retrieval does not provide source-vintage PIT evidence. Pagination means one page, not a complete calendar window. Credentials are injected into HTTP headers by an explicitly constructed adapter; this batch neither requests real credentials nor changes Keychain or production entitlements. See [stock-slice review](../reviews/phase1-equity-review.md).
 
-**23 regular test functions passed.** The additional opt-in Keychain integration test was actually attempted and failed with OSStatus **-34018** in the current test host. Its default state is skipped, which is not a pass. To attempt it in an appropriately signed/entitled host, run `MARKETDECISION_TEST_KEYCHAIN=1 xcrun swift test --package-path MarketDecision` with the chosen `DEVELOPER_DIR`. The test uses a unique disposable service and synthetic data, attempts cleanup, and never reads real credentials. No real-key input UI is offered yet.
+## Evidence boundaries
 
-These source-level synthetic tests are included and can be rerun. Full private acceptance cases, parameters, traceability records, device preflight and visual QA evidence are not included. The original 84 acceptance scenarios remain unexecuted as complete scenarios; the 57 earlier reference checks are not 57 production tests. Do not infer full coverage from this PR.
+The fixed catalog records actual executions and the separately skipped real Keychain test. A skip is **NOT EXECUTED**, never a pass. Synthetic provider and SQLite tests do not qualify a vendor, feed, license, model or financial result. Original complete acceptance scenarios, real-source samples and private evidence are not published here.
 
-A public foundation CI workflow is now provided; see [CI scope](Scripts/CI.md). Its run status must be checked separately; configuration alone is not passing evidence. The local script is not the Phase 0 CI exit criterion. Keychain entitlement evidence, complete foundation contracts, CI/traceability execution, minimum-system runtime, Intel runtime, full accessibility and Release performance remain open.
+The demo's production permissions remain sandbox-only; no network-client or user-selected-file entitlement is added. Optional account-signed Keychain checks are described in [KeychainHost](Tests/KeychainHost/README.md). Complete accessibility/IME, real Keychain lifecycle, Intel runtime, performance and notarized distribution remain tracked limitations. Ad-hoc Debug/Release builds and synthetic UI hosts do not close them.
 
-DATA-000 remains route B with G5 unpassed and no qualified supplier; no Bootstrap/calibration or real historical analysis is implemented here. Data remains free-first; no paid API or real market data is invoked. GPT is not used to fill missing market data. This slice does not start later analysis phases or close Phase 0.
+Data is free-first. Route B is selected, G5 remains open and no supplier is qualified. GPT does not supply missing market data. Before a live adapter is composed, account/license evidence, redirects/cookies/caching, credential handling and production permissions require their own review. No paid API, purchase, trading or real network data collection is part of this slice.
 
-## Permission and signing follow-up
-
-The demo no longer requests network client or user-selected file access. The local verification script checks the effective signature permissions. Optional provisioned app and synthetic Keychain verification commands are documented in [KeychainHost](Tests/KeychainHost/README.md). A provisioned standalone host passed synthetic CRUD and stored accessibility checks locally; the follow-up Debug application diagnostic now also checks three sequential app-executable processes. This runs before UI/business database creation and does not validate UI-driven workflows, system reboot, lock/unlock or backup. The default Swift test runner still skips its opt-in Keychain test and is not provisioned by these commands. DATA-001 and Phase 0 remain incomplete. No profiles, signing identities or private evidence are included.
-
-Release follow-up: local development-signed arm64 Release now has build, effective-permission and diagnostic-marker checks; the same source also passed a short local launch check. These are not distribution, notarization, performance, or complete UI acceptance. See the optional Release command in [KeychainHost](Tests/KeychainHost/README.md).
+All rights to original project code remain reserved; dependency licenses are documented separately.
