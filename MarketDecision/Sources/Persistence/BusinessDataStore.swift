@@ -239,6 +239,10 @@ public actor BusinessDataStore: SnapshotStorage {
         guard localReference(reference), let row = try database.read({ db in
             try Row.fetchOne(db, sql: "SELECT * FROM p1_source_documents WHERE reference = ?", arguments: [reference])
         }) else { throw SnapshotError.missingReference }
+        return try Self.decodeSourceDocument(row)
+    }
+
+    static func decodeSourceDocument(_ row: Row) throws -> SourceDocument {
         guard let endpoint = EndpointDescriptor(rawValue: row["endpoint_descriptor"]),
               let received = try? MillisecondInstant(milliseconds: row["received_at_ms"]),
               let available = try? MillisecondInstant(milliseconds: row["available_at_ms"]) else { throw BusinessStoreError.corruptedStorage }
@@ -320,6 +324,8 @@ public actor BusinessDataStore: SnapshotStorage {
                   AND NOT EXISTS (SELECT 1 FROM p1_sec_facts WHERE source_reference = p1_source_documents.reference)
                   AND NOT EXISTS (SELECT 1 FROM p1_sec_filing_indexes WHERE source_reference = p1_source_documents.reference)
                   AND NOT EXISTS (SELECT 1 FROM p1_sec_filing_documents WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_equity_records WHERE source_reference = p1_source_documents.reference)
+                  AND NOT EXISTS (SELECT 1 FROM p1_equity_pages WHERE source_reference = p1_source_documents.reference)
                 """)
             let afterObservations = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_observations")!
             let afterDocuments = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_source_documents")!

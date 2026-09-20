@@ -15,7 +15,7 @@ public struct DatabaseMigration: Sendable {
 public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
     public init(path: String, migrations: [DatabaseMigration] = []) throws {
-        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration]
+        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -36,6 +36,29 @@ public struct DatabaseStore: Sendable {
     /// One database transaction; throws rolls back all statements in the closure.
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
+
+    private static let phase1EquityMigration = DatabaseMigration(identifier: "business.p1.v4") { db in
+        try db.execute(sql: """
+            CREATE TABLE p1_equity_records (
+                record_id TEXT NOT NULL, version_id TEXT NOT NULL, symbol TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('quote', 'dailyBar')),
+                source_event_ms INTEGER NOT NULL, received_at_ms INTEGER NOT NULL,
+                source_reference TEXT NOT NULL, record_hash TEXT NOT NULL, record_json BLOB NOT NULL,
+                PRIMARY KEY (record_id, version_id),
+                FOREIGN KEY (source_reference) REFERENCES p1_source_documents(reference) ON DELETE RESTRICT,
+                CHECK (length(record_hash) = 64), CHECK (length(version_id) = 64)
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: "CREATE INDEX p1_equity_symbol ON p1_equity_records (symbol, kind, source_event_ms)")
+        try db.execute(sql: """
+            CREATE TABLE p1_equity_pages (
+                page_id TEXT PRIMARY KEY NOT NULL, symbol TEXT NOT NULL,
+                source_reference TEXT NOT NULL, page_hash TEXT NOT NULL, page_json BLOB NOT NULL,
+                FOREIGN KEY (source_reference) REFERENCES p1_source_documents(reference) ON DELETE RESTRICT,
+                CHECK (length(page_id) = 64), CHECK (length(page_hash) = 64)
+            )
+            """)
+    }
 
     private static let phase1BusinessMigration = DatabaseMigration(identifier: "business.p1.v1") { db in
         try db.execute(sql: """
