@@ -77,9 +77,7 @@ public extension BusinessDataStore {
             for (item, bytes) in encoded {
                 if let stored = try Row.fetchOne(db, sql: "SELECT * FROM p1_equity_records WHERE record_id = ? AND version_id = ?",
                                                   arguments: [item.recordID, item.contentVersion()]) {
-                    let bytes: Data = stored["record_json"]
-                    guard digest(bytes) == stored["record_hash"] else { throw BusinessStoreError.corruptedStorage }
-                    let old = try Self.decodeEquity(EquityRecord.self, bytes: bytes); try old.validate()
+                    let old = try Self.decodeStoredEquityRecord(stored, db: db)
                     guard old.contentVersion() == item.contentVersion() else { throw BusinessStoreError.immutableConflict }
                     continue
                 }
@@ -107,32 +105,37 @@ public extension BusinessDataStore {
     /// historical availability from either the source bar date or local reception time.
     func equityRecords(symbol: String, kind: EquityKind, range: DateRange) throws -> [EquityRecord] {
         try EquityRecord.validateSymbol(symbol); try range.validate()
-        let rows = try database.read { db in
+        return try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT * FROM p1_equity_records WHERE symbol = ? AND kind = ? AND source_event_ms >= ? AND source_event_ms <= ?
                 ORDER BY source_event_ms, received_at_ms, version_id
                 """, arguments: [symbol, kind.rawValue, try MillisecondInstant(rounding: range.start).milliseconds,
                                   try MillisecondInstant(rounding: range.end).milliseconds])
+                .map { try Self.decodeStoredEquityRecord($0, db: db) }
         }
-        return try rows.map { row in
-            do {
-                let bytes: Data = row["record_json"]
-                guard digest(bytes) == row["record_hash"] else { throw BusinessStoreError.corruptedStorage }
-                let item = try Self.decodeEquity(EquityRecord.self, bytes: bytes); try item.validate()
-                let document = try sourceDocument(reference: row["source_reference"])
-                guard item.recordID == row["record_id"], item.contentVersion() == row["version_id"],
-                      item.symbol == symbol, item.kind == kind,
-                      try MillisecondInstant(rounding: item.provenance.sourceEventAt!).milliseconds == row["source_event_ms"],
-                      try MillisecondInstant(rounding: item.provenance.receivedAt).milliseconds == row["received_at_ms"],
-                      item.provenance.rawObjectRef == document.reference, item.provenance.rawHash == document.contentHash,
-                      item.provenance.providerID == document.providerID, item.provenance.feedID == document.feedID,
-                      item.provenance.endpointDescriptor == document.endpoint.rawValue,
-                      item.provenance.evidenceRef == document.evidenceRef, item.provenance.licenseRef == document.licenseRef else {
-                    throw BusinessStoreError.corruptedStorage
-                }
-                return item
-            } catch { throw BusinessStoreError.corruptedStorage }
-        }
+    }
+    /// Every read and deduplication path verifies the same row and its own original source,
+    /// in the caller's transaction. A different page may legitimately reuse this content version.
+    private static func decodeStoredEquityRecord(_ row: Row, db: Database) throws -> EquityRecord {
+        do {
+            let bytes: Data = row["record_json"]
+            guard digest(bytes) == row["record_hash"],
+                  let sourceRow = try Row.fetchOne(db, sql: "SELECT * FROM p1_source_documents WHERE reference = ?",
+                    arguments: [row["source_reference"] as String]) else { throw BusinessStoreError.corruptedStorage }
+            let item = try decodeEquity(EquityRecord.self, bytes: bytes); try item.validate()
+            let document = try decodeSourceDocument(sourceRow)
+            guard item.recordID == row["record_id"], item.contentVersion() == row["version_id"],
+                  item.symbol == row["symbol"], item.kind.rawValue == row["kind"],
+                  try MillisecondInstant(rounding: item.provenance.sourceEventAt!).milliseconds == row["source_event_ms"],
+                  try MillisecondInstant(rounding: item.provenance.receivedAt).milliseconds == row["received_at_ms"],
+                  item.provenance.rawObjectRef == document.reference, item.provenance.rawHash == document.contentHash,
+                  item.provenance.providerID == document.providerID, item.provenance.feedID == document.feedID,
+                  item.provenance.endpointDescriptor == document.endpoint.rawValue,
+                  item.provenance.evidenceRef == document.evidenceRef, item.provenance.licenseRef == document.licenseRef else {
+                throw BusinessStoreError.corruptedStorage
+            }
+            return item
+        } catch { throw BusinessStoreError.corruptedStorage }
     }
     func equityPages(symbol: String) throws -> [EquityStoredPage] {
         try EquityRecord.validateSymbol(symbol)
@@ -155,12 +158,13 @@ public extension BusinessDataStore {
                   page.request.providerID == source.providerID, page.request.feedID == source.feedID,
                   page.request.capability.endpointDescriptor == source.endpoint else { throw BusinessStoreError.corruptedStorage }
             for (id, version) in page.recordVersions {
-                guard let record = try Row.fetchOne(db, sql: "SELECT record_hash, record_json FROM p1_equity_records WHERE record_id = ? AND version_id = ?",
+                guard let record = try Row.fetchOne(db, sql: "SELECT * FROM p1_equity_records WHERE record_id = ? AND version_id = ?",
                     arguments: [id, version]) else { throw BusinessStoreError.corruptedStorage }
-                let recordBytes: Data = record["record_json"]
-                let item = try decodeEquity(EquityRecord.self, bytes: recordBytes); try item.validate()
-                guard digest(recordBytes) == record["record_hash"], item.recordID == id, item.contentVersion() == version,
-                      item.symbol == page.request.resourceID else { throw BusinessStoreError.corruptedStorage }
+                let item = try decodeStoredEquityRecord(record, db: db)
+                guard item.recordID == id, item.contentVersion() == version, item.symbol == page.request.resourceID,
+                      item.provenance.endpointDescriptor == page.request.capability.endpointDescriptor.rawValue else {
+                    throw BusinessStoreError.corruptedStorage
+                }
             }
             return page
         } catch { throw BusinessStoreError.corruptedStorage }

@@ -5,7 +5,15 @@ import CoreDomain
 /// Coverage and arrival do not grant analysis, consolidated NBBO, ledger or fill eligibility.
 public enum EquityKind: String, Sendable, Codable { case quote, dailyBar }
 public struct EquityQuoteValues: Sendable, Codable, Equatable {
-    public let bid: Money, ask: Money, bidSize: Money, askSize: Money
+    public let bid: Money, ask: Money
+    /// Supplier round-lot counts, not shares or monetary amounts. Money is only the exact
+    /// decimal storage representation; validation requires nonnegative integral values.
+    public let bidSize: Money, askSize: Money
+    public var sizeUnit: String { "round lots" }
+    fileprivate var hasValidRoundLotSizes: Bool {
+        bidSize.amount >= 0 && askSize.amount >= 0
+            && !bidSize.decimalString.contains(".") && !askSize.decimalString.contains(".")
+    }
     public let bidExchange: String, askExchange: String
     public init(bid: Money, ask: Money, bidSize: Money, askSize: Money, bidExchange: String, askExchange: String) {
         self.bid = bid; self.ask = ask; self.bidSize = bidSize; self.askSize = askSize
@@ -79,7 +87,7 @@ public struct EquityRecord: Sendable, Codable, ProviderRecord {
         switch kind {
         case .quote:
             guard let quote, bar == nil, quote.bid.amount >= 0, quote.ask.amount >= 0,
-                  quote.bidSize.amount >= 0, quote.askSize.amount >= 0,
+                  quote.hasValidRoundLotSizes,
                   quote.bidExchange == "V", quote.askExchange == "V" else { throw ContractError.invalidNormalization }
         case .dailyBar:
             guard quote == nil, let bar, bar.low.amount > 0, bar.low <= bar.high,
@@ -107,7 +115,7 @@ public struct EquityRecord: Sendable, Codable, ProviderRecord {
         var result = Set<QualityFlag>()
         if kind == .quote, let quote {
             if quote.bid.amount <= 0 || quote.ask.amount <= 0 || quote.bid > quote.ask
-                || quote.bidSize.amount == 0 || quote.askSize.amount == 0 { result.insert(.invalid) }
+                || !quote.hasValidRoundLotSizes || quote.bidSize.amount == 0 || quote.askSize.amount == 0 { result.insert(.invalid) }
             if let source = provenance.sourceEventAt,
                now.timeIntervalSince(source) > FreshnessPolicy.foundationV1.realtimeMaxAge { result.insert(.stale) }
         }

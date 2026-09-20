@@ -247,6 +247,9 @@
     {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/staleRevisionAndCachePurgeCannotDamageStoredMarketSources()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
     {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/corruptedTypedOrRawBytesFailInsteadOfReturningPartialMarketHistory()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
     {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/migrationFromSECFoundationKeepsExistingRows()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/corruptedPageOrMissingRecordCannotMasqueradeAsSuccessfulDuplicate()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/corruptedPageOrMissingRecordCannotMasqueradeAsSuccessfulDuplicate()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.PhaseOneEquityProviderTests/quoteSizesRequireWholeRoundLotsWithoutRoundingOrShareConversion()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/recordColumnCorruptionFailsReadsPagesAndBothDeduplicationPaths()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.PhaseOneEquityPersistenceTests/distinctPagesReuseContentButValidateTheRecordsOriginalSource()", "source": "Tests/FoundationTests/EquityFoundationTests.swift", "execution": "required"}
   ]
 }

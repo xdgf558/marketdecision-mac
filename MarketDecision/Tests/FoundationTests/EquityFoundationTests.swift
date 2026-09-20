@@ -275,6 +275,26 @@ private struct IncorrectRawEquityProvider: EquityDataProvider {
             try await EquityDataClient(provider: oldRequest, entitlement: equityRights()).fetch(equityRequest())
         }
     }
+    @Test func quoteSizesRequireWholeRoundLotsWithoutRoundingOrShareConversion() async throws {
+        for field in ["bs", "as"] {
+            let original = field == "bs" ? "10" : "20"
+            for size in ["0.5", "0.75", "-0.5"] {
+                let json = quoteJSON.replacingOccurrences(of: "\"" + field + "\":" + original,
+                                                         with: "\"" + field + "\":" + size)
+                await #expect(throws: ContractError.invalidNormalization) {
+                    try await equityAccepted(json, request: equityRequest())
+                }
+            }
+        }
+        for size in ["0", "10", "10.0", "1e1"] {
+            let json = quoteJSON.replacingOccurrences(of: "\"bs\":10", with: "\"bs\":" + size)
+            let accepted = try await equityAccepted(json, request: equityRequest())
+            let item = try #require(accepted.exchange.result.items.first)
+            #expect(item.quote?.sizeUnit == "round lots")
+            #expect(item.quote?.bidSize.decimalString == (size == "0" ? "0" : "10"))
+            #expect(item.quality(at: equityNow).contains(.invalid) == (size == "0"))
+        }
+    }
     @Test func timestampRoundingIsExactAndWinterDailyBarsUseNewYorkMidnight() async throws {
         #expect(try MillisecondInstant(rounding: EquityRecord.sourceTime("2026-09-18T15:00:00.122500000Z")).iso8601 == "2026-09-18T15:00:00.122Z")
         #expect(try MillisecondInstant(rounding: EquityRecord.sourceTime("2026-09-18T15:00:00.123500000Z")).iso8601 == "2026-09-18T15:00:00.124Z")
@@ -389,4 +409,61 @@ private struct IncorrectRawEquityProvider: EquityDataProvider {
             await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.ingestEquity(accepted, expectedRevision: store.revision()) }
         }
     }
+    @Test func recordColumnCorruptionFailsReadsPagesAndBothDeduplicationPaths() async throws {
+        for column in ["source_reference", "received_at_ms", "source_event_ms", "kind", "symbol"] {
+            let database = try DatabaseStore(path: ":memory:"), store = try BusinessDataStore(database: database)
+            let bars = try await equityAccepted(barsJSON)
+            let quote = try await equityAccepted(quoteJSON, request: equityRequest())
+            _ = try await store.ingestEquity(bars, expectedRevision: store.revision())
+            _ = try await store.ingestEquity(quote, expectedRevision: store.revision())
+            let revision = await store.revision()
+            let freshPage = try await equityAccepted(barsJSON + "\n")
+            try database.transaction { db in
+                switch column {
+                case "source_reference":
+                    try db.execute(sql: "UPDATE p1_equity_records SET source_reference = ? WHERE kind = 'dailyBar'", arguments: [quote.rawPayload.reference])
+                case "received_at_ms", "source_event_ms":
+                    try db.execute(sql: "UPDATE p1_equity_records SET \(column) = \(column) + 1 WHERE kind = 'dailyBar'")
+                case "kind": try db.execute(sql: "UPDATE p1_equity_records SET kind = 'quote' WHERE kind = 'dailyBar'")
+                default: try db.execute(sql: "UPDATE p1_equity_records SET symbol = 'MSFT' WHERE kind = 'dailyBar'")
+                }
+                #expect(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+            }
+            await #expect(throws: BusinessStoreError.corruptedStorage) {
+                try await store.equityRecords(symbol: column == "symbol" ? "MSFT" : "AAPL",
+                    kind: column == "kind" ? .quote : .dailyBar,
+                    range: .init(start: equityDate("2026-09-01T00:00:00Z"), end: equityNow))
+            }
+            await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.equityPages(symbol: "AAPL") }
+            await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.ingestEquity(bars, expectedRevision: revision) }
+            await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.ingestEquity(freshPage, expectedRevision: revision) }
+            #expect(await store.revision() == revision)
+            #expect(try database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM p1_source_documents") } == 2)
+            #expect(try database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM p1_equity_pages") } == 2)
+        }
+    }
+    @Test func distinctPagesReuseContentButValidateTheRecordsOriginalSource() async throws {
+        let database = try DatabaseStore(path: ":memory:"), store = try BusinessDataStore(database: database)
+        let first = try await equityAccepted(barsJSON)
+        let second = try await equityAccepted(barsJSON + "\n")
+        _ = try await store.ingestEquity(first, expectedRevision: store.revision())
+        let receipt = try await store.ingestEquity(second, expectedRevision: store.revision())
+        #expect(receipt.insertedRecords == 0 && receipt.insertedDocuments == 1 && receipt.insertedPages == 1)
+        #expect(try await store.equityPages(symbol: "AAPL").count == 2)
+        let records = try await store.equityRecords(symbol: "AAPL", kind: .dailyBar,
+            range: .init(start: equityDate("2026-09-01T00:00:00Z"), end: equityNow))
+        #expect(records.count == 1 && records.first?.provenance.rawObjectRef == first.rawPayload.reference)
+        let duplicate = try await store.ingestEquity(second, expectedRevision: receipt.revision)
+        #expect(duplicate.insertedRecords == 0 && duplicate.insertedPages == 0 && duplicate.revision == receipt.revision)
+        try database.transaction { db in
+            try db.execute(sql: "UPDATE p1_source_documents SET payload = X'00' WHERE reference = ?", arguments: [first.rawPayload.reference])
+        }
+        // The second page's own source is intact; its shared record still depends on the first source.
+        #expect(try await store.sourceDocument(reference: second.rawPayload.reference).payload == Data((barsJSON + "\n").utf8))
+        await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.ingestEquity(second, expectedRevision: receipt.revision) }
+        let third = try await equityAccepted(barsJSON + "\n\n")
+        await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.ingestEquity(third, expectedRevision: receipt.revision) }
+        #expect(await store.revision() == receipt.revision)
+    }
+
 }
