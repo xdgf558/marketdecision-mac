@@ -29,7 +29,7 @@ struct ResearchContent: View {
                 .font(.callout).padding(12).frame(maxWidth:.infinity,alignment:.leading)
                 .background(Color.blue.opacity(0.08),in:RoundedRectangle(cornerRadius:8))
             Picker("研究内容",selection:$tab) {
-                ForEach(["概览","原始数据","自选","快照"],id:\.self) { Text($0).tag($0) }
+                ForEach(["概览","原始数据","自选","快照","备份"],id:\.self) { Text($0).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("researchTabs")
             if model.isBusy { ProgressView("正在处理本地研究…").controlSize(.small) }
             if let message = model.message {
@@ -38,7 +38,8 @@ struct ResearchContent: View {
             }
             ScrollView {
                 VStack(alignment:.leading,spacing:18) {
-                    if tab == "自选" { watchlist }
+                    if tab == "备份", let transfer = model.transfer { ResearchTransferContent(transfer:transfer,research:model) }
+                    else if tab == "自选" { watchlist }
                     else if tab == "快照" { snapshots }
                     else if let document = model.document {
                         if tab == "原始数据" { inspector(document) } else { overview(document) }

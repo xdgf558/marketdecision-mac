@@ -17,7 +17,7 @@ public struct AppEnvironment: Sendable {
         self.credentials = credentials; self.models = ModelRegistry(); self.log = log
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {
-        ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData))
+        ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData), transfer: ResearchTransferModel(store: ResearchTransferStore(database: database)))
     }
     @MainActor public func makeCredentialSettings() -> CredentialSettingsModel {
         CredentialSettingsModel(store: credentials, log: log)

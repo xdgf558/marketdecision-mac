@@ -60,7 +60,9 @@ public actor ResearchStore: ResearchStorage {
         try await snapshots.freeze(bundle,expectedRevision:revision)
     }
     public func savedResearch() async throws -> [SavedResearch] {
-        let records = try await snapshots.researchRecords()
+        try await Self.decodeRecords(snapshots.researchRecords())
+    }
+    static func decodeRecords(_ records: [StoredResearchRecord]) async throws -> [SavedResearch] {
         var result: [SavedResearch] = []
         for record in records {
             try Task.checkCancellation()
@@ -89,7 +91,7 @@ public actor ResearchStore: ResearchStorage {
     public func watchlist() throws -> [WatchlistEntry] {
         try database.read { db in try Row.fetchAll(db,sql:"SELECT * FROM p1_watchlist ORDER BY symbol").map(Self.decode) }
     }
-    private static func decode(_ row: Row) throws -> WatchlistEntry {
+    static func decode(_ row: Row) throws -> WatchlistEntry {
         let bytes: Data = row["entry_json"]
         guard digest(bytes) == row["content_hash"] else { throw BusinessStoreError.corruptedStorage }
         let entry = try JSONDecoder().decode(WatchlistEntry.self,from:bytes); try entry.validate()
@@ -104,6 +106,7 @@ public actor ResearchStore: ResearchStorage {
             guard old?.revision == expectedRevision, old?.revision != entry.revision else { throw ResearchError.staleWatchlist }
             try db.execute(sql:"INSERT OR REPLACE INTO p1_watchlist (symbol,revision,content_hash,entry_json) VALUES (?,?,?,?)",
                 arguments:[entry.symbol,entry.revision.uuidString,digest(bytes),bytes])
+            try BusinessDataStore.writeRevision(UUID(),db:db)
         }
     }
     public func removeWatchlist(symbol: String, expectedRevision: UUID) throws {
@@ -112,6 +115,7 @@ public actor ResearchStore: ResearchStorage {
             guard let row = try Row.fetchOne(db,sql:"SELECT * FROM p1_watchlist WHERE symbol = ?",arguments:[symbol]),
                   try Self.decode(row).revision == expectedRevision else { throw ResearchError.staleWatchlist }
             try db.execute(sql:"DELETE FROM p1_watchlist WHERE symbol = ?",arguments:[symbol])
+            try BusinessDataStore.writeRevision(UUID(),db:db)
         }
     }
 }

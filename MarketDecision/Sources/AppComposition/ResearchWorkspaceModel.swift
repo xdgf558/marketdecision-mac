@@ -31,11 +31,14 @@ public struct WatchlistDraft: Sendable, Equatable {
     public private(set) var hasError = false
     public private(set) var savedID: String?
     public private(set) var selectedSymbol = "DEMO"
+    public let transfer: ResearchTransferModel?
     private let storage: any ResearchStorage
     private let generate: @Sendable (String) async throws -> ResearchDocument
-    public init(storage: any ResearchStorage, generate: @escaping @Sendable (String) async throws -> ResearchDocument = {
+    public init(storage: any ResearchStorage, transfer: ResearchTransferModel? = nil, generate: @escaping @Sendable (String) async throws -> ResearchDocument = {
         try await SyntheticResearchFactory.make(symbol:$0)
-    }) { self.storage = storage; self.generate = generate }
+    }) { self.storage = storage; self.transfer = transfer; self.generate = generate }
+
+    public func reloadAfterTransfer() async { document = nil; savedID = nil; await load() }
 
     public func load() async {
         guard !isBusy else { return }

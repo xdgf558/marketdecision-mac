@@ -144,6 +144,8 @@ private func demo(_ symbol: String = "DEMO") async throws -> ResearchDocument {
         do {
             let old = try DatabaseStore(path:path)
             try old.transaction { db in
+                try db.execute(sql:"DROP TABLE p1_watchlist_conflicts")
+                try db.execute(sql:"DELETE FROM grdb_migrations WHERE identifier = 'business.p1.v6'")
                 try db.execute(sql:"DROP TABLE p1_watchlist")
                 try db.execute(sql:"DELETE FROM grdb_migrations WHERE identifier = 'business.p1.v5'")
                 try db.execute(sql:"CREATE TABLE synthetic_prior (value TEXT)")

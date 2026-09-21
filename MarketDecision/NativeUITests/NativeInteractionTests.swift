@@ -132,6 +132,31 @@ import XCTest
         XCTAssertTrue(app.staticTexts["暂无研究数据"].waitForExistence(timeout:5))
         XCTAssertFalse(app.staticTexts["researchScore"].exists)
     }
+    func testResearchClearRequiresPreviewAndExplicitConfirmation() {
+        launchResearch()
+        let save = app.buttons["researchSave"]; waitEnabled(save); save.click(); waitEnabled(save,false)
+        researchTab("备份")
+        let preview = mainWindow.buttons["researchClearPreview"]
+        for _ in 0..<10 where !preview.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(preview.isHittable); preview.click()
+        let panel = sheet(in:mainWindow)
+        XCTAssertTrue(panel.waitForExistence(timeout:5))
+        let commit = panel.buttons["researchTransferCommit"]
+        XCTAssertFalse(commit.isEnabled)
+        app.typeKey(.return,modifierFlags:[])
+        XCTAssertTrue(panel.exists)
+        app.typeKey(.escape,modifierFlags:[]); waitNoSheet(in:mainWindow)
+        researchTab("快照")
+        XCTAssertTrue(mainWindow.buttons["researchOpenSaved"].firstMatch.waitForExistence(timeout:5))
+        researchTab("备份")
+        for _ in 0..<10 where !preview.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        preview.click(); XCTAssertTrue(panel.waitForExistence(timeout:5))
+        let input = panel.textFields["researchTransferConfirmText"]
+        input.click(); input.typeText("确认"); waitEnabled(commit)
+        commit.click(); waitNoSheet(in:mainWindow)
+        researchTab("快照")
+        XCTAssertFalse(mainWindow.buttons["researchOpenSaved"].firstMatch.exists)
+    }
     func testReturnDoesNotSaveAndTabSkipsDisabledControls() {
         launchSettings()
         let main = mainWindow

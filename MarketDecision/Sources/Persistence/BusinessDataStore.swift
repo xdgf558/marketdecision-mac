@@ -121,17 +121,17 @@ private struct ObservationEnvelope: Codable {
     }
 }
 
-private struct PersistedObject: Sendable {
+struct PersistedObject: Sendable {
     let object: FrozenObject
     let source: ObjectAddress
     let targets: [String: ObjectAddress]
 }
-private struct PersistedRoot: Sendable {
+struct PersistedRoot: Sendable {
     let root: SnapshotRoot
     let source: ObjectAddress
     let targets: [String: ObjectAddress]
 }
-private struct SnapshotGraph: Sendable {
+struct SnapshotGraph: Sendable {
     var objects: [ObjectAddress: PersistedObject]
     var roots: [ObjectAddress: PersistedRoot]
 }
@@ -537,16 +537,16 @@ public actor BusinessDataStore: SnapshotStorage {
         else { throw BusinessStoreError.sourceMismatch }
     }
 
-    private static func readRevision(_ database: DatabaseStore) throws -> UUID {
+    static func readRevision(_ database: DatabaseStore) throws -> UUID {
         let value = try database.read { try String.fetchOne($0, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1") }
         guard let value, let revision = UUID(uuidString: value) else { throw BusinessStoreError.corruptedStorage }
         return revision
     }
-    private static func checkRevision(_ expected: UUID, db: Database) throws {
+    static func checkRevision(_ expected: UUID, db: Database) throws {
         guard let value = try String.fetchOne(db, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1"),
               UUID(uuidString: value) == expected else { throw SnapshotError.stalePlan }
     }
-    private static func writeRevision(_ revision: UUID, db: Database) throws {
+    static func writeRevision(_ revision: UUID, db: Database) throws {
         try db.execute(sql: "UPDATE p1_store_metadata SET revision = ? WHERE singleton = 1",
                        arguments: [revision.uuidString.lowercased()])
     }
@@ -589,7 +589,7 @@ public actor BusinessDataStore: SnapshotStorage {
         return protected
     }
 
-    private static func loadGraph(_ db: Database) throws -> SnapshotGraph {
+    static func loadGraph(_ db: Database) throws -> SnapshotGraph {
         var objects: [ObjectAddress: (FrozenObject, ObjectAddress)] = [:]
         var objectTargets: [ObjectAddress: [String: ObjectAddress]] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT * FROM p1_snapshot_objects") {
@@ -637,7 +637,7 @@ public actor BusinessDataStore: SnapshotStorage {
         return graph
     }
 
-    private static func validate(_ graph: SnapshotGraph) throws {
+    static func validate(_ graph: SnapshotGraph) throws {
         for (address, stored) in graph.objects {
             try address.identity.validate(); try stored.source.identity.validate(); try stored.object.validate()
             guard address.identity == stored.object.identity,
@@ -660,7 +660,7 @@ public actor BusinessDataStore: SnapshotStorage {
         }
     }
 
-    private static func save(_ graph: SnapshotGraph, revision: UUID, db: Database) throws {
+    static func save(_ graph: SnapshotGraph, revision: UUID, db: Database) throws {
         try db.execute(sql: "DELETE FROM p1_snapshot_root_edges")
         try db.execute(sql: "DELETE FROM p1_snapshot_object_edges")
         try db.execute(sql: "DELETE FROM p1_snapshot_roots")
