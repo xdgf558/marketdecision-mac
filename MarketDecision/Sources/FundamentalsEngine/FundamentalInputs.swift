@@ -59,7 +59,7 @@ public struct EquityClassInput: Sendable, Codable {
 
 /// Upstream normalization is explicit. This packet cannot grant supplier, live-analysis or backtest
 /// eligibility. Recompute normalization for every historical cutoff; never reuse today's snapshot.
-public struct FundamentalInput: Sendable {
+public struct FundamentalInput: Sendable, Codable {
     public let cik: String, normalization: FinancialNormalizationResult, quarters: [FiscalQuarter]
     public let fiscalYears: [FiscalYearWindow], priceDay: MarketDate
     public let expectedClassIDs: Set<String>, classes: [EquityClassInput]
@@ -76,6 +76,42 @@ public struct FundamentalInput: Sendable {
         self.financialCompany = financialCompany; self.splitBasisEvidence = splitBasisEvidence
         self.inputLimitations = inputLimitations
         try validate()
+    }
+    private enum CodingKeys: String, CodingKey {
+        case cik, normalization, quarters, fiscalYears, priceDay, expectedClassIDs, classes
+        case financialCompany, splitBasisEvidence, inputLimitations
+    }
+    /// Decoding uses the same validation as a new request; required context has no default fallback.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let classIDs = try c.decode([String].self, forKey: .expectedClassIDs)
+        guard Set(classIDs).count == classIDs.count else { throw FundamentalError.duplicateInput }
+        try self.init(cik: c.decode(String.self, forKey: .cik),
+            normalization: c.decode(FinancialNormalizationResult.self, forKey: .normalization),
+            quarters: c.decode([FiscalQuarter].self, forKey: .quarters),
+            fiscalYears: c.decode([FiscalYearWindow].self, forKey: .fiscalYears),
+            priceDay: c.decode(MarketDate.self, forKey: .priceDay), expectedClassIDs: Set(classIDs),
+            classes: c.decode([EquityClassInput].self, forKey: .classes),
+            financialCompany: c.decode(Bool.self, forKey: .financialCompany),
+            splitBasisEvidence: c.decode(String?.self, forKey: .splitBasisEvidence),
+            inputLimitations: c.decode([String].self, forKey: .inputLimitations))
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(cik, forKey: .cik); try c.encode(normalization, forKey: .normalization)
+        try c.encode(quarters, forKey: .quarters); try c.encode(fiscalYears, forKey: .fiscalYears)
+        try c.encode(priceDay, forKey: .priceDay); try c.encode(expectedClassIDs.sorted(), forKey: .expectedClassIDs)
+        try c.encode(classes, forKey: .classes); try c.encode(financialCompany, forKey: .financialCompany)
+        try c.encode(splitBasisEvidence, forKey: .splitBasisEvidence)
+        try c.encode(inputLimitations, forKey: .inputLimitations)
+    }
+    /// Shared by capitalization, EPS valuation and historical price inversion.
+    var hasCompleteClasses: Bool {
+        !expectedClassIDs.isEmpty && classes.count == expectedClassIDs.count
+            && Set(classes.map(\.classID)) == expectedClassIDs
+    }
+    var singleCompleteClass: EquityClassInput? {
+        hasCompleteClasses && classes.count == 1 ? classes[0] : nil
     }
     func validate() throws {
         guard !cik.isEmpty, (4...8).contains(quarters.count), normalization.asOf.timeIntervalSince1970.isFinite,
@@ -171,15 +207,65 @@ public struct FundamentalMetric: Sendable, Codable, Equatable {
     }
 }
 
-/// Local calculation result; intentionally carries no eligibility grant.
+/// Versioned immutable copy of every input choice. Old reports without this snapshot cannot be
+/// upgraded by guessing windows/classification from calculated metrics.
+public struct FundamentalInputSnapshot: Sendable, Codable {
+    public static let formatVersion = "fundamental-input.v1"
+    public let input: FundamentalInput
+    public let asOf: MillisecondInstant, executionAt: MillisecondInstant
+    public let executionDate: Date
+    public init(input: FundamentalInput, executionDate: Date) throws {
+        try input.validate()
+        self.input = input
+        self.asOf = try MillisecondInstant(rounding: input.normalization.asOf)
+        self.executionAt = try MillisecondInstant(rounding: executionDate)
+        guard input.normalization.asOf <= executionDate else { throw FundamentalError.incompatibleInput }
+        self.executionDate = executionDate
+    }
+    private enum CodingKeys: String, CodingKey { case formatVersion, input, executionDate }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard try c.decode(String.self, forKey: .formatVersion) == Self.formatVersion else {
+            throw FundamentalError.incompatibleInput
+        }
+        try self.init(input: c.decode(FundamentalInput.self, forKey: .input), executionDate: c.decode(Date.self, forKey: .executionDate))
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.formatVersion, forKey: .formatVersion); try c.encode(input, forKey: .input)
+        try c.encode(executionDate, forKey: .executionDate)
+    }
+}
+
+/// Local calculation result; intentionally carries no eligibility grant. Descriptive input
+/// properties project the snapshot rather than storing a second, potentially conflicting copy.
 public struct FundamentalReport: Sendable, Codable {
-    public let cik: String, asOf: MillisecondInstant, periodEnd: MarketDate
-    public let executionAt: MillisecondInstant, priceDay: MarketDate
-    public let capitalInputs: [EquityClassInput], expectedClassIDs: [String]
-    public let model: RegistryReference, parameters: RegistryReference, dictionaryVersion: String
-    public let sourceVersions: [String], limitations: [String]
-    public let normalizedInputs: [NormalizedFinancialFact]
+    public let inputSnapshot: FundamentalInputSnapshot
+    public var executionAt: MillisecondInstant { inputSnapshot.executionAt }
+    public let model: RegistryReference, parameters: RegistryReference
+    public let limitations: [String]
     public let metrics: [String: FundamentalMetric]
     public let confidence: FinancialConfidence
     public let researchOnly: Bool
+    public var cik: String { inputSnapshot.input.cik }
+    public var asOf: MillisecondInstant { inputSnapshot.asOf }
+    public var periodEnd: MarketDate { inputSnapshot.input.quarters.last!.end }
+    public var priceDay: MarketDate { inputSnapshot.input.priceDay }
+    public var capitalInputs: [EquityClassInput] { inputSnapshot.input.classes }
+    public var expectedClassIDs: [String] { inputSnapshot.input.expectedClassIDs.sorted() }
+    public var dictionaryVersion: String { inputSnapshot.input.normalization.dictionaryVersion }
+    public var sourceVersions: [String] { inputSnapshot.input.sourceVersions }
+    public var normalizedInputs: [NormalizedFinancialFact] { inputSnapshot.input.normalization.values }
+
+    func replayInput(using resolved: ResolvedModel) throws -> FundamentalInput {
+        guard resolved.definition.reference == model, resolved.parameters.reference == parameters else {
+            throw RegistryError.referenceMismatch
+        }
+        try inputSnapshot.input.validate()
+        return inputSnapshot.input
+    }
+    /// Recomputes from saved inputs and the exact resolved model; cached outputs are not inputs.
+    public func recompute(using resolved: ResolvedModel) throws -> FundamentalReport {
+        try FundamentalCalculator.calculate(replayInput(using: resolved), model: resolved, executionDate: inputSnapshot.executionDate)
+    }
 }

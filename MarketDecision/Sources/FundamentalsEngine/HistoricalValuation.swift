@@ -2,7 +2,7 @@ import Foundation
 import CoreDomain
 import DataContracts
 
-public struct HistoricalFundamentalSample: Sendable {
+public struct HistoricalFundamentalSample: Sendable, Codable {
     public let input: FundamentalInput, session: MarketSessionRecord
     public init(input: FundamentalInput, session: MarketSessionRecord) { self.input = input; self.session = session }
 }
@@ -19,10 +19,15 @@ public struct HistoricalValuationMetric: Sendable, Codable {
 }
 public struct HistoricalValuationResult: Sendable, Codable {
     public let current: FundamentalReport
+    public let historyInputs: [HistoricalFundamentalSample]
     public let metrics: [String: HistoricalValuationMetric]
     public let excluded: [String: String]
     public let sourceVersions: [String]
     public let limitations: [String]
+    public func recompute(using model: ResolvedModel) throws -> HistoricalValuationResult {
+        try HistoricalValuation.calculate(current: current.replayInput(using: model), history: historyInputs,
+                                          model: model, executionDate: current.inputSnapshot.executionDate)
+    }
 }
 
 public enum HistoricalValuation {
@@ -83,7 +88,7 @@ public enum HistoricalValuation {
             var points: [ValuationPricePoint] = []
             var reason: FundamentalMissing? = rangeReady ? nil : .insufficientHistory
             if rangeReady {
-                if current.classes.count != 1 || current.expectedClassIDs.count != 1 { reason = .missingClass }
+                if current.singleCompleteClass == nil { reason = .missingClass }
                 else {
                     for rank in [20,50,80] {
                         let multiple = sorted[(rank * sorted.count + 99)/100 - 1]
@@ -102,11 +107,11 @@ public enum HistoricalValuation {
             results[id] = .init(validDays:sorted.count, scorePercentile:sorted.count >= 252 ? p : nil,
                                 rangePercentile:rangeReady ? p : nil, prices:points, unavailable:reason,position:position)
         }
-        return .init(current:currentReport,metrics:results,excluded:excluded,sourceVersions:Array(Set(sources)).sorted(),
+        return .init(current:currentReport,historyInputs:history,metrics:results,excluded:excluded,sourceVersions:Array(Set(sources)).sorted(),
                      limitations:["STRICT_LESS_PERCENTILE; NEAREST_RANK_20_50_80", "NO_MULTICLASS_PRICE_INVERSION_WITHOUT_RATIO_EVIDENCE", "RESEARCH_ONLY_NO_ELIGIBILITY_GRANT"])
     }
     private static func inverse(_ id:String,multiple:Money,input:FundamentalInput,report:FundamentalReport) throws -> Money? {
-        guard let shares = input.classes.first?.shares else { return nil }
+        guard let shares = input.singleCompleteClass?.shares, report.metrics["marketCap"]?.value != nil else { return nil }
         let m = report.metrics
         switch id {
         case "peMarketCap", "priceFCF":

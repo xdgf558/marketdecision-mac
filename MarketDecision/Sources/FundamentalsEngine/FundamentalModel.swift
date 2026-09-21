@@ -25,7 +25,15 @@ public enum FundamentalModelV1 {
     }
     public static func resolve(in registry: ModelRegistry, at executionDate: Date) async throws -> ResolvedModel {
         let (p,m) = try definitions()
-        try await registry.register(p); try await registry.register(m)
+        // Concurrent callers may race to register the same immutable pair. Only duplicate version
+        // is recoverable, and only after verifying exact content references. All other errors propagate.
+        do { try await registry.register(p) }
+        catch RegistryError.duplicateVersion { _ = try await registry.parameterSet(reference: p.reference) }
+        do { try await registry.register(m) }
+        catch RegistryError.duplicateVersion {
+            let existing = try await registry.definition(id: m.id, version: m.version)
+            guard existing.reference == m.reference else { throw RegistryError.referenceMismatch }
+        }
         return try await registry.resolve(reference: m.reference, at: executionDate)
     }
     static func validate(_ model: ResolvedModel, executionDate: Date) throws {

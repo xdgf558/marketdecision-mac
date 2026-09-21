@@ -12,6 +12,10 @@ public struct FundamentalScore: Sendable, Codable {
     public let coveredWeightOf84: Int
     public let confidence: FinancialConfidence
     public let limitations: [String]
+    public func recompute(using model: ResolvedModel) throws -> FundamentalScore {
+        try FundamentalScoring.calculate(valuation.current.replayInput(using: model), history: valuation.historyInputs,
+                                         model: model, executionDate: valuation.current.inputSnapshot.executionDate)
+    }
 }
 public enum FundamentalScoring {
     public static func calculate(_ input:FundamentalInput, history:[HistoricalFundamentalSample] = [],

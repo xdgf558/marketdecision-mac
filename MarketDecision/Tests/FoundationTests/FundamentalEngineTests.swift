@@ -343,3 +343,204 @@ private func report(_ fixture:Fixture) async throws -> FundamentalReport {
     }
 
 }
+
+@Suite struct FundamentalReviewRegressionTests {
+    @Test func mismatchedCurrentClassCannotProduceHistoricalPrices() async throws {
+        var current = try Fixture(price:"20",date:"2026-03-01")
+        let m = try await model()
+        var history: [HistoricalFundamentalSample] = [], cursor = try day("2024-02-01")
+        var calendar = Calendar(identifier:.gregorian); calendar.timeZone = TimeZone(secondsFromGMT:0)!
+        while history.count < 530 {
+            let weekday = calendar.component(.weekday,from:try cursor.start(in:calendar.timeZone))
+            if weekday != 1 && weekday != 7 {
+                let f = try Fixture(price:"20",date:cursor.iso8601)
+                history.append(try .init(input:f.input(),session:f.session()))
+            }
+            cursor = try cursor.addingDays(1)
+        }
+        let valid = try HistoricalValuation.calculate(current:current.input(),history:history,model:m,executionDate:execution)
+        for key in ["peMarketCap","evEBITDA","priceFCF","fcfYield"] {
+            #expect(valid.metrics[key]?.prices.count == 3)
+        }
+        let a = current.classes[0]
+        current.classes = [.init(classID:"B",price:a.price,shares:a.shares,priceProvenance:a.priceProvenance,
+                                 shareProvenance:a.shareProvenance,shareBasisEvidence:a.shareBasisEvidence)]
+        let mismatch = try HistoricalValuation.calculate(current:current.input(),history:history,model:m,executionDate:execution)
+        #expect(mismatch.current.metrics["marketCap"]?.unavailable == .missingClass)
+        for key in ["peMarketCap","evEBITDA","priceFCF","fcfYield"] {
+            #expect(mismatch.metrics[key]?.prices.isEmpty == true)
+            #expect(mismatch.metrics[key]?.position == nil)
+            #expect(mismatch.metrics[key]?.unavailable == .missingClass)
+            #expect(mismatch.metrics[key]?.scorePercentile == nil)
+        }
+    }
+
+    @Test func reportContextDistinguishesEveryCalculationChoice() async throws {
+        var base = try Fixture()
+        base.values = try base.values.map { f in
+            guard f.fieldID == FundamentalField.tax.rawValue else { return f }
+            return try base.fact(.tax, [2021:"10",2022:"20",2023:"30"][f.periodEnd.year]!,
+                                 start:f.periodStart,end:f.periodEnd,type:f.periodType)
+        }
+        func context(_ report: FundamentalReport) throws -> Data {
+            var json = try #require(JSONSerialization.jsonObject(with:JSONEncoder().encode(report)) as? [String:Any])
+            json.removeValue(forKey:"metrics")
+            return try JSONSerialization.data(withJSONObject:json,options:.sortedKeys)
+        }
+        let baseline = try await report(base)
+        var year = base; year.years = Array(year.years.suffix(1))
+        var company = base; company.financial = true
+        var split = base; split.splitEvidence = nil
+        var quarter = base; quarter.quarters = Array(quarter.quarters.suffix(4))
+        for variant in [year, company, split, quarter] {
+            let changed = try await report(variant)
+            #expect(changed.metrics != baseline.metrics)
+            #expect(try context(changed) != context(baseline))
+        }
+    }
+
+    @Test func repeatedResolutionReusesTheSameImmutableReferences() async throws {
+        let registry = ModelRegistry()
+        let first = try await FundamentalModelV1.resolve(in:registry,at:execution)
+        let second = try await FundamentalModelV1.resolve(in:registry,at:execution)
+        #expect(first.definition.reference == second.definition.reference)
+        #expect(first.parameters.reference == second.parameters.reference)
+    }
+    @Test func savedSnapshotAloneRecreatesOutputsWithoutReadingCachedMetrics() async throws {
+        let resolved = try await model()
+        func saved(_ variant: Int) throws -> Data {
+            var f = try Fixture()
+            f.values = try f.values.map { row in
+                guard row.fieldID == FundamentalField.tax.rawValue else { return row }
+                return try f.fact(.tax,[2021:"10",2022:"20",2023:"30"][row.periodEnd.year]!,
+                                  start:row.periodStart,end:row.periodEnd,type:row.periodType)
+            }
+            if variant == 1 { f.years = Array(f.years.suffix(1)) }
+            if variant == 2 { f.financial = true }
+            if variant == 3 { f.splitEvidence = nil }
+            if variant == 4 { f.quarters = Array(f.quarters.suffix(4)) }
+            let base = try f.input()
+            let input = try FundamentalInput(cik:base.cik,normalization:base.normalization,quarters:base.quarters,
+                fiscalYears:base.fiscalYears,priceDay:base.priceDay,expectedClassIDs:base.expectedClassIDs,classes:base.classes,
+                financialCompany:base.financialCompany,splitBasisEvidence:base.splitBasisEvidence,inputLimitations:["retained-context"])
+            return try JSONEncoder().encode(FundamentalCalculator.calculate(input,model:resolved,executionDate:execution))
+        } // No Fixture or FundamentalInput escapes: only the encoded report survives.
+        for variant in 0...4 {
+            let data = try saved(variant)
+            let decoded = try JSONDecoder().decode(FundamentalReport.self,from:data)
+            let recomputed = try decoded.recompute(using:resolved)
+            #expect(recomputed.metrics == decoded.metrics)
+            #expect(recomputed.limitations == decoded.limitations)
+            #expect(recomputed.sourceVersions == decoded.sourceVersions)
+            #expect(recomputed.inputSnapshot.input.inputLimitations == ["retained-context"])
+            #expect(recomputed.inputSnapshot.input.fiscalYears.count == (variant == 1 ? 1 : 3))
+            #expect(recomputed.inputSnapshot.input.financialCompany == (variant == 2))
+            #expect((recomputed.inputSnapshot.input.splitBasisEvidence == nil) == (variant == 3))
+            #expect(recomputed.inputSnapshot.input.quarters.count == (variant == 4 ? 4 : 8))
+            var json = try #require(JSONSerialization.jsonObject(with:data) as? [String:Any])
+            json["metrics"] = [String:Any]()
+            let emptied = try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:json))
+            #expect(emptied.metrics.isEmpty)
+            #expect(try emptied.recompute(using:resolved).metrics == decoded.metrics)
+        }
+    }
+
+    @Test func snapshotDecodingRejectsMissingContextUnknownVersionsAndInvalidWindows() async throws {
+        let data = try JSONEncoder().encode(await report(Fixture()))
+        let root = try #require(JSONSerialization.jsonObject(with:data) as? [String:Any])
+        var noSnapshot = root; noSnapshot.removeValue(forKey:"inputSnapshot")
+        #expect(throws:(any Error).self) {
+            try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:noSnapshot))
+        }
+        let snapshot = try #require(root["inputSnapshot"] as? [String:Any])
+        let input = try #require(snapshot["input"] as? [String:Any])
+        for key in ["quarters","fiscalYears","financialCompany","splitBasisEvidence","inputLimitations"] {
+            var edited = input; edited.removeValue(forKey:key)
+            var snap = snapshot; snap["input"] = edited
+            var json = root; json["inputSnapshot"] = snap
+            #expect(throws:(any Error).self) {
+                try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:json))
+            }
+        }
+        var unknown = snapshot; unknown["formatVersion"] = "future-format"
+        var json = root; json["inputSnapshot"] = unknown
+        #expect(throws:FundamentalError.incompatibleInput) {
+            try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:json))
+        }
+        var invalid = input
+        invalid["quarters"] = Array(try #require(input["quarters"] as? [[String:Any]]).reversed())
+        var snap = snapshot; snap["input"] = invalid; json["inputSnapshot"] = snap
+        #expect(throws:ContractError.invalidRange) {
+            try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:json))
+        }
+    }
+
+    @Test func historyAndScoreRetainTheInputsNeededForReplay() async throws {
+        let resolved = try await model()
+        func encoded() throws -> Data {
+            let current = try Fixture(date:"2024-03-01")
+            let previous = try Fixture(date:"2024-02-01")
+            let today = try HistoricalFundamentalSample(input:current.input(),session:current.session())
+            return try JSONEncoder().encode(FundamentalScoring.calculate(current.input(),
+                history:[.init(input:previous.input(),session:previous.session()),today],model:resolved,executionDate:execution))
+        }
+        let decoded = try JSONDecoder().decode(FundamentalScore.self,from:encoded())
+        let replay = try decoded.recompute(using:resolved)
+        #expect(replay.total == decoded.total && replay.confidence == decoded.confidence)
+        #expect(replay.coveredWeightOf84 == decoded.coveredWeightOf84)
+        #expect(replay.valuation.excluded == decoded.valuation.excluded)
+        #expect(replay.valuation.current.metrics == decoded.valuation.current.metrics)
+        for key in HistoricalValuation.metricIDs {
+            #expect(replay.valuation.metrics[key]?.validDays == decoded.valuation.metrics[key]?.validDays)
+            #expect(replay.valuation.metrics[key]?.unavailable == decoded.valuation.metrics[key]?.unavailable)
+        }
+        let historical = try decoded.valuation.recompute(using:resolved)
+        #expect(historical.excluded == decoded.valuation.excluded)
+        var json = try #require(JSONSerialization.jsonObject(with:JSONEncoder().encode(decoded.valuation.current)) as? [String:Any])
+        var parameterRef = try #require(json["parameters"] as? [String:Any])
+        parameterRef["contentHash"] = String(repeating:"0",count:64); json["parameters"] = parameterRef
+        let wrong = try JSONDecoder().decode(FundamentalReport.self,from:JSONSerialization.data(withJSONObject:json))
+        #expect(throws:RegistryError.referenceMismatch) { try wrong.recompute(using:resolved) }
+    }
+
+    @Test func concurrentResolutionDoesNotRelaxRegistryImmutability() async throws {
+        let registry = ModelRegistry(), (_,definition) = try FundamentalModelV1.definitions()
+        try await withThrowingTaskGroup(of:RegistryReference.self) { group in
+            for _ in 0..<8 { group.addTask { try await FundamentalModelV1.resolve(in:registry,at:execution).definition.reference } }
+            for try await reference in group { #expect(reference == definition.reference) }
+        }
+        // The general registry registration API remains strict, even for identical content.
+        await #expect(throws:RegistryError.duplicateVersion) { try await registry.register(definition) }
+    }
+
+    @Test func conflictingParameterAndModelVersionsAreNeverOverwritten() async throws {
+        let (p,m) = try FundamentalModelV1.definitions()
+        let parametersRegistry = ModelRegistry()
+        let other = ParameterSet(id:p.id,version:p.version,revisionID:p.revisionID,
+            values:["different":.boolean(true)],state:p.state,dispositionReference:p.dispositionReference)
+        try await parametersRegistry.register(other)
+        await #expect(throws:RegistryError.referenceMismatch) { try await FundamentalModelV1.resolve(in:parametersRegistry,at:execution) }
+        #expect(try await parametersRegistry.parameterSet(reference:other.reference).reference == other.reference)
+        let modelRegistry = ModelRegistry()
+        var json = try #require(JSONSerialization.jsonObject(with:JSONEncoder().encode(m)) as? [String:Any])
+        json["formula"] = "different formula"
+        let conflict = try JSONDecoder().decode(ModelDefinition.self,from:JSONSerialization.data(withJSONObject:json))
+        try await modelRegistry.register(p); try await modelRegistry.register(conflict)
+        await #expect(throws:RegistryError.referenceMismatch) { try await FundamentalModelV1.resolve(in:modelRegistry,at:execution) }
+        #expect(try await modelRegistry.definition(id:m.id,version:m.version).reference == conflict.reference)
+    }
+
+    @Test func subMillisecondCutoffRetainsExactExecutionTimeForReplay() async throws {
+        let resolved = try await model()
+        func encoded() throws -> Data {
+            var f = try Fixture(date:"2026-09-21")
+            f.cutoff = f.cutoff.addingTimeInterval(0.0004)
+            return try JSONEncoder().encode(FundamentalCalculator.calculate(f.input(),model:resolved,executionDate:f.cutoff))
+        }
+        let decoded = try JSONDecoder().decode(FundamentalReport.self,from:encoded())
+        #expect(decoded.inputSnapshot.executionDate == decoded.inputSnapshot.input.normalization.asOf)
+        #expect(decoded.executionAt.date < decoded.inputSnapshot.executionDate)
+        #expect(try decoded.recompute(using:resolved).metrics == decoded.metrics)
+    }
+
+}

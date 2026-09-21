@@ -66,7 +66,7 @@ public enum FundamentalCalculator {
         m["roic"] = input.financialCompany ? .init(nil, reason: .notApplicable)
             : try fratio(nopat, icValues.count == 5 ? fmean(icValues) : nil)
         var cap: Money?
-        let completeClasses = !input.expectedClassIDs.isEmpty && Set(input.classes.map(\.classID)) == input.expectedClassIDs
+        let completeClasses = input.hasCompleteClasses
         if completeClasses { cap = try fsum(input.classes.map { try fproduct($0.price, $0.shares) }) }
         m["marketCap"] = .init(cap, reason: .missingClass)
         var ev: Money?
@@ -81,7 +81,7 @@ public enum FundamentalCalculator {
             m[key] = try fratio(numerator,denominator)
         }
         // EPS is class-specific. A consolidated EPS cannot price multiple distinct share classes.
-        m["peEPS"] = input.classes.count == 1 && completeClasses ? try fratio(input.classes[0].price, eps) : .init(nil, reason: .missingClass)
+        m["peEPS"] = input.singleCompleteClass != nil ? try fratio(input.singleCompleteClass!.price, eps) : .init(nil, reason: .missingClass)
         let netBuybacks = try difference(input.flow(.buybacks), nonnegative: input.flow(.issuance))
         let shareholderCash = try addition(netBuybacks, nonnegative: input.flow(.dividends))
         m["netBuybacks"] = .init(netBuybacks); m["shareholderYield"] = try fratio(shareholderCash, cap)
@@ -114,11 +114,9 @@ public enum FundamentalCalculator {
         } else { m["liquidityTrend"] = .init(nil) }
         let limitations = Array(Set(input.inputLimitations + input.normalization.values.flatMap(\.limitations)
             + ["RESEARCH_ONLY_NO_ELIGIBILITY_GRANT", "FIELD_COVERAGE_IS_NOT_TAXONOMY_ACCEPTANCE"])).sorted()
-        return FundamentalReport(cik: input.cik, asOf: try MillisecondInstant(rounding: input.normalization.asOf),
-            periodEnd: input.quarters.last!.end, executionAt: try MillisecondInstant(rounding: executionDate), priceDay: input.priceDay,
-            capitalInputs: input.classes, expectedClassIDs: input.expectedClassIDs.sorted(), model: model.definition.reference, parameters: model.parameters.reference,
-            dictionaryVersion: input.normalization.dictionaryVersion, sourceVersions: input.sourceVersions,
-            limitations: limitations, normalizedInputs: input.normalization.values, metrics: m,
+        return FundamentalReport(inputSnapshot: try FundamentalInputSnapshot(input: input, executionDate: executionDate),
+            model: model.definition.reference,
+            parameters: model.parameters.reference, limitations: limitations, metrics: m,
             confidence: input.normalization.values.contains { $0.confidence == .low } ? .low : .medium, researchOnly: true)
     }
     private static func subtract(_ a: Money?, _ b: Money?) throws -> Money? {
