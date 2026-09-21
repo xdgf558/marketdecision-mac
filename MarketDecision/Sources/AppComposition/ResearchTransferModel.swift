@@ -11,6 +11,8 @@ import Persistence
     public private(set) var isBusy = false
     private let store: any ResearchTransferStorage
     private var session = UUID()
+    var commitWillBegin: (() -> Void)?
+    var commitDidFinish: (() async -> Void)?
     public init(store: any ResearchTransferStorage) { self.store = store }
     public func backup() async -> Data? {
         guard !isBusy else { return nil }; isBusy = true; message = nil
@@ -42,17 +44,21 @@ import Persistence
     public func confirm(id: UUID, digest: String) async -> Bool {
         guard !isBusy, let current = plan, current.id == id, current.digest == digest else { return false }
         isBusy = true; defer { isBusy = false }
+        commitWillBegin?()
+        let committed: Bool
         do {
             try await store.commit(.init(planID:id,digest:digest))
             plan = nil; message = "操作已提交。API Key 与外部备份文件未变。"
             do { conflicts = try await store.conflicts() }
             catch { conflicts = []; message = "操作已提交，但冲突列表读取失败。请重新读取；不要重复提交。" }
-            return true
+            committed = true
         } catch SnapshotError.stalePlan {
-            plan = nil; message = "数据已变化，旧计划失效。请重新预检并确认。"; return false
+            plan = nil; message = "数据已变化，旧计划失效。请重新预检并确认。"; committed = false
         } catch {
-            message = "提交未完成，原库保持不变；可重试当前计划或取消。"; return false
+            message = "提交未完成，原库保持不变；可重试当前计划或取消。"; committed = false
         }
+        await commitDidFinish?()
+        return committed
     }
     /// Invalidate synchronously; delayed storage cleanup can only cancel this exact old ID.
     @discardableResult public func dismiss() -> Task<Void,Never> {

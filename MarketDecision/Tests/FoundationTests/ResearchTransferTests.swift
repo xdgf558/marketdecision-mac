@@ -301,3 +301,196 @@ private actor TransferControlStore: ResearchTransferStorage {
         #expect(try await f.research.watchlist().isEmpty)
     }
 }
+
+/// Takes a real, verified SQLite read before pausing its delivery to the UI model.
+private actor DelayedResearchReader: ResearchStorage {
+    let base: ResearchStore
+    var pauseSaved = false, pauseWatch = false, failDelayed = false
+    var pending: CheckedContinuation<Void,Never>?
+    var started: CheckedContinuation<Void,Never>?
+    var didStart = false
+    init(_ base: ResearchStore) { self.base = base }
+    func arm(watch: Bool = false, fail: Bool = false) { pauseWatch = watch; pauseSaved = !watch; failDelayed = fail }
+    func waitStarted() async { if !didStart { await withCheckedContinuation { started = $0 } } }
+    func release() { pending?.resume(); pending = nil }
+    private func hold() async {
+        await withCheckedContinuation { pending = $0; didStart = true; started?.resume(); started = nil }
+    }
+    func savedResearch() async throws -> [SavedResearch] {
+        let captured = try await base.savedResearch()
+        if pauseSaved { pauseSaved = false; let fail = failDelayed; await hold(); if fail { throw ResearchError.invalidDocument } }
+        return captured
+    }
+    func watchlist() async throws -> [WatchlistEntry] {
+        let captured = try await base.watchlist()
+        if pauseWatch { pauseWatch = false; let fail = failDelayed; await hold(); if fail { throw ResearchError.invalidDocument } }
+        return captured
+    }
+    func save(_ doc: ResearchDocument) async throws { try await base.save(doc) }
+    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws { try await base.setWatchlist(entry,expectedRevision:expectedRevision) }
+    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws { try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision) }
+}
+@Suite @MainActor struct ResearchTransferReviewTests {
+    @Test func clearAndReplaceRejectLateOpenAndLoadResults() async throws {
+        let doc = try await transferDemo(), incoming = try TransferFixture()
+        try await incoming.research.save(transferDemo("GAP"))
+        let backup = try await incoming.transfer.exportBackup()
+        for replacing in [false,true] {
+            for opening in [false,true] {
+                for fails in [false,true] {
+                    let f = try TransferFixture(); try await f.research.save(doc)
+                    let delayed = DelayedResearchReader(f.research), model = ResearchWorkspaceModel(storage:delayed)
+                    await model.load(); let old = try #require(model.saved.first)
+                    await delayed.arm(fail:fails)
+                    let read = Task { if opening { await model.open(old.id) } else { await model.load() } }
+                    await delayed.waitStarted()
+                    let plan = replacing ? try await f.transfer.prepare(backup,mode:.replace) : try await f.transfer.prepareClear()
+                    try await f.transfer.commit(approve(plan)); await model.reloadAfterTransfer()
+                    // Refresh must finish while the old read is still held, not be skipped as busy.
+                    #expect(model.saved.map(\.document.symbol) == (replacing ? ["GAP"]:[]))
+                    await delayed.release(); await read.value
+                    #expect(model.document == nil); #expect(model.savedID == nil)
+                    #expect(model.saved.map(\.document.symbol) == (replacing ? ["GAP"]:[]))
+                    #expect(!model.hasError); #expect(!model.isBusy)
+                }
+            }
+        }
+    }
+    @Test func clearAndReplaceRejectLateWatchlistRead() async throws {
+        for replacing in [false,true] {
+            let f = try TransferFixture(), incoming = try TransferFixture()
+            try await f.research.setWatchlist(WatchlistEntry(symbol:"OLD"),expectedRevision:nil)
+            try await incoming.research.setWatchlist(WatchlistEntry(symbol:"NEW"),expectedRevision:nil)
+            let delayed = DelayedResearchReader(f.research), model = ResearchWorkspaceModel(storage:delayed)
+            await delayed.arm(watch:true)
+            let read = Task { await model.load() }; await delayed.waitStarted()
+            let plan = replacing ? try await f.transfer.prepare(incoming.transfer.exportBackup(),mode:.replace) : try await f.transfer.prepareClear()
+            try await f.transfer.commit(approve(plan)); await model.reloadAfterTransfer()
+            await delayed.release(); await read.value
+            #expect(model.watchlist.map(\.symbol) == (replacing ? ["NEW"]:[]))
+            #expect(model.document == nil); #expect(model.savedID == nil); #expect(!model.isBusy)
+        }
+    }
+    @Test func replaceRepairsCorruptTargetCollectionsWithoutDeletingSourceCache() async throws {
+        let incoming = try TransferFixture(), doc = try await transferDemo("GAP")
+        try await incoming.research.save(doc)
+        try await incoming.research.setWatchlist(WatchlistEntry(symbol:"NEW"),expectedRevision:nil)
+        let backup = try await incoming.transfer.exportBackup()
+        for corruption in ["watchlist","conflicts","graph"] {
+            let f = try TransferFixture(); try await f.research.save(transferDemo())
+            try await f.research.setWatchlist(WatchlistEntry(symbol:"OLD"),expectedRevision:nil)
+            let time = try MillisecondInstant(iso8601:"2025-01-10T12:00:00.000Z")
+            let source = try SourceDocument(reference:"synthetic/cache.json",providerID:"fixture",feedID:"fixture",endpoint:.bars,
+                receivedAt:time,availableAt:time,mediaType:"application/json",evidenceRef:"synthetic",licenseRef:"synthetic",payload:Data("{}".utf8))
+            _ = try await f.business.ingest(document:source,observations:[],expectedRevision:f.business.revision())
+            try f.db.transaction { db in
+                switch corruption {
+                case "watchlist": try db.execute(sql:"UPDATE p1_watchlist SET content_hash = ?",arguments:[String(repeating:"0",count:64)])
+                case "conflicts": try db.execute(sql:"INSERT INTO p1_watchlist_conflicts VALUES (?,?)",arguments:[String(repeating:"0",count:64),Data("broken".utf8)])
+                default: try db.execute(sql:"UPDATE p1_snapshot_objects SET content = X'00'")
+                }
+            }
+            let revision = await f.business.revision()
+            await #expect(throws:(any Error).self) { try await f.transfer.prepare(backup,mode:.merge) }
+            let plan = try await f.transfer.prepare(backup,mode:.replace)
+            #expect(await f.business.revision() == revision)
+            #expect(plan.details.contains { $0.contains("覆盖当前 1 份研究、1 条自选") })
+            try await f.transfer.commit(approve(plan))
+            #expect(try await f.research.savedResearch().map(\.document.symbol) == ["GAP"])
+            #expect(try await f.research.watchlist().map(\.symbol) == ["NEW"])
+            #expect(try await f.transfer.conflicts().isEmpty)
+            #expect(try await f.business.sourceDocument(reference:source.reference).payload == source.payload)
+            #expect(try f.db.read { try Row.fetchAll($0,sql:"PRAGMA foreign_key_check").isEmpty })
+        }
+    }
+}
+
+private actor PausedTransferCommit: ResearchTransferStorage {
+    let base: ResearchTransferStore
+    var pending: CheckedContinuation<Void,Never>?
+    var started: CheckedContinuation<Void,Never>?
+    var didStart = false
+    init(_ base: ResearchTransferStore) { self.base = base }
+    func waitStarted() async { if !didStart { await withCheckedContinuation { started = $0 } } }
+    func release() { pending?.resume(); pending = nil }
+    func exportBackup() async throws -> Data { try await base.exportBackup() }
+    func prepare(_ data: Data, mode: RestoreMode) async throws -> ResearchTransferPlan { try await base.prepare(data,mode:mode) }
+    func prepareClear() async throws -> ResearchTransferPlan { try await base.prepareClear() }
+    func commit(_ approval: PlanApproval) async throws {
+        if !didStart { await withCheckedContinuation { pending = $0; didStart = true; started?.resume(); started = nil } }
+        try await base.commit(approval)
+    }
+    func cancel(_ id: UUID) async { await base.cancel(id) }
+    func conflicts() async throws -> [WatchlistConflict] { try await base.conflicts() }
+}
+extension ResearchTransferReviewTests {
+    @Test func confirmedTransferOwnsInvalidationBusyStateAndRefreshOnSuccessOrFailure() async throws {
+        let doc = try await transferDemo(), incoming = try TransferFixture()
+        try await incoming.research.save(transferDemo("GAP"))
+        let archive = try await incoming.transfer.exportBackup()
+        for replacing in [false,true] {
+            for fail in [false,true] {
+                let f = try TransferFixture(); try await f.research.save(doc)
+                let delayed = DelayedResearchReader(f.research), gate = PausedTransferCommit(f.transfer)
+                let transfer = ResearchTransferModel(store:gate), model = ResearchWorkspaceModel(storage:delayed,transfer:transfer)
+                await model.load(); let old = try #require(model.saved.first)
+                if replacing { await transfer.prepare(archive,mode:.replace) } else { await transfer.prepareClear() }
+                let plan = try #require(transfer.plan)
+                await delayed.arm()
+                let oldRead = Task { await model.open(old.id) }; await delayed.waitStarted()
+                if fail { try f.db.transaction { try $0.execute(sql:"CREATE TRIGGER fail_review BEFORE UPDATE ON p1_store_metadata BEGIN SELECT RAISE(ABORT,'synthetic'); END") } }
+                let commit = Task { await transfer.confirm(id:plan.id,digest:plan.digest) }; await gate.waitStarted()
+                #expect(model.isBusy); #expect(model.document == nil); #expect(model.saved.isEmpty)
+                await delayed.release(); await oldRead.value
+                #expect(model.isBusy) // An old defer must not unlock the in-progress transfer.
+                await model.open(old.id); await model.load()
+                #expect(model.document == nil); #expect(model.saved.isEmpty)
+                await gate.release(); #expect(await commit.value == !fail)
+                // This refresh is owned by the model wiring, with no view callback.
+                #expect(model.saved.map(\.document.symbol) == (fail ? ["DEMO"]:(replacing ? ["GAP"]:[])))
+                #expect(model.savedID == nil); #expect(model.document == nil); #expect(!model.isBusy)
+                if fail {
+                    try f.db.transaction { try $0.execute(sql:"DROP TRIGGER fail_review") }
+                    #expect(await transfer.confirm(id:plan.id,digest:plan.digest))
+                    #expect(model.saved.map(\.document.symbol) == (replacing ? ["GAP"]:[]))
+                }
+            }
+        }
+    }
+    @Test func damagedTargetStillRequiresValidArchiveAndValidMetadataAndFreshApproval() async throws {
+        let source = try TransferFixture(), target = try TransferFixture()
+        try await source.research.setWatchlist(WatchlistEntry(symbol:"NEW"),expectedRevision:nil)
+        try await target.research.setWatchlist(WatchlistEntry(symbol:"OLD"),expectedRevision:nil)
+        let backup = try await source.transfer.exportBackup()
+        try target.db.transaction { try $0.execute(sql:"UPDATE p1_watchlist SET entry_json = X'00'") }
+        let revision = await target.business.revision()
+        var bad = backup; bad[43] ^= 1
+        await #expect(throws:(any Error).self) { try await target.transfer.prepare(bad,mode:.replace) }
+        #expect(await target.business.revision() == revision)
+        let plan = try await target.transfer.prepare(backup,mode:.replace)
+        try await target.research.setWatchlist(WatchlistEntry(symbol:"OTHER"),expectedRevision:nil)
+        await #expect(throws:SnapshotError.stalePlan) { try await target.transfer.commit(approve(plan)) }
+        try target.db.transaction { try $0.execute(sql:"UPDATE p1_store_metadata SET revision = 'broken'") }
+        await #expect(throws:BusinessStoreError.corruptedStorage) { try await target.transfer.prepare(backup,mode:.replace) }
+    }
+    @Test func repairingCorruptTargetRollsBackOnFailureAndRetriesSamePlan() async throws {
+        let source = try TransferFixture(), target = try TransferFixture()
+        try await source.research.save(transferDemo("GAP"))
+        try await source.research.setWatchlist(WatchlistEntry(symbol:"NEW"),expectedRevision:nil)
+        try await target.research.save(transferDemo())
+        try await target.research.setWatchlist(WatchlistEntry(symbol:"OLD"),expectedRevision:nil)
+        try target.db.transaction { try $0.execute(sql:"UPDATE p1_watchlist SET entry_json = X'00'") }
+        let revision = await target.business.revision()
+        let before = try target.db.read { try Row.fetchAll($0,sql:"SELECT * FROM p1_watchlist") }
+        let plan = try await target.transfer.prepare(source.transfer.exportBackup(),mode:.replace)
+        try target.db.transaction { try $0.execute(sql:"CREATE TRIGGER fail_repair BEFORE INSERT ON p1_watchlist BEGIN SELECT RAISE(ABORT,'synthetic'); END") }
+        await #expect(throws:(any Error).self) { try await target.transfer.commit(approve(plan)) }
+        #expect(try target.db.read { try Row.fetchAll($0,sql:"SELECT * FROM p1_watchlist") } == before)
+        #expect(try await target.research.savedResearch().map(\.document.symbol) == ["DEMO"])
+        #expect(await target.business.revision() == revision)
+        try target.db.transaction { try $0.execute(sql:"DROP TRIGGER fail_repair") }
+        try await target.transfer.commit(approve(plan))
+        #expect(try await target.research.savedResearch().map(\.document.symbol) == ["GAP"])
+        #expect(try await target.research.watchlist().map(\.symbol) == ["NEW"])
+    }
+}

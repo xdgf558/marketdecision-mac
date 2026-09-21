@@ -100,7 +100,7 @@ struct ResearchTransferContent: View {
                 HStack { Spacer()
                     Button("取消") { Task { await transfer.cancel() } }.keyboardShortcut(.cancelAction).disabled(transfer.isBusy)
                     Button("执行已确认计划",role:.destructive) {
-                        Task { if await transfer.confirm(id:plan.id,digest:plan.digest) { await research.reloadAfterTransfer() } }
+                        Task { _ = await transfer.confirm(id:plan.id,digest:plan.digest) }
                     }.keyboardShortcut("d",modifiers:[.command,.shift])
                         .disabled(confirmation != "确认" || transfer.isBusy).accessibilityIdentifier("researchTransferCommit")
                 }

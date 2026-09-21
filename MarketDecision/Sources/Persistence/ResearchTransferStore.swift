@@ -137,18 +137,27 @@ public actor ResearchTransferStore: ResearchTransferStorage {
     public func prepare(_ data: Data, mode: RestoreMode) async throws -> ResearchTransferPlan {
         let incoming = try await ResearchArchiveCodec.decode(data)
         try Task.checkCancellation()
-        let (current, revision) = try database.read { db in
-            (try Self.state(db), try Self.revision(db))
-        }
-        try await current.validate(); try Task.checkCancellation()
+        let revision: UUID
         let next: ResearchArchiveState
         var details = ["范围：冻结合成研究、自选目标及冲突副本；源缓存不在恢复范围内。", "API Key 不导入、不删除；恢复不会连接供应商。"]
         if mode == .replace {
+            // Replaced payloads need not be decodable. Read only the metadata and
+            // exact collection counts in one consistent read with the revision.
+            let summary = try database.read { db in
+                (revision:try Self.revision(db),
+                 roots:try Int.fetchOne(db,sql:"SELECT COUNT(*) FROM p1_snapshot_roots")!,
+                 objects:try Int.fetchOne(db,sql:"SELECT COUNT(*) FROM p1_snapshot_objects")!,
+                 watchlist:try Int.fetchOne(db,sql:"SELECT COUNT(*) FROM p1_watchlist")!,
+                 conflicts:try Int.fetchOne(db,sql:"SELECT COUNT(*) FROM p1_watchlist_conflicts")!)
+            }
+            revision = summary.revision
             next = ResearchArchiveState(graph:try incoming.graph(),watchlist:try incoming.watchlist.map(Self.freshEntry),conflicts:incoming.conflicts)
-            details.append("覆盖当前 \(current.roots.count) 份研究、\(current.watchlist.count) 条自选、\(current.conflicts.count) 份冲突；仅保留包内记录。")
-            details += current.roots.map { "将移除当前研究：" + key($0.address) }
-            details += current.watchlist.map { "将替换自选："+$0.symbol }
+            details.append("覆盖当前 \(summary.roots) 份研究、\(summary.watchlist) 条自选、\(summary.conflicts) 份冲突；仅保留包内记录。")
+            details.append("将替换上述集合全部记录（含 \(summary.objects) 个冻结内容及关联引用）。旧内容不作可信展示；损坏记录一并替换，源缓存保留。")
         } else {
+            let (current, currentRevision) = try database.read { db in (try Self.state(db),try Self.revision(db)) }
+            revision = currentRevision
+            try await current.validate(); try Task.checkCancellation()
             let graph = try Self.merge(incoming, into:current.graph())
             var entries = Dictionary(uniqueKeysWithValues:current.watchlist.map { ($0.symbol,$0) })
             var alternatives = current.conflicts
