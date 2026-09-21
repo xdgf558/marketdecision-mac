@@ -66,10 +66,25 @@ import XCTest
         waitEnabled(save, false)
     }
     private func researchTab(_ title: String) {
-        let picker = app.segmentedControls["researchTabs"]
-        let radio = picker.radioButtons[title]
+        // macOS exposes SwiftUI segmented pickers as radio groups on some
+        // deployment targets. Keep the query in this app's main window,
+        // without assuming the iOS-style SegmentedControl container type.
+        let radio = mainWindow.radioButtons[title]
         if radio.exists { radio.click() }
-        else { picker.buttons[title].click() }
+        else {
+            let button = mainWindow.buttons[title]
+            XCTAssertTrue(button.waitForExistence(timeout: 5), mainWindow.debugDescription)
+            button.click()
+        }
+    }
+    private func waitText(_ text: String, in element: XCUIElement) {
+        // AppKit static text may expose its contents as AXValue, not AXTitle.
+        let predicate = NSPredicate { _, _ in
+            element.exists && (element.label.contains(text) || (element.value as? String)?.contains(text) == true)
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 15)
+        XCTAssertEqual(result, .completed, element.debugDescription)
     }
     private func launchResearch() {
         configure(); app.launch()
@@ -95,14 +110,12 @@ import XCTest
         for _ in 0..<8 where !replay.isHittable { app.scrollViews.firstMatch.swipeUp() }
         XCTAssertTrue(replay.isHittable); replay.click()
         let message = app.staticTexts["researchMessage"]
-        let expectation = XCTNSPredicateExpectation(predicate:NSPredicate(format:"label CONTAINS %@", "复算一致"),object:message)
-        XCTAssertEqual(XCTWaiter.wait(for:[expectation],timeout:15),.completed)
+        waitText("复算一致", in: message)
     }
     func testResearchMissingDataAndUserTargetsStayDistinct() {
         launchResearch(); app.buttons["researchGap"].click()
         let company = app.staticTexts["researchCompany"]
-        let changed = XCTNSPredicateExpectation(predicate:NSPredicate(format:"label CONTAINS %@", "GAP"),object:company)
-        XCTAssertEqual(XCTWaiter.wait(for:[changed],timeout:15),.completed)
+        waitText("GAP", in: company)
         researchTab("自选"); app.buttons["researchAddWatch"].click()
         let sheet = mainWindow.sheets.firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout:5))
