@@ -4,10 +4,28 @@ import CoreDomain
 import FundamentalsEngine
 import Persistence
 
+/// Text is editable; the compare-and-swap baseline belongs to when the editor opened.
+/// A new draft always expects absence, even if the shared list later gains that symbol.
+public struct WatchlistDraft: Sendable, Equatable {
+    public let original: WatchlistEntry?
+    public var symbol: String
+    public var target: String
+    public var maximum: String
+    public var riskNote: String
+    public init(entry: WatchlistEntry? = nil, symbol: String = "") {
+        original = entry; self.symbol = entry?.symbol ?? symbol
+        target = entry?.targetPrice?.decimalString ?? ""
+        maximum = entry?.maximumAssignmentPrice?.decimalString ?? ""
+        riskNote = entry?.riskNote ?? ""
+    }
+}
+
 @MainActor @Observable public final class ResearchWorkspaceModel {
     public private(set) var document: ResearchDocument?
     public private(set) var saved: [SavedResearch] = []
     public private(set) var watchlist: [WatchlistEntry] = []
+    public private(set) var savedReadError: String?
+    public private(set) var watchlistReadError: String?
     public private(set) var isBusy = false
     public private(set) var message: String?
     public private(set) var hasError = false
@@ -23,12 +41,30 @@ import Persistence
         guard !isBusy else { return }
         isBusy = true; message = nil; hasError = false
         defer { isBusy = false }
+        await readSavedList()
+        // Failure of either store does not suppress the other independent query.
+        await readWatchlist()
+        hasError = savedReadError != nil || watchlistReadError != nil
+        if hasError { message = "部分记录读取失败；请查看对应区域并重新载入。" }
+    }
+    private func readSavedList() async {
         do {
-            let list = try await storage.savedResearch(), entries = try await storage.watchlist()
-            try Task.checkCancellation(); saved = list; watchlist = entries
+            let list = try await storage.savedResearch()
+            try Task.checkCancellation(); saved = list; savedReadError = nil
         } catch {
-            saved = []; watchlist = []; hasError = true
-            message = Task.isCancelled ? "读取已取消，可以重试。":"本地研究记录读取失败；未将损坏数据作为有效结果。"
+            saved = []
+            savedReadError = "快照列表读取失败；未显示未验证的快照，请重新载入。"
+        }
+    }
+    private func readWatchlist(keepCommittedChanges: Bool = false) async {
+        do {
+            let entries = try await storage.watchlist()
+            try Task.checkCancellation(); watchlist = entries; watchlistReadError = nil
+        } catch {
+            if !keepCommittedChanges { watchlist = [] }
+            watchlistReadError = keepCommittedChanges
+                ? "自选列表刷新失败；显示本机已确认的修改及旧记录，不代表完整最新列表。请重新载入。"
+                : "自选列表读取失败；未显示未验证的自选，请重新载入。"
         }
     }
     public func select(_ symbol: String) async {
@@ -55,7 +91,7 @@ import Persistence
             let fresh = try await storage.savedResearch()
             guard let item = fresh.first(where:{$0.id == id}) else { throw ResearchError.invalidDocument }
             try Task.checkCancellation()
-            saved = fresh; document = item.document; selectedSymbol = item.document.symbol; savedID = id
+            saved = fresh; savedReadError = nil; document = item.document; selectedSymbol = item.document.symbol; savedID = id
             message = "已打开冻结版本；来源、输入与模型保存在本机。"
         } catch { hasError = true; message = "冻结版本无法通过完整性校验或已不可用，请重新载入。" }
     }
@@ -68,8 +104,8 @@ import Persistence
         // Do not claim cancellation rolled back a completed SQLite commit.
         savedID = document.id.uuidString + "/" + document.id.uuidString.lowercased() + "/v1"
         message = "研究快照已保存；此版本不可覆盖。"
-        do { saved = try await storage.savedResearch() }
-        catch { hasError = true; message = "快照已保存，但列表读取失败；请重新载入。" }
+        await readSavedList()
+        if savedReadError != nil { hasError = true; message = "快照已保存，但列表读取失败；请重新载入。" }
     }
     public func recompute() async {
         guard !isBusy, let document else { return }
@@ -80,28 +116,46 @@ import Persistence
             message = "复算一致：使用保存的输入与绑定模型，未改写快照。"
         } catch { hasError = true; message = "复算校验未通过；快照未被修改。" }
     }
-    public func updateWatchlist(symbol: String, target: String, maximum: String, riskNote: String) async {
-        guard !isBusy else { return }
+    /// Returns whether storage committed, separately from the subsequent refresh.
+    /// Failure leaves the caller's value-type draft unchanged; no automatic rebase.
+    @discardableResult public func updateWatchlist(_ draft: WatchlistDraft) async -> Bool {
+        guard !isBusy else { return false }
         isBusy = true; message = nil; hasError = false
         defer { isBusy = false }
+        let entry: WatchlistEntry
         do {
             func amount(_ text: String) throws -> Money? {
                 let clean = text.trimmingCharacters(in:.whitespacesAndNewlines)
                 return clean.isEmpty ? nil : try Money(clean)
             }
-            let cleanSymbol = symbol.trimmingCharacters(in:.whitespacesAndNewlines).uppercased()
-            let entry = try WatchlistEntry(symbol:cleanSymbol,targetPrice:amount(target),maximumAssignmentPrice:amount(maximum),riskNote:riskNote)
-            try await storage.setWatchlist(entry,expectedRevision:watchlist.first(where:{$0.symbol == cleanSymbol})?.revision)
-            watchlist = try await storage.watchlist(); message = "自选已保存；用户目标不代表估值建议或交易指令。"
-        } catch { hasError = true; message = "自选未更新或尚未确认结果。价格须为正数；若其他窗口已修改，请重载后再试。" }
+            let symbol = draft.symbol.trimmingCharacters(in:.whitespacesAndNewlines).uppercased()
+            // Editing cannot silently turn into a rename or a different-symbol overwrite.
+            guard draft.original.map({ $0.symbol == symbol }) ?? true else { throw ResearchError.invalidDocument }
+            entry = try WatchlistEntry(symbol:symbol,targetPrice:amount(draft.target),maximumAssignmentPrice:amount(draft.maximum),riskNote:draft.riskNote)
+            try await storage.setWatchlist(entry,expectedRevision:draft.original?.revision)
+        } catch ResearchError.staleWatchlist {
+            hasError = true; message = "自选已被其他窗口修改或创建；草稿已保留。请取消后重新载入并打开最新记录，再确认修改。"
+            return false
+        } catch {
+            hasError = true; message = "自选未更新；草稿已保留。价格须为正数；请检查输入或重新载入。"
+            return false
+        }
+        watchlist.removeAll { $0.symbol == entry.symbol }; watchlist.append(entry)
+        watchlist.sort { $0.symbol < $1.symbol }
+        await readWatchlist(keepCommittedChanges:true)
+        hasError = watchlistReadError != nil
+        message = hasError ? "自选已保存，但列表刷新失败；请重新载入。":"自选已保存；用户目标不代表估值建议或交易指令。"
+        return true
     }
     public func remove(_ entry: WatchlistEntry) async {
         guard !isBusy else { return }
         isBusy = true; message = nil; hasError = false
         defer { isBusy = false }
-        do {
-            try await storage.removeWatchlist(symbol:entry.symbol,expectedRevision:entry.revision)
-            watchlist = try await storage.watchlist(); message = "已移出自选；保存的研究快照仍保留。"
-        } catch { hasError = true; message = "移出自选未完成，请重载后再试。" }
+        do { try await storage.removeWatchlist(symbol:entry.symbol,expectedRevision:entry.revision) }
+        catch { hasError = true; message = "移出自选未完成，请重载后再试。"; return }
+        watchlist.removeAll { $0.symbol == entry.symbol }
+        await readWatchlist(keepCommittedChanges:true)
+        hasError = watchlistReadError != nil
+        message = hasError ? "已移出自选，但列表刷新失败；请重新载入。":"已移出自选；保存的研究快照仍保留。"
     }
 }

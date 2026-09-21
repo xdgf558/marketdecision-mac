@@ -104,7 +104,12 @@ import XCTest
         researchTab("原始数据")
         let filter = app.textFields["researchFieldFilter"]
         XCTAssertTrue(filter.waitForExistence(timeout: 5)); filter.click(); filter.typeText("income.revenue")
-        XCTAssertTrue(app.staticTexts["income.revenue"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(filter.value as? String, "income.revenue")
+        let field = mainWindow.descendants(matching: .any)["researchFact-income.revenue"].firstMatch
+        // The source rows are lazy and may be below the runner's smaller viewport.
+        for _ in 0..<8 where !field.exists { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(field.waitForExistence(timeout: 5), mainWindow.debugDescription)
+        waitText("income.revenue", in: field)
         researchTab("概览")
         let replay = app.buttons["researchReplay"]
         for _ in 0..<8 where !replay.isHittable { app.scrollViews.firstMatch.swipeUp() }

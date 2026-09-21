@@ -170,13 +170,29 @@ private actor ResearchGate {
 private actor FailingResearchStore: ResearchStorage {
     var rejectReads = false
     var saves = 0
+    var rejectWatchReads = false
+    var failAfterRemove = false
+    var failAfterWrite = false
+    var removals = 0
+    func configureWatchFailure(remove: Bool = false, write: Bool = false) {
+        failAfterRemove = remove; failAfterWrite = write; rejectWatchReads = false
+    }
     let base: ResearchStore
     init() throws { let db = try DatabaseStore(path:":memory:"); base = ResearchStore(database:db,snapshots:try BusinessDataStore(database:db)) }
     func savedResearch() async throws -> [SavedResearch] { if rejectReads { throw ResearchError.invalidDocument }; return try await base.savedResearch() }
     func save(_ document: ResearchDocument) async throws { try await base.save(document); saves += 1; rejectReads = true }
-    func watchlist() async throws -> [WatchlistEntry] { try await base.watchlist() }
-    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws { try await base.setWatchlist(entry,expectedRevision:expectedRevision) }
-    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws { try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision) }
+    func watchlist() async throws -> [WatchlistEntry] {
+        if rejectWatchReads { throw ResearchError.invalidDocument }
+        return try await base.watchlist()
+    }
+    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws {
+        try await base.setWatchlist(entry,expectedRevision:expectedRevision)
+        if failAfterWrite { rejectWatchReads = true }
+    }
+    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws {
+        try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision); removals += 1
+        if failAfterRemove { rejectWatchReads = true }
+    }
 }
 @Suite @MainActor struct ResearchModelTests {
     private func model() throws -> ResearchWorkspaceModel {
@@ -215,9 +231,109 @@ private actor FailingResearchStore: ResearchStorage {
     }
     @Test func invalidUserTargetDoesNotWriteWatchlist() async throws {
         let model = try model()
-        await model.updateWatchlist(symbol:"demo",target:"-1",maximum:"",riskNote:"")
+        var draft = WatchlistDraft(symbol:"demo"); draft.target = "-1"
+        await model.updateWatchlist(draft)
         #expect(model.hasError); #expect(model.watchlist.isEmpty)
-        await model.updateWatchlist(symbol:"demo",target:"12.5",maximum:"10",riskNote:"人工约束")
+        draft.target = "12.5"; draft.maximum = "10"; draft.riskNote = "人工约束"
+        await model.updateWatchlist(draft)
         #expect(!model.hasError); #expect(model.watchlist.first?.symbol == "DEMO")
+    }
+
+    @Test func oldDraftKeepsItsBaselineAcrossSharedUpdatesAndReloads() async throws {
+        for reload in [false,true] {
+            let model = try model()
+            var initial = WatchlistDraft(symbol:"DEMO"); initial.target = "10"; initial.maximum = "8"; initial.riskNote = "original"
+            #expect(await model.updateWatchlist(initial))
+            let first = try #require(model.watchlist.first)
+            var windowA = WatchlistDraft(entry:first); windowA.target = "12"
+            let preserved = windowA
+            var windowB = WatchlistDraft(entry:first); windowB.target = "20"; windowB.maximum = "18"; windowB.riskNote = "new restriction"
+            #expect(await model.updateWatchlist(windowB))
+            if reload { await model.load() }
+            let latest = try #require(model.watchlist.first)
+            #expect(!(await model.updateWatchlist(windowA)))
+            #expect(model.hasError); #expect(model.message?.contains("草稿已保留") == true)
+            #expect(windowA == preserved)
+            #expect(model.watchlist == [latest]); #expect(latest.targetPrice == (try Money("20")))
+            #expect(latest.maximumAssignmentPrice == (try Money("18"))); #expect(latest.riskNote == "new restriction")
+            await model.load(); #expect(model.watchlist == [latest])
+            // Reopening is an explicit new baseline; the old draft was never rebased.
+            var reopened = WatchlistDraft(entry:latest); reopened.target = windowA.target
+            #expect(await model.updateWatchlist(reopened))
+            #expect(model.watchlist.first?.maximumAssignmentPrice == latest.maximumAssignmentPrice)
+        }
+    }
+    @Test func newDraftStillExpectsAbsenceAfterAnotherWindowCreatesSymbol() async throws {
+        let model = try model()
+        var oldNew = WatchlistDraft(symbol:"demo"); oldNew.target = "12"
+        var other = WatchlistDraft(symbol:"DEMO"); other.target = "20"
+        #expect(await model.updateWatchlist(other)); await model.load()
+        let latest = model.watchlist
+        #expect(!(await model.updateWatchlist(oldNew)))
+        #expect(oldNew.original == nil); #expect(oldNew.target == "12")
+        #expect(model.watchlist == latest); #expect(model.hasError)
+    }
+    @Test func editCannotRenameItsRevisionOntoAnotherSymbol() async throws {
+        let model = try model()
+        #expect(await model.updateWatchlist(WatchlistDraft(symbol:"DEMO")))
+        var draft = WatchlistDraft(entry:try #require(model.watchlist.first)); draft.symbol = "OTHER"
+        #expect(!(await model.updateWatchlist(draft)))
+        await model.load(); #expect(model.watchlist.map(\.symbol) == ["DEMO"])
+    }
+    @Test func corruptSnapshotDoesNotHideOrDisableHealthyWatchlist() async throws {
+        let db = try DatabaseStore(path:":memory:"), store = ResearchStore(database:db,snapshots:try BusinessDataStore(database:db))
+        try await store.save(demo())
+        let entry = try WatchlistEntry(symbol:"DEMO",targetPrice:Money("10"))
+        try await store.setWatchlist(entry,expectedRevision:nil)
+        try db.transaction { try $0.execute(sql:"UPDATE p1_snapshot_objects SET content = X'00'") }
+        let model = ResearchWorkspaceModel(storage:store)
+        await model.load()
+        #expect(model.saved.isEmpty); #expect(model.savedReadError != nil)
+        #expect(model.watchlist == [entry]); #expect(model.watchlistReadError == nil)
+        var draft = WatchlistDraft(entry:entry); draft.target = "20"
+        #expect(await model.updateWatchlist(draft))
+        #expect(try await store.watchlist().first?.targetPrice == Money("20"))
+        #expect(model.savedReadError != nil) // Independent error remains visible after healthy write.
+    }
+    @Test func corruptWatchlistDoesNotHideHealthySnapshotsAndRecoveryClearsOnlyItsError() async throws {
+        let db = try DatabaseStore(path:":memory:"), store = ResearchStore(database:db,snapshots:try BusinessDataStore(database:db))
+        try await store.save(demo())
+        try await store.setWatchlist(WatchlistEntry(symbol:"DEMO"),expectedRevision:nil)
+        let model = ResearchWorkspaceModel(storage:store); await model.load()
+        try db.transaction { try $0.execute(sql:"UPDATE p1_watchlist SET symbol = 'OTHER'") }
+        await model.load()
+        #expect(model.watchlist.isEmpty); #expect(model.watchlistReadError != nil)
+        #expect(model.saved.count == 1); #expect(model.savedReadError == nil)
+        await model.open(try #require(model.saved.first).id)
+        #expect(model.document != nil); #expect(model.watchlistReadError != nil)
+        try db.transaction { try $0.execute(sql:"UPDATE p1_watchlist SET symbol = 'DEMO'") }
+        await model.load()
+        #expect(model.watchlist.count == 1); #expect(model.saved.count == 1)
+        #expect(model.watchlistReadError == nil); #expect(!model.hasError)
+    }
+    @Test func committedDeletionRemovesLocalRowEvenWhenRefreshFails() async throws {
+        let store = try FailingResearchStore(), model = ResearchWorkspaceModel(storage:store)
+        #expect(await model.updateWatchlist(WatchlistDraft(symbol:"DEMO")))
+        let entry = try #require(model.watchlist.first)
+        await store.configureWatchFailure(remove:true)
+        await model.remove(entry)
+        #expect(try await store.base.watchlist().isEmpty); #expect(await store.removals == 1)
+        #expect(model.watchlist.isEmpty); #expect(model.watchlistReadError != nil)
+        #expect(model.message?.contains("已移出自选，但列表刷新失败") == true)
+        await store.configureWatchFailure(); await model.load()
+        #expect(model.watchlistReadError == nil); #expect(model.watchlist.isEmpty)
+        #expect(await store.removals == 1)
+    }
+    @Test func committedWatchlistSaveReturnsSuccessButMarksFailedRefresh() async throws {
+        let store = try FailingResearchStore(), model = ResearchWorkspaceModel(storage:store)
+        await store.configureWatchFailure(write:true)
+        var draft = WatchlistDraft(symbol:"DEMO"); draft.target = "12.50"
+        #expect(await model.updateWatchlist(draft))
+        #expect(model.watchlist.first?.targetPrice == (try Money("12.50")))
+        #expect(model.watchlistReadError != nil); #expect(model.hasError)
+        #expect(model.message?.contains("自选已保存，但列表刷新失败") == true)
+        #expect(try await store.base.watchlist() == model.watchlist)
+        await store.configureWatchFailure(); await model.load()
+        #expect(model.watchlistReadError == nil); #expect(!model.hasError)
     }
 }

@@ -11,10 +11,8 @@ struct ResearchContent: View {
     @State private var query = ""
     @State private var metricKey = "fcf"
     @State private var editingWatchlist = false
-    @State private var symbolDraft = "DEMO"
-    @State private var targetDraft = ""
-    @State private var maximumDraft = ""
-    @State private var riskDraft = ""
+    @State private var watchDraft = WatchlistDraft()
+    @State private var editorMessage: String?
     @State private var removeEntry: WatchlistEntry?
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
@@ -170,6 +168,8 @@ struct ResearchContent: View {
                     } label: {
                         HStack { Text(fact.fieldID); Spacer(); Text(fact.periodEnd.iso8601); Text(fact.value.decimalString).monospacedDigit() }.font(.callout)
                     }
+                    .accessibilityIdentifier("researchFact-" + fact.fieldID)
+                    .accessibilityLabel("\(fact.fieldID), \(fact.periodEnd.iso8601), \(fact.value.decimalString)")
                 }
             }
             DisclosureGroup("完整合成来源 JSON（只读）") {
@@ -182,7 +182,8 @@ struct ResearchContent: View {
         VStack(alignment:.leading,spacing:12) {
             HStack { Text("已保存研究").font(.title2.bold()); Spacer(); Button("重新载入") { Task { await model.load() } } }
             Text("每次保存创建不可变版本。打开时验证冻结字节、来源与模型，并核对复算结果。").font(.callout).foregroundStyle(.secondary)
-            if model.saved.isEmpty { Text("尚无快照。在概览中保存一份研究。").foregroundStyle(.secondary) }
+            if let error = model.savedReadError { Text(error).foregroundStyle(.red).accessibilityIdentifier("researchSavedError") }
+            else if model.saved.isEmpty { Text("尚无快照。在概览中保存一份研究。").foregroundStyle(.secondary) }
             ForEach(model.saved) { item in
                 HStack {
                     VStack(alignment:.leading,spacing:4) { Text("\(item.document.symbol) · 合成研究").font(.headline); Text(item.document.report.executionAt.iso8601).font(.caption); Text(item.document.id.uuidString).font(.caption2).foregroundStyle(.secondary) }
@@ -194,9 +195,10 @@ struct ResearchContent: View {
     }
     private var watchlist: some View {
         VStack(alignment:.leading,spacing:12) {
-            HStack { Text("自选与用户目标").font(.title2.bold()); Spacer(); Button("添加自选") { edit("") }.accessibilityIdentifier("researchAddWatch") }
+            HStack { Text("自选与用户目标").font(.title2.bold()); Spacer(); Button("重新载入") { Task { await model.load() } }.accessibilityIdentifier("watchReload"); Button("添加自选") { edit("") }.accessibilityIdentifier("researchAddWatch") }
             Text("价格目标以 USD 记录；风险备注是用户约束，不会自动交易或产生系统风险限额。真实行情、收益、事件、持仓、期权和提醒尚未接入。").font(.callout).foregroundStyle(.secondary)
-            if model.watchlist.isEmpty { Text("暂无自选。可添加代码，或从演示研究加入。").foregroundStyle(.secondary) }
+            if let error = model.watchlistReadError { Text(error).foregroundStyle(.red).accessibilityIdentifier("researchWatchlistError") }
+            else if model.watchlist.isEmpty { Text("暂无自选。可添加代码，或从演示研究加入。").foregroundStyle(.secondary) }
             ForEach(model.watchlist) { entry in
                 VStack(alignment:.leading,spacing:8) {
                     HStack { Text(entry.symbol).font(.headline); Spacer(); Text(["DEMO","GAP"].contains(entry.symbol) ? "合成演示":"无已准入数据").font(.caption).foregroundStyle(.secondary) }
@@ -213,24 +215,24 @@ struct ResearchContent: View {
     }
     private func edit(_ symbol: String) {
         let entry = model.watchlist.first { $0.symbol == symbol }
-        symbolDraft = symbol; targetDraft = entry?.targetPrice?.decimalString ?? ""; maximumDraft = entry?.maximumAssignmentPrice?.decimalString ?? ""
-        riskDraft = entry?.riskNote ?? ""; editingWatchlist = true
+        watchDraft = WatchlistDraft(entry:entry,symbol:symbol)
+        editorMessage = nil; editingWatchlist = true
     }
     private var watchlistEditor: some View {
         VStack(alignment:.leading,spacing:16) {
             Text("自选与用户目标").font(.title2.bold())
             Form {
-                TextField("股票代码",text:$symbolDraft).accessibilityIdentifier("watchSymbol")
-                TextField("目标价格（USD，可留空）",text:$targetDraft).accessibilityIdentifier("watchTarget")
-                TextField("最高接股价（USD，可留空）",text:$maximumDraft)
-                TextField("风险备注（最多 500 字）",text:$riskDraft,axis:.vertical).lineLimit(3...5)
+                TextField("股票代码",text:$watchDraft.symbol).disabled(watchDraft.original != nil).accessibilityIdentifier("watchSymbol")
+                TextField("目标价格（USD，可留空）",text:$watchDraft.target).accessibilityIdentifier("watchTarget")
+                TextField("最高接股价（USD，可留空）",text:$watchDraft.maximum)
+                TextField("风险备注（最多 500 字）",text:$watchDraft.riskNote,axis:.vertical).lineLimit(3...5)
             }
             Text("记录个人目标，不会连接交易账户或发出交易指令。").font(.caption).foregroundStyle(.secondary)
             HStack { Spacer(); Button("取消") { editingWatchlist = false }.keyboardShortcut(.cancelAction)
-                Button("保存自选") { Task { await model.updateWatchlist(symbol:symbolDraft,target:targetDraft,maximum:maximumDraft,riskNote:riskDraft); if !model.hasError { editingWatchlist = false } } }
-                    .disabled(model.isBusy || symbolDraft.trimmingCharacters(in:.whitespaces).isEmpty).accessibilityIdentifier("watchSave")
+                Button("保存自选") { Task { let committed = await model.updateWatchlist(watchDraft); if committed { editingWatchlist = false } else { editorMessage = model.message } } }
+                    .disabled(model.isBusy || watchDraft.symbol.trimmingCharacters(in:.whitespaces).isEmpty).accessibilityIdentifier("watchSave")
             }
-            if model.hasError, let message = model.message { Text(message).foregroundStyle(.red).font(.callout) }
+            if let editorMessage { Text(editorMessage).foregroundStyle(.red).font(.callout) }
         }.padding(24).frame(width:500)
     }
     private func number(_ value: Money?) -> String { guard let value else { return "—" }; return (try? value.fixedString(at:.accounting)) ?? value.decimalString }

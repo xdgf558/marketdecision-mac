@@ -309,6 +309,13 @@
     {"selector": "FoundationTests.ResearchModelTests/saveOpenAndReplayUseFrozenVersionWithoutChangingIt()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
     {"selector": "FoundationTests.ResearchModelTests/cancelledGenerationDiscardsLateResultAndBusyPreventsCrossCompanyPublication()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
     {"selector": "FoundationTests.ResearchModelTests/completedSaveIsNotMisreportedAsRollbackWhenListRefreshFails()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.ResearchModelTests/invalidUserTargetDoesNotWriteWatchlist()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.ResearchModelTests/invalidUserTargetDoesNotWriteWatchlist()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/oldDraftKeepsItsBaselineAcrossSharedUpdatesAndReloads()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/newDraftStillExpectsAbsenceAfterAnotherWindowCreatesSymbol()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/editCannotRenameItsRevisionOntoAnotherSymbol()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/corruptSnapshotDoesNotHideOrDisableHealthyWatchlist()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/corruptWatchlistDoesNotHideHealthySnapshotsAndRecoveryClearsOnlyItsError()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/committedDeletionRemovesLocalRowEvenWhenRefreshFails()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchModelTests/committedWatchlistSaveReturnsSuccessButMarksFailedRefresh()", "source": "Tests/FoundationTests/ResearchWorkflowTests.swift", "execution": "required"}
   ]
 }
