@@ -65,6 +65,73 @@ import XCTest
         waitEnabled(delete)
         waitEnabled(save, false)
     }
+    private func researchTab(_ title: String) {
+        // macOS exposes SwiftUI segmented pickers as radio groups on some
+        // deployment targets. Keep the query in this app's main window,
+        // without assuming the iOS-style SegmentedControl container type.
+        let radio = mainWindow.radioButtons[title]
+        if radio.exists { radio.click() }
+        else {
+            let button = mainWindow.buttons[title]
+            XCTAssertTrue(button.waitForExistence(timeout: 5), mainWindow.debugDescription)
+            button.click()
+        }
+    }
+    private func waitText(_ text: String, in element: XCUIElement) {
+        // AppKit static text may expose its contents as AXValue, not AXTitle.
+        let predicate = NSPredicate { _, _ in
+            element.exists && (element.label.contains(text) || (element.value as? String)?.contains(text) == true)
+        }
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        let result = XCTWaiter.wait(for: [expectation], timeout: 15)
+        XCTAssertEqual(result, .completed, element.debugDescription)
+    }
+    private func launchResearch() {
+        configure(); app.launch()
+        let page = app.buttons["pageResearch"]
+        XCTAssertTrue(page.waitForExistence(timeout: 15)); page.click()
+        XCTAssertTrue(app.staticTexts["researchCompany"].waitForExistence(timeout: 15))
+    }
+    func testResearchSnapshotInspectorAndReplay() {
+        launchResearch()
+        let save = app.buttons["researchSave"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5)); waitEnabled(save); save.click(); waitEnabled(save, false)
+        researchTab("快照")
+        let open = app.buttons["researchOpenSaved"].firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); open.click()
+        XCTAssertTrue(app.staticTexts["researchCompany"].waitForExistence(timeout: 10))
+        XCTAssertFalse(save.isEnabled)
+        researchTab("原始数据")
+        let filter = app.textFields["researchFieldFilter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5)); filter.click(); filter.typeText("income.revenue")
+        XCTAssertEqual(filter.value as? String, "income.revenue")
+        let field = mainWindow.descendants(matching: .any)["researchFact-income.revenue"].firstMatch
+        // The source rows are lazy and may be below the runner's smaller viewport.
+        for _ in 0..<8 where !field.exists { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(field.waitForExistence(timeout: 5), mainWindow.debugDescription)
+        waitText("income.revenue", in: field)
+        researchTab("概览")
+        let replay = app.buttons["researchReplay"]
+        for _ in 0..<8 where !replay.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(replay.isHittable); replay.click()
+        let message = app.staticTexts["researchMessage"]
+        waitText("复算一致", in: message)
+    }
+    func testResearchMissingDataAndUserTargetsStayDistinct() {
+        launchResearch(); app.buttons["researchGap"].click()
+        let company = app.staticTexts["researchCompany"]
+        waitText("GAP", in: company)
+        researchTab("自选"); app.buttons["researchAddWatch"].click()
+        let sheet = mainWindow.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout:5))
+        sheet.textFields["watchSymbol"].click(); sheet.textFields["watchSymbol"].typeText("ZZTEST")
+        sheet.textFields["watchTarget"].click(); sheet.textFields["watchTarget"].typeText("12.50")
+        sheet.buttons["watchSave"].click(); waitNoSheet(in:mainWindow)
+        XCTAssertTrue(app.staticTexts["ZZTEST"].waitForExistence(timeout:5))
+        app.buttons["查看研究"].click()
+        XCTAssertTrue(app.staticTexts["暂无研究数据"].waitForExistence(timeout:5))
+        XCTAssertFalse(app.staticTexts["researchScore"].exists)
+    }
     func testReturnDoesNotSaveAndTabSkipsDisabledControls() {
         launchSettings()
         let main = mainWindow

@@ -385,6 +385,16 @@ public actor BusinessDataStore: SnapshotStorage {
         return object.targets
     }
 
+    /// Reads a complete, hash-checked graph in one SQLite read. Imported address mappings are
+    /// followed here; callers must not reconstruct target namespaces from frozen identities.
+    public func researchRecords() throws -> [StoredResearchRecord] {
+        let graph = try database.read(Self.loadGraph)
+        return graph.roots.compactMap { address, stored in
+            guard stored.root.kind == .researchRun, stored.targets["research-document"] != nil else { return nil }
+            return StoredResearchRecord(address: address, objects: stored.targets.mapValues { graph.objects[$0]!.object })
+        }.sorted { $0.address.identity.id < $1.address.identity.id }
+    }
+
     public func prepareRestore(_ bundle: SnapshotBundle, inventory: BackupInventory, mode: RestoreMode,
                                expectedRevision: UUID) throws -> StoragePlan {
         try bundle.validate(); try inventory.validate(bundle: bundle)
@@ -711,4 +721,9 @@ private func storageIdentifier(_ value: String) -> Bool {
 }
 private func localReference(_ value: String) -> Bool {
     storageIdentifier(value) && !value.contains(":") && !value.contains("@") && !value.contains("?")
+}
+
+public struct StoredResearchRecord: Sendable {
+    public let address: ObjectAddress
+    public let objects: [String: FrozenObject]
 }
