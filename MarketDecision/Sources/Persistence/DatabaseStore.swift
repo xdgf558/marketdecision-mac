@@ -15,7 +15,7 @@ public struct DatabaseMigration: Sendable {
 public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
     public init(path: String, migrations: [DatabaseMigration] = []) throws {
-        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration]
+        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -36,6 +36,17 @@ public struct DatabaseStore: Sendable {
     /// One database transaction; throws rolls back all statements in the closure.
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
+
+    private static let phase1ResearchMigration = DatabaseMigration(identifier: "business.p1.v5") { db in
+        try db.execute(sql: """
+            CREATE TABLE p1_watchlist (
+                symbol TEXT PRIMARY KEY NOT NULL,
+                revision TEXT NOT NULL,
+                content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+                entry_json BLOB NOT NULL
+            ) WITHOUT ROWID
+            """)
+    }
 
     private static let phase1EquityMigration = DatabaseMigration(identifier: "business.p1.v4") { db in
         try db.execute(sql: """

@@ -383,6 +383,8 @@ private struct IncorrectRawEquityProvider: EquityDataProvider {
         do {
             let prior = try DatabaseStore(path: path)
             try prior.transaction { db in
+                try db.execute(sql: "DROP TABLE p1_watchlist")
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'business.p1.v5'")
                 try db.execute(sql: "DROP TABLE p1_equity_pages")
                 try db.execute(sql: "DROP TABLE p1_equity_records")
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'business.p1.v4'")

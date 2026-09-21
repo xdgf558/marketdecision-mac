@@ -10,12 +10,12 @@ spec.loader.exec_module(result)
 
 class NativeResultTests(unittest.TestCase):
     def setUp(self):
-        self.summary = dict(totalTestCount=4, passedTests=4, failedTests=0, skippedTests=0)
+        self.summary = dict(totalTestCount=len(result.expected), passedTests=len(result.expected), failedTests=0, skippedTests=0)
         self.tree = {'testNodes': [{'name': n + '()', 'result': 'Passed'} for n in sorted(result.expected)]}
     def rejected(self, summary=None, tree=None):
         with self.assertRaises(ValueError):
             result.validate_results(self.summary if summary is None else summary, self.tree if tree is None else tree)
-    def test_exact_four_pass(self):
+    def test_exact_required_pass(self):
         self.assertEqual(set(result.validate_results(self.summary, self.tree)), result.expected)
     def test_skip_is_not_pass(self):
         self.summary.update(skippedTests=1, passedTests=3); self.rejected()

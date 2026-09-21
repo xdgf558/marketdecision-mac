@@ -5,9 +5,11 @@ import CoreDomain
 import DataContracts
 
 enum AppPage: String, CaseIterable, Identifiable {
-    case workspace = "工作台", settings = "设置"
+    case workspace = "工作台", research = "公司研究", settings = "设置"
     var id: Self { self }
-    var symbol: String { self == .workspace ? "house.fill" : "gearshape" }
+    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .settings: "gearshape" } }
+    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .settings: "2" } }
+    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .settings: "pageSettings" } }
 }
 
 @main enum MarketDecisionEntry {
@@ -65,9 +67,9 @@ struct RootView: View {
                     .foregroundStyle(page == item ? Color.white : Color.primary)
                     .background(page == item ? Color.blue : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                     .accessibilityAddTraits(page == item ? .isSelected : [])
-                    .keyboardShortcut(item == .workspace ? "1" : "2", modifiers: .command)
-                    .help(item == .workspace ? "工作台（⌘1）" : "设置（⌘2）")
-                    .accessibilityIdentifier(item == .workspace ? "pageWorkspace" : "pageSettings")
+                    .keyboardShortcut(item.shortcut, modifiers: .command)
+                    .help(item == .workspace ? "工作台（⌘1）" : item == .research ? "公司研究（⌘3）" : "设置（⌘2）")
+                    .accessibilityIdentifier(item.accessibilityID)
                 }
                 Spacer()
             }
@@ -77,7 +79,10 @@ struct RootView: View {
             Divider()
             Group {
                 if page == .workspace { WorkspaceContent(model: model) }
-                else { SettingsContent(model: model) }
+                else if page == .research {
+                    if let research = model.research { ResearchContent(model:research) }
+                    else { VStack { Text(model.initializationError ?? "正在准备本地研究…"); Button("重试初始化") { Task { await model.refresh() } } } }
+                } else { SettingsContent(model: model) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))

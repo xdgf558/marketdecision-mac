@@ -6,6 +6,7 @@ import SecuritySupport
 /// Shared production state for the native workspace and Settings scene.
 /// Preparation, quotes and credential settings receive the same closed-event log.
 @MainActor @Observable public final class WorkspaceModel {
+    public private(set) var research: ResearchWorkspaceModel?
     public private(set) var credentials: CredentialSettingsModel?
     public private(set) var quote: Quote?
     public private(set) var isLoading = false
@@ -40,6 +41,7 @@ import SecuritySupport
                 try Task.checkCancellation()
                 environment = ready
                 credentials = ready.makeCredentialSettings()
+                research = ready.makeResearchWorkspace()
             } catch {
                 // Cancellation is owned by this refresh task. A provider or factory may
                 // use CancellationError as an ordinary failure without cancelling us.
