@@ -45,7 +45,7 @@ jobs:
             echo '## Foundation CI evidence'
             echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
             echo "- Debug/Release build and artifact checks: $BUILD_OUTCOME"
-            echo "- Native interaction suite (four cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
+            echo "- Native interaction suite (six cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
             echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'
