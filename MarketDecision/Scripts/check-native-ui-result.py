@@ -11,6 +11,7 @@ expected = {
     'testIndependentSettingsSharesStateAndInvalidatesOldSheet',
     'testFailedSaveRequiresCheckBeforeRetry',
     'testResearchSnapshotInspectorAndReplay',
+    'testResearchClearRequiresPreviewAndExplicitConfirmation',
     'testResearchMissingDataAndUserTargetsStayDistinct',
 }
 
@@ -39,7 +40,7 @@ def check_host(app):
     print('PASS: isolated UI-host sandbox with exact Xcode read-only-root/test-service exceptions; no network entitlement')
 def validate_results(summary, tests):
     if summary.get('totalTestCount') != len(expected) or summary.get('passedTests') != len(expected) or summary.get('failedTests') != 0 or summary.get('skippedTests') != 0:
-        raise ValueError('FAIL: incomplete native UI execution; summary did not report exactly six passes and zero failures/skips')
+        raise ValueError('FAIL: incomplete native UI execution; summary did not report exactly seven passes and zero failures/skips')
     # Verify names and statuses from terminal test-case nodes, not just the console/aggregate.
     cases = {}
     def visit(node):
@@ -72,7 +73,7 @@ def main():
                'scope': 'SHARED_PRODUCTION_VIEWS_SYNTHETIC_MEMORY_HOST',
                'keychain': 'NOT_EXECUTED', 'voiceover': 'NOT_EXECUTED', 'ime_composition': 'NOT_EXECUTED'}
     Path(report).write_text(json.dumps(payload, indent=2) + '\n')
-    print('PASS: six native UI cases actually executed; no skips; synthetic memory host only')
+    print('PASS: seven native UI cases actually executed; no skips; synthetic memory host only')
 
 if __name__ == "__main__":
     main()

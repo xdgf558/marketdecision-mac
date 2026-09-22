@@ -15,7 +15,7 @@ public struct DatabaseMigration: Sendable {
 public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
     public init(path: String, migrations: [DatabaseMigration] = []) throws {
-        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration]
+        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -37,6 +37,9 @@ public struct DatabaseStore: Sendable {
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
 
+    private static let phase1ResearchTransferMigration = DatabaseMigration(identifier:"business.p1.v6") { db in
+        try db.execute(sql:"CREATE TABLE p1_watchlist_conflicts (content_hash TEXT PRIMARY KEY NOT NULL, entry_json BLOB NOT NULL)")
+    }
     private static let phase1ResearchMigration = DatabaseMigration(identifier: "business.p1.v5") { db in
         try db.execute(sql: """
             CREATE TABLE p1_watchlist (
