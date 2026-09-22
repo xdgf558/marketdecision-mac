@@ -50,28 +50,28 @@ access. This does not automate native scene lifecycle, commands, sheets or actua
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
 
-The separate `Scripts/verify-native-ui.sh` runs four XCTest UI cases in
+The separate `Scripts/verify-native-ui.sh` runs seven XCTest UI cases in
 `NativeUITests/NativeInteractionTests.swift`. The independently identified
 MarketDecisionUITestHost compiles the same native views with a compile-time-only
 factory using synthetic quotes, an in-memory database and an in-memory credential
 presence store. Neither shipping configuration compiles that factory. UI tests
-are separate from the 133 Swift Testing declarations; the xcresult summary and
-individual case results must both report four passes with no skips. Unknown result
+are separate from the fixed Swift Testing inventory; the xcresult summary and
+individual case results must both report seven passes with no skips. Unknown result
 formats fail. A failed or unavailable runner is not a passed platform check.
 
 Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
 paths, native replace/delete sheets, shared state in independent Settings, stale
-sheet dismissal and failure/check/retry. Native scene wiring is exercised here;
+sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, and clear preview/explicit confirmation. These seven cases do not open a file importer or exporter. Native scene wiring is exercised here;
 the foundation catalog's `build_only` label remains specific to its Swift Testing
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain
 behavior. Local screenshots and the complete acceptance mapping remain private.
 
-The isolated UI host receives Xcode-generated read-only-root and test-service
+The isolated UI host has its own sandbox-only source entitlement file and receives Xcode-generated read-only-root and test-service
 exceptions. Its separate exact permission/identity check runs before and after
 native execution, with five rejection tests in addition to the seven result
-checks. The production permission verifier is unchanged; XCTest automation does
-not establish shipping-app sandbox behavior. Any added exception fails closed and
+checks. The production verifier separately requires App Sandbox and user-selected-file read/write and rejects unlisted permissions; XCTest automation does
+not establish shipping-app sandbox behavior or actual production file-panel access. Any added exception fails closed and
 requires review; do not widen the checker merely to make a changed Xcode pass.
 
 Native sheets are always queried through their owning window. The independent
