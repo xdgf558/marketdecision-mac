@@ -7,7 +7,8 @@ import sys
 app = pathlib.Path(sys.argv[1])
 result = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(app)], capture_output=True, check=True)
 entitlements = plistlib.loads(result.stdout)
-allowed = {'com.apple.security.app-sandbox', 'com.apple.security.get-task-allow'}
+allowed = {'com.apple.security.app-sandbox', 'com.apple.security.get-task-allow',
+           'com.apple.security.files.user-selected.read-write'}
 if len(sys.argv) == 3 and sys.argv[2] == '--provisioned':
     allowed |= {'com.apple.application-identifier', 'com.apple.developer.team-identifier', 'keychain-access-groups'}
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
@@ -17,7 +18,9 @@ if len(sys.argv) == 3 and sys.argv[2] == '--provisioned':
         raise SystemExit('FAIL: signing identity and private keychain group do not match')
     if not (app / 'Contents/embedded.provisionprofile').is_file():
         raise SystemExit('FAIL: missing embedded provisioning profile')
-if entitlements.get('com.apple.security.app-sandbox') is not True or set(entitlements) - allowed:
+if (entitlements.get('com.apple.security.app-sandbox') is not True
+    or entitlements.get('com.apple.security.files.user-selected.read-write') is not True
+    or set(entitlements) - allowed):
     raise SystemExit('FAIL: unexpected demo signing permissions')
 subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)
-print('PASS: signed demo sandbox enabled; no network or user-file entitlement')
+print('PASS: signed demo sandbox and user-selected-file read/write enabled; no network or broad file entitlement')
