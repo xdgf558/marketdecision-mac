@@ -27,17 +27,33 @@ public struct SavedResearch: Sendable, Identifiable {
 }
 public protocol ResearchStorage: Sendable {
     func savedResearch() async throws -> [SavedResearch]
-    func save(_ document: ResearchDocument) async throws
+    func writeRevision() async throws -> UUID
+    func save(_ document: ResearchDocument, expectedRevision: UUID) async throws
     func watchlist() async throws -> [WatchlistEntry]
-    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws
-    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws
+    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?, expectedStoreRevision: UUID) async throws
+    func removeWatchlist(symbol: String, expectedRevision: UUID, expectedStoreRevision: UUID) async throws
 }
 
 public actor ResearchStore: ResearchStorage {
     private let database: DatabaseStore
     private let snapshots: BusinessDataStore
-    public init(database: DatabaseStore, snapshots: BusinessDataStore) { self.database = database; self.snapshots = snapshots }
+    private let validationCheckpoint: @Sendable () async -> Void
+    public init(database: DatabaseStore, snapshots: BusinessDataStore) {
+        self.database = database; self.snapshots = snapshots; validationCheckpoint = {}
+    }
+    // Internal scheduling seam: validation itself is never replaced or skipped.
+    init(database: DatabaseStore, snapshots: BusinessDataStore, validationCheckpoint: @escaping @Sendable () async -> Void) {
+        self.database = database; self.snapshots = snapshots; self.validationCheckpoint = validationCheckpoint
+    }
+    public func writeRevision() throws -> UUID { try BusinessDataStore.readRevision(database) }
     public func save(_ document: ResearchDocument) async throws {
+        // Pin synchronously before any suspension; never acquire a fresh baseline
+        // after validation or automatically retry a stale write with a new revision.
+        let revision = try writeRevision()
+        try await save(document,expectedRevision:revision)
+    }
+    public func save(_ document: ResearchDocument, expectedRevision: UUID) async throws {
+        await validationCheckpoint()
         try await document.validate()
         try Task.checkCancellation()
         let instant = document.report.executionAt
@@ -54,10 +70,9 @@ public actor ResearchStore: ResearchStorage {
         let root = SnapshotRoot(identity:.init(id:document.id.uuidString.lowercased(),version:"v1"),kind:.researchRun,
             references:try zip(roles,objects).map { ObjectReference(role:$0,target:$1.identity,contentHash:try $1.contentHash()) })
         let bundle = SnapshotBundle(sourceNamespace:document.id,objects:objects,roots:[root])
-        let revision = await snapshots.revision()
         try Task.checkCancellation()
         // A successful commit is final, even if the caller's view disappears immediately after it.
-        try await snapshots.freeze(bundle,expectedRevision:revision)
+        try await snapshots.freeze(bundle,expectedRevision:expectedRevision)
     }
     public func savedResearch() async throws -> [SavedResearch] {
         try await Self.decodeRecords(snapshots.researchRecords())
@@ -99,9 +114,13 @@ public actor ResearchStore: ResearchStorage {
         return entry
     }
     public func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) throws {
+        try setWatchlist(entry,expectedRevision:expectedRevision,expectedStoreRevision:writeRevision())
+    }
+    public func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?, expectedStoreRevision: UUID) throws {
         try entry.validate(); try Task.checkCancellation()
         let bytes = try ResearchDocument.encoded(entry)
         try database.transaction { db in
+            try BusinessDataStore.checkRevision(expectedStoreRevision,db:db)
             let old = try Row.fetchOne(db,sql:"SELECT * FROM p1_watchlist WHERE symbol = ?",arguments:[entry.symbol]).map(Self.decode)
             guard old?.revision == expectedRevision, old?.revision != entry.revision else { throw ResearchError.staleWatchlist }
             try db.execute(sql:"INSERT OR REPLACE INTO p1_watchlist (symbol,revision,content_hash,entry_json) VALUES (?,?,?,?)",
@@ -110,8 +129,12 @@ public actor ResearchStore: ResearchStorage {
         }
     }
     public func removeWatchlist(symbol: String, expectedRevision: UUID) throws {
+        try removeWatchlist(symbol:symbol,expectedRevision:expectedRevision,expectedStoreRevision:writeRevision())
+    }
+    public func removeWatchlist(symbol: String, expectedRevision: UUID, expectedStoreRevision: UUID) throws {
         try Task.checkCancellation()
         try database.transaction { db in
+            try BusinessDataStore.checkRevision(expectedStoreRevision,db:db)
             guard let row = try Row.fetchOne(db,sql:"SELECT * FROM p1_watchlist WHERE symbol = ?",arguments:[symbol]),
                   try Self.decode(row).revision == expectedRevision else { throw ResearchError.staleWatchlist }
             try db.execute(sql:"DELETE FROM p1_watchlist WHERE symbol = ?",arguments:[symbol])

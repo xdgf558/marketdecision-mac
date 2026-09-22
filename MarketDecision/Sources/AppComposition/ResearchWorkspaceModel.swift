@@ -132,7 +132,13 @@ public struct WatchlistDraft: Sendable, Equatable {
         let token = generation
         isBusy = true; message = nil; hasError = false
         defer { if generation == token { isBusy = false } }
-        do { try await storage.save(document) }
+        do {
+            let revision = try await storage.writeRevision()
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            // The request retains this baseline even if delivery/validation pauses.
+            try await storage.save(document,expectedRevision:revision)
+        }
         catch { guard generation == token else { return }; hasError = true; message = "保存未完成，请重载记录后再试；不会覆盖已有版本。"; return }
         guard generation == token else { return }
         // Do not claim cancellation rolled back a completed SQLite commit.
@@ -170,7 +176,10 @@ public struct WatchlistDraft: Sendable, Equatable {
             // Editing cannot silently turn into a rename or a different-symbol overwrite.
             guard draft.original.map({ $0.symbol == symbol }) ?? true else { throw ResearchError.invalidDocument }
             entry = try WatchlistEntry(symbol:symbol,targetPrice:amount(draft.target),maximumAssignmentPrice:amount(draft.maximum),riskNote:draft.riskNote)
-            try await storage.setWatchlist(entry,expectedRevision:draft.original?.revision)
+            let revision = try await storage.writeRevision()
+            guard generation == token else { return false }
+            try Task.checkCancellation()
+            try await storage.setWatchlist(entry,expectedRevision:draft.original?.revision,expectedStoreRevision:revision)
         } catch ResearchError.staleWatchlist {
             guard generation == token else { return false }
             hasError = true; message = "自选已被其他窗口修改或创建；草稿已保留。请取消后重新载入并打开最新记录，再确认修改。"
@@ -194,7 +203,12 @@ public struct WatchlistDraft: Sendable, Equatable {
         let token = generation
         isBusy = true; message = nil; hasError = false
         defer { if generation == token { isBusy = false } }
-        do { try await storage.removeWatchlist(symbol:entry.symbol,expectedRevision:entry.revision) }
+        do {
+            let revision = try await storage.writeRevision()
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            try await storage.removeWatchlist(symbol:entry.symbol,expectedRevision:entry.revision,expectedStoreRevision:revision)
+        }
         catch { guard generation == token else { return }; hasError = true; message = "移出自选未完成，请重载后再试。"; return }
         guard generation == token else { return }
         watchlist.removeAll { $0.symbol == entry.symbol }

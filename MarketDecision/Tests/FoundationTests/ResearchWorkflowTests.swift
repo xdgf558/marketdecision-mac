@@ -182,17 +182,18 @@ private actor FailingResearchStore: ResearchStorage {
     let base: ResearchStore
     init() throws { let db = try DatabaseStore(path:":memory:"); base = ResearchStore(database:db,snapshots:try BusinessDataStore(database:db)) }
     func savedResearch() async throws -> [SavedResearch] { if rejectReads { throw ResearchError.invalidDocument }; return try await base.savedResearch() }
-    func save(_ document: ResearchDocument) async throws { try await base.save(document); saves += 1; rejectReads = true }
+    func writeRevision() async throws -> UUID { try await base.writeRevision() }
+    func save(_ document: ResearchDocument, expectedRevision: UUID) async throws { try await base.save(document,expectedRevision:expectedRevision); saves += 1; rejectReads = true }
     func watchlist() async throws -> [WatchlistEntry] {
         if rejectWatchReads { throw ResearchError.invalidDocument }
         return try await base.watchlist()
     }
-    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws {
-        try await base.setWatchlist(entry,expectedRevision:expectedRevision)
+    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?, expectedStoreRevision: UUID) async throws {
+        try await base.setWatchlist(entry,expectedRevision:expectedRevision,expectedStoreRevision:expectedStoreRevision)
         if failAfterWrite { rejectWatchReads = true }
     }
-    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws {
-        try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision); removals += 1
+    func removeWatchlist(symbol: String, expectedRevision: UUID, expectedStoreRevision: UUID) async throws {
+        try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision,expectedStoreRevision:expectedStoreRevision); removals += 1
         if failAfterRemove { rejectWatchReads = true }
     }
 }

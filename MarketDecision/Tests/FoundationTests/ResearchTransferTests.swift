@@ -305,11 +305,13 @@ private actor TransferControlStore: ResearchTransferStorage {
 /// Takes a real, verified SQLite read before pausing its delivery to the UI model.
 private actor DelayedResearchReader: ResearchStorage {
     let base: ResearchStore
-    var pauseSaved = false, pauseWatch = false, failDelayed = false
+    var pauseSaved = false, pauseWatch = false, failDelayed = false, pauseWrite = false, pauseRevision = false
     var pending: CheckedContinuation<Void,Never>?
     var started: CheckedContinuation<Void,Never>?
     var didStart = false
     init(_ base: ResearchStore) { self.base = base }
+    func armWrite() { pauseWrite = true }
+    func armRevision() { pauseRevision = true }
     func arm(watch: Bool = false, fail: Bool = false) { pauseWatch = watch; pauseSaved = !watch; failDelayed = fail }
     func waitStarted() async { if !didStart { await withCheckedContinuation { started = $0 } } }
     func release() { pending?.resume(); pending = nil }
@@ -326,9 +328,22 @@ private actor DelayedResearchReader: ResearchStorage {
         if pauseWatch { pauseWatch = false; let fail = failDelayed; await hold(); if fail { throw ResearchError.invalidDocument } }
         return captured
     }
-    func save(_ doc: ResearchDocument) async throws { try await base.save(doc) }
-    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?) async throws { try await base.setWatchlist(entry,expectedRevision:expectedRevision) }
-    func removeWatchlist(symbol: String, expectedRevision: UUID) async throws { try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision) }
+    func writeRevision() async throws -> UUID {
+        if pauseRevision { pauseRevision = false; await hold() }
+        return try await base.writeRevision()
+    }
+    func save(_ doc: ResearchDocument, expectedRevision: UUID) async throws {
+        if pauseWrite { pauseWrite = false; await hold() }
+        try await base.save(doc,expectedRevision:expectedRevision)
+    }
+    func setWatchlist(_ entry: WatchlistEntry, expectedRevision: UUID?, expectedStoreRevision: UUID) async throws {
+        if pauseWrite { pauseWrite = false; await hold() }
+        try await base.setWatchlist(entry,expectedRevision:expectedRevision,expectedStoreRevision:expectedStoreRevision)
+    }
+    func removeWatchlist(symbol: String, expectedRevision: UUID, expectedStoreRevision: UUID) async throws {
+        if pauseWrite { pauseWrite = false; await hold() }
+        try await base.removeWatchlist(symbol:symbol,expectedRevision:expectedRevision,expectedStoreRevision:expectedStoreRevision)
+    }
 }
 @Suite @MainActor struct ResearchTransferReviewTests {
     @Test func clearAndReplaceRejectLateOpenAndLoadResults() async throws {
@@ -492,5 +507,134 @@ extension ResearchTransferReviewTests {
         try await target.transfer.commit(approve(plan))
         #expect(try await target.research.savedResearch().map(\.document.symbol) == ["GAP"])
         #expect(try await target.research.watchlist().map(\.symbol) == ["NEW"])
+    }
+}
+
+private actor SaveValidationGate {
+    var pending: CheckedContinuation<Void,Never>?
+    var started: CheckedContinuation<Void,Never>?
+    var didStart = false
+    func pause() async { await withCheckedContinuation { pending = $0; didStart = true; started?.resume(); started = nil } }
+    func waitStarted() async { if !didStart { await withCheckedContinuation { started = $0 } } }
+    func release() { pending?.resume(); pending = nil }
+}
+@Suite @MainActor struct ResearchWriteIsolationTests {
+    @Test func inFlightModelSaveCannotRepopulateClearedOrReplacedDatabase() async throws {
+        let original = try await transferDemo(), pending = try await transferDemo("GAP")
+        let empty = try TransferFixture(), backup = try await empty.transfer.exportBackup()
+        for replace in [false,true] {
+            let f = try TransferFixture(), gate = SaveValidationGate()
+            try await f.research.save(original)
+            let held = ResearchStore(database:f.db,snapshots:f.business,validationCheckpoint:{ await gate.pause() })
+            let transfer = ResearchTransferModel(store:f.transfer)
+            let model = ResearchWorkspaceModel(storage:held,transfer:transfer,generate:{ _ in pending })
+            await model.select("GAP")
+            if replace { await transfer.prepare(backup,mode:.replace) } else { await transfer.prepareClear() }
+            let plan = try #require(transfer.plan)
+            let save = Task { await model.save() }; await gate.waitStarted()
+            #expect(await transfer.confirm(id:plan.id,digest:plan.digest))
+            #expect(try await f.research.savedResearch().isEmpty)
+            await gate.release(); await save.value
+            #expect(try await f.research.savedResearch().isEmpty)
+            await model.load()
+            #expect(model.saved.isEmpty); #expect(model.savedID == nil); #expect(model.document == nil)
+        }
+    }
+    @Test func directSaveAcrossTransferRejectsAtTransactionAndFreshSaveStillWorks() async throws {
+        let pending = try await transferDemo()
+        let empty = try TransferFixture(), backup = try await empty.transfer.exportBackup()
+        for replace in [false,true] {
+            let f = try TransferFixture(), gate = SaveValidationGate()
+            let held = ResearchStore(database:f.db,snapshots:f.business,validationCheckpoint:{ await gate.pause() })
+            let save = Task { try await held.save(pending) }; await gate.waitStarted()
+            let plan = replace ? try await f.transfer.prepare(backup,mode:.replace) : try await f.transfer.prepareClear()
+            try await f.transfer.commit(approve(plan))
+            await gate.release()
+            await #expect(throws:SnapshotError.stalePlan) { try await save.value }
+            #expect(try await f.research.savedResearch().isEmpty)
+            try await f.research.save(pending)
+            #expect(try await f.research.savedResearch().count == 1)
+        }
+    }
+}
+
+extension ResearchWriteIsolationTests {
+    @Test func queuedWriteAndDelayedBaselineCannotAdoptPostTransferRevision() async throws {
+        let doc = try await transferDemo(), empty = try TransferFixture(), backup = try await empty.transfer.exportBackup()
+        for replace in [false,true] {
+            for baselinePending in [false,true] {
+                let f = try TransferFixture(), delayed = DelayedResearchReader(f.research)
+                let transfer = ResearchTransferModel(store:f.transfer)
+                let model = ResearchWorkspaceModel(storage:delayed,transfer:transfer,generate:{ _ in doc })
+                await model.select("DEMO")
+                if replace { await transfer.prepare(backup,mode:.replace) } else { await transfer.prepareClear() }
+                let plan = try #require(transfer.plan)
+                if baselinePending { await delayed.armRevision() } else { await delayed.armWrite() }
+                let write = Task { await model.save() }; await delayed.waitStarted()
+                #expect(await transfer.confirm(id:plan.id,digest:plan.digest))
+                await delayed.release(); await write.value; await model.load()
+                #expect(try await f.research.savedResearch().isEmpty)
+                #expect(model.document == nil); #expect(model.savedID == nil); #expect(model.saved.isEmpty)
+            }
+        }
+    }
+    @Test func failedTransferPreservesWaitingSaveBaseline() async throws {
+        let f = try TransferFixture(), gate = SaveValidationGate(), doc = try await transferDemo()
+        let held = ResearchStore(database:f.db,snapshots:f.business,validationCheckpoint:{ await gate.pause() })
+        let plan = try await f.transfer.prepareClear(), revision = try await f.research.writeRevision()
+        let write = Task { try await held.save(doc) }; await gate.waitStarted()
+        try f.db.transaction { try $0.execute(sql:"CREATE TRIGGER fail_write_boundary BEFORE UPDATE ON p1_store_metadata BEGIN SELECT RAISE(ABORT,'synthetic'); END") }
+        await #expect(throws:(any Error).self) { try await f.transfer.commit(approve(plan)) }
+        #expect(try await f.research.writeRevision() == revision)
+        try f.db.transaction { try $0.execute(sql:"DROP TRIGGER fail_write_boundary") }
+        await gate.release(); try await write.value
+        #expect(try await f.research.savedResearch().count == 1)
+        // The successful save now invalidates the old destructive plan.
+        await #expect(throws:SnapshotError.stalePlan) { try await f.transfer.commit(approve(plan)) }
+    }
+    @Test func saveWinningBeforeTransferMakesDestructivePlanStale() async throws {
+        let doc = try await transferDemo(), empty = try TransferFixture(), backup = try await empty.transfer.exportBackup()
+        for replace in [false,true] {
+            let f = try TransferFixture(), gate = SaveValidationGate()
+            let held = ResearchStore(database:f.db,snapshots:f.business,validationCheckpoint:{ await gate.pause() })
+            let plan = replace ? try await f.transfer.prepare(backup,mode:.replace) : try await f.transfer.prepareClear()
+            let write = Task { try await held.save(doc) }; await gate.waitStarted()
+            await gate.release(); try await write.value
+            await #expect(throws:SnapshotError.stalePlan) { try await f.transfer.commit(approve(plan)) }
+            #expect(try await f.research.savedResearch().count == 1)
+        }
+    }
+    @Test func saveBaselineRefusesCorruptMetadataInsteadOfCachedRevision() async throws {
+        let f = try TransferFixture(), doc = try await transferDemo()
+        try f.db.transaction { try $0.execute(sql:"UPDATE p1_store_metadata SET revision = 'broken'") }
+        await #expect(throws:BusinessStoreError.corruptedStorage) { try await f.research.save(doc) }
+        #expect(try await f.research.savedResearch().isEmpty)
+    }
+}
+
+extension ResearchWriteIsolationTests {
+    @Test func queuedNewWatchlistWriteCannotReappearAfterClearOrReplace() async throws {
+        let empty = try TransferFixture(), backup = try await empty.transfer.exportBackup()
+        for replace in [false,true] {
+            let f = try TransferFixture(), delayed = DelayedResearchReader(f.research)
+            let transfer = ResearchTransferModel(store:f.transfer), model = ResearchWorkspaceModel(storage:delayed,transfer:transfer)
+            if replace { await transfer.prepare(backup,mode:.replace) } else { await transfer.prepareClear() }
+            let plan = try #require(transfer.plan)
+            await delayed.armWrite()
+            let write = Task { await model.updateWatchlist(WatchlistDraft(symbol:"OLD")) }; await delayed.waitStarted()
+            #expect(await transfer.confirm(id:plan.id,digest:plan.digest))
+            await delayed.release(); #expect(!(await write.value)); await model.load()
+            #expect(try await f.research.watchlist().isEmpty); #expect(model.watchlist.isEmpty)
+        }
+    }
+    @Test func watchlistDeleteRequiresOriginalBusinessAndEntryRevisions() async throws {
+        let f = try TransferFixture(), entry = try WatchlistEntry(symbol:"KEEP")
+        try await f.research.setWatchlist(entry,expectedRevision:nil)
+        let baseline = try await f.research.writeRevision()
+        try await f.research.setWatchlist(WatchlistEntry(symbol:"OTHER"),expectedRevision:nil)
+        await #expect(throws:SnapshotError.stalePlan) {
+            try await f.research.removeWatchlist(symbol:entry.symbol,expectedRevision:entry.revision,expectedStoreRevision:baseline)
+        }
+        #expect(try await f.research.watchlist().contains(entry))
     }
 }
