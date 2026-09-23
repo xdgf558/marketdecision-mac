@@ -20,7 +20,7 @@ public struct FinancialPersistenceReceipt: Sendable, Equatable {
 
 public extension BusinessDataStore {
     @discardableResult
-    func ingestSECIdentities(_ accepted: AcceptedProviderPayload<SECCompanyIdentityRecord>,
+    internal func ingestSECIdentities(_ accepted: AcceptedProviderPayload<SECCompanyIdentityRecord>,
                              expectedRevision: UUID) throws -> SECIngestReceipt {
         try ingestSEC(accepted, capability: .companyIdentity, expectedRevision: expectedRevision) { item, version, available, bytes, document, db in
             try Self.insertSECRecord(table: "p1_sec_identities", key: [item.recordID, version], bytes: bytes, db: db) {
@@ -41,7 +41,7 @@ public extension BusinessDataStore {
     }
 
     @discardableResult
-    func ingestSECSubmissions(_ accepted: AcceptedProviderPayload<SECSubmissionRecord>,
+    internal func ingestSECSubmissions(_ accepted: AcceptedProviderPayload<SECSubmissionRecord>,
                               expectedRevision: UUID) throws -> SECIngestReceipt {
         try ingestSEC(accepted, capability: .submissions, expectedRevision: expectedRevision) { item, version, available, bytes, document, db in
             try Self.insertSECRecord(table: "p1_sec_submissions", key: [item.recordID, version], bytes: bytes, db: db) {
@@ -57,7 +57,7 @@ public extension BusinessDataStore {
     }
 
     @discardableResult
-    func ingestSECCompanyFacts(_ accepted: AcceptedProviderPayload<SECCompanyFactRecord>,
+    internal func ingestSECCompanyFacts(_ accepted: AcceptedProviderPayload<SECCompanyFactRecord>,
                                expectedRevision: UUID) throws -> SECIngestReceipt {
         try ingestSEC(accepted, capability: .companyFacts, expectedRevision: expectedRevision) { item, version, available, bytes, document, db in
             try Self.insertSECRecord(table: "p1_sec_facts", key: [item.recordID, version], bytes: bytes, db: db) {
@@ -76,7 +76,7 @@ public extension BusinessDataStore {
     }
 
     @discardableResult
-    func ingestSECFilingIndex(_ accepted: AcceptedProviderPayload<SECFilingIndexRecord>,
+    internal func ingestSECFilingIndex(_ accepted: AcceptedProviderPayload<SECFilingIndexRecord>,
                               expectedRevision: UUID) throws -> SECIngestReceipt {
         try ingestSEC(accepted, capability: .filingIndex, expectedRevision: expectedRevision) { item, version, available, bytes, document, db in
             try Self.insertSECRecord(table: "p1_sec_filing_indexes", key: [item.recordID, version], bytes: bytes, db: db) {
@@ -91,7 +91,7 @@ public extension BusinessDataStore {
     }
 
     @discardableResult
-    func ingestSECFilingDocument(_ accepted: AcceptedProviderPayload<SECFilingDocumentRecord>,
+    internal func ingestSECFilingDocument(_ accepted: AcceptedProviderPayload<SECFilingDocumentRecord>,
                                  expectedRevision: UUID) throws -> SECIngestReceipt {
         try ingestSEC(accepted, capability: .filingDocument, expectedRevision: expectedRevision) { item, version, available, bytes, document, db in
             try Self.insertSECRecord(table: "p1_sec_filing_documents", key: [item.recordID, version], bytes: bytes, db: db) {

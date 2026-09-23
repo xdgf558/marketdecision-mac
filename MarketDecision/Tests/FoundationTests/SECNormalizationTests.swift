@@ -1,11 +1,12 @@
 import Foundation
 import Testing
+import GRDB
 import CoreDomain
 import DataContracts
 import DataProviders
 import SECProvider
 import FundamentalsEngine
-import Persistence
+@testable import Persistence
 
 private actor SECFixtureGate: SECRequestGate {
     private(set) var waits = 0
@@ -23,6 +24,22 @@ private actor SECFixtureTransport: HTTPTransport {
         return payloads.removeFirst()
     }
     func captured() -> [URLRequest] { requests }
+}
+
+private actor PausedSECTransport: HTTPTransport {
+    private let payload: HTTPPayload
+    private var started = false
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+    private var pending: CheckedContinuation<HTTPPayload, Never>?
+    init(_ payload: HTTPPayload) { self.payload = payload }
+    func send(_ request: URLRequest) async throws -> HTTPPayload {
+        started = true; startedWaiter?.resume(); startedWaiter = nil
+        return await withCheckedContinuation { pending = $0 }
+    }
+    func waitForStart() async {
+        if !started { await withCheckedContinuation { startedWaiter = $0 } }
+    }
+    func release() { pending?.resume(returning: payload); pending = nil }
 }
 
 @Suite struct PhaseOneSECProviderTests {
@@ -141,6 +158,99 @@ private actor SECFixtureTransport: HTTPTransport {
         await #expect(throws: ProviderFailure.rateLimited) {
             try await client.companyIdentity(request(.companyIdentity, resource: "AAPL"))
         }
+    }
+
+    @Test func acquisitionPipelineAcceptsStoresAndAuditsOfflineWithoutGrantingValuation() async throws {
+        let identity = Data(#"{"fields":["cik","name","ticker","exchange"],"data":[[320193,"Apple Inc.","AAPL","Nasdaq"]]}"#.utf8)
+        let (provider, transport, _) = try provider([identity, companyFactsFixture()])
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-pipeline-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let database = try DatabaseStore(path: path)
+        let store = try BusinessDataStore(database: database)
+        let client = FundamentalsDataClient(provider: provider, entitlement: entitlement([.companyIdentity, .companyFacts]))
+        let pipeline = SECAcquisitionPipeline(client: client, store: store)
+        let first = try await pipeline.ingest(request(.companyIdentity, resource: "AAPL"))
+        #expect(first.status == .complete && first.insertedDocuments == 1 && first.insertedRecords == 1)
+        let second = try await pipeline.ingest(request(.companyFacts, resource: "0000320193"))
+        #expect(second.status == .complete && second.insertedDocuments == 1 && second.insertedRecords > 0)
+        let audit = try await OfflineResearchEvidenceReader(store: store).inspect(symbol: "AAPL",
+            cutoff: now.addingTimeInterval(1), barWindow: .init(start: now.addingTimeInterval(-86_400), end: now),
+            dictionary: .foundationV1())
+        #expect(audit.identity?.cik == "0000320193")
+        #expect(audit.normalization?.values.isEmpty == false)
+        #expect(audit.sourceHashes.count == 2)
+        #expect(audit.gaps.contains(.missingDailyBar))
+        #expect(audit.gaps.contains(.supplierAndLicenseNotQualified))
+        #expect(!audit.mayRunValuation)
+        let replay = try await OfflineResearchEvidenceReader(store: BusinessDataStore(path: path)).inspect(symbol: "AAPL",
+            cutoff: now.addingTimeInterval(1), barWindow: .init(start: now.addingTimeInterval(-86_400), end: now),
+            dictionary: .foundationV1())
+        #expect(try ResearchDocument.encoded(audit) == ResearchDocument.encoded(replay))
+
+        let invalid = ProviderRequest(providerID: "sec-edgar", feedID: "public-edgar", resourceID: "0000320193",
+            capability: .companyFacts, mode: .latest, usage: .pitResearch,
+            configurationVersion: "wrong-version", entitlementVersion: "sec-rights.v1", requestedAt: now)
+        await #expect(throws: ContractError.mismatchedRequest) { try await pipeline.ingest(invalid) }
+        #expect(await transport.captured().count == 2)
+
+        try database.transaction { db in
+            try db.execute(sql: "UPDATE p1_source_documents SET payload = X'41' WHERE endpoint_descriptor = ?",
+                           arguments: [EndpointDescriptor.companyFacts.rawValue])
+        }
+        await #expect(throws: BusinessStoreError.corruptedStorage) {
+            try await OfflineResearchEvidenceReader(store: store).inspect(symbol: "AAPL",
+                cutoff: now.addingTimeInterval(1), barWindow: .init(start: now.addingTimeInterval(-86_400), end: now),
+                dictionary: .foundationV1())
+        }
+    }
+
+    @Test func acquisitionDoesNotRebaseAnInFlightPageAfterAnotherStoreWrite() async throws {
+        let raw = Data(#"{"fields":["cik","name","ticker","exchange"],"data":[[320193,"Apple Inc.","AAPL","Nasdaq"]]}"#.utf8)
+        let transport = PausedSECTransport(HTTPPayload(statusCode: 200, mediaType: "application/json", body: raw))
+        let provider = try SECEdgarProvider(userAgent: "MarketDecision/1.0 research@example.com",
+            transport: transport, gate: SECFixtureGate(), evidenceRef: "sec-official-api",
+            licenseRef: "sec-public-access.v1", now: { now })
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-race-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let store = try BusinessDataStore(path: path)
+        let pipeline = SECAcquisitionPipeline(client: FundamentalsDataClient(provider: provider,
+            entitlement: entitlement([.companyIdentity])), store: store)
+        let task = Task { try await pipeline.ingest(request(.companyIdentity, resource: "AAPL")) }
+        await transport.waitForStart()
+        let stamp = try MillisecondInstant(rounding: now)
+        let document = try SourceDocument(reference: "fixture/concurrent", providerID: "fixture", feedID: "fixture",
+            endpoint: .companyFacts, receivedAt: stamp, availableAt: stamp,
+            mediaType: "application/json", evidenceRef: "fixture", licenseRef: "fixture", payload: Data("{}".utf8))
+        _ = try await store.ingest(document: document, observations: [], expectedRevision: store.revision())
+        await transport.release()
+        await #expect(throws: SnapshotError.stalePlan) { try await task.value }
+        #expect(try await store.counts().sourceDocuments == 1)
+        await #expect(throws: SnapshotError.missingReference) {
+            try await store.secIdentity(ticker: "AAPL", asOf: now.addingTimeInterval(1))
+        }
+    }
+
+    @Test func acquisitionKeepsPartialCoverageAndRejectsThrottleWithoutWriting() async throws {
+        let partial = Data(#"{"cik":"0000320193","filings":{"recent":{"accessionNumber":["0000320193-25-000079"],"filingDate":["2025-08-01"],"reportDate":["2025-06-28"],"acceptanceDateTime":["2025-08-01T20:01:02.000Z"],"form":["10-Q"],"primaryDocument":["aapl-20250628.htm"]},"files":[{"name":"CIK0000320193-submissions-001.json"}]}}"#.utf8)
+        let (firstProvider, _, _) = try provider([partial])
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-partial-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let store = try BusinessDataStore(path: path)
+        let pipeline = SECAcquisitionPipeline(client: FundamentalsDataClient(provider: firstProvider,
+            entitlement: entitlement([.submissions])), store: store)
+        let receipt = try await pipeline.ingest(request(.submissions, resource: "0000320193"))
+        #expect(receipt.status == .partial)
+        #expect(receipt.nextPageToken == "CIK0000320193-submissions-001.json")
+        #expect(receipt.insertedRecords == 1)
+        let before = await store.revision()
+        let (throttled, _, _) = try provider([Data("{}".utf8)], status: 429)
+        let failed = SECAcquisitionPipeline(client: FundamentalsDataClient(provider: throttled,
+            entitlement: entitlement([.submissions])), store: store)
+        await #expect(throws: ProviderFailure.rateLimited) {
+            try await failed.ingest(request(.submissions, resource: "0000320193",
+                page: "CIK0000320193-submissions-001.json"))
+        }
+        #expect(await store.revision() == before)
     }
 
     private func companyFactsFixture() -> Data {

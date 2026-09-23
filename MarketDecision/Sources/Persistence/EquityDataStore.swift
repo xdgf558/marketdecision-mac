@@ -23,7 +23,7 @@ public extension BusinessDataStore {
     /// Raw + typed + page coverage commit atomically. The accepted wrapper is not publicly
     /// constructible; quote/bars capability, rights and exact request are checked before this API.
     @discardableResult
-    func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) throws -> EquityIngestReceipt {
+    internal func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) throws -> EquityIngestReceipt {
         let result = accepted.exchange.result, raw = accepted.rawPayload, request = result.request
         guard case .latest = request.mode, request.providerID == "alpaca", request.feedID == "iex" else { throw ContractError.invalidRequest }
         guard [.quote, .bars].contains(request.capability), [.complete, .partial, .empty].contains(result.status),
