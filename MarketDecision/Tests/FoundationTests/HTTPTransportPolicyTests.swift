@@ -2,19 +2,24 @@ import Foundation
 import Testing
 @testable import DataProviders
 
-private actor TransportLifecycleProbe {
-    private(set) var starts = 0
-    private(set) var stops = 0
-    func started() { starts += 1 }
-    func stopped() { stops += 1 }
+private final class TransportLifecycleProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var starts = 0
+    private var stops = 0
+    func started() { lock.lock(); starts += 1; lock.unlock() }
+    func stopped() { lock.lock(); stops += 1; lock.unlock() }
+    func counts() -> (starts: Int, stops: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (starts, stops)
+    }
 }
 
 private final class PausedHTTPSProtocol: URLProtocol {
     static let probe = TransportLifecycleProbe()
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
-    override func startLoading() { Task { await Self.probe.started() } }
-    override func stopLoading() { Task { await Self.probe.stopped() } }
+    override func startLoading() { Self.probe.started() }
+    override func stopLoading() { Self.probe.stopped() }
 }
 
 @Suite struct HTTPTransportPolicyTests {
@@ -59,23 +64,23 @@ private final class PausedHTTPSProtocol: URLProtocol {
             maximumResponseBytes: 1_024, timeout: 30, protocolClasses: [PausedHTTPSProtocol.self])
         let alias = transport
         let request = URLRequest(url: try #require(URL(string: "https://data.sec.gov/test")))
-        let startedBefore = await PausedHTTPSProtocol.probe.starts
-        let stoppedBefore = await PausedHTTPSProtocol.probe.stops
+        let startedBefore = PausedHTTPSProtocol.probe.counts().starts
+        let stoppedBefore = PausedHTTPSProtocol.probe.counts().stops
         let pending = Task { try await transport.send(request) }
         for _ in 0..<200 {
-            if await PausedHTTPSProtocol.probe.starts > startedBefore { break }
+            if PausedHTTPSProtocol.probe.counts().starts > startedBefore { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        #expect(await PausedHTTPSProtocol.probe.starts > startedBefore)
+        #expect(PausedHTTPSProtocol.probe.counts().starts > startedBefore)
         await alias.close()
         await #expect(throws: HTTPTransportPolicyError.closed) { try await pending.value }
         await #expect(throws: HTTPTransportPolicyError.closed) { try await transport.send(request) }
         await transport.close() // idempotent across aliases
         for _ in 0..<200 {
-            if await PausedHTTPSProtocol.probe.stops > stoppedBefore { break }
+            if PausedHTTPSProtocol.probe.counts().stops > stoppedBefore { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        #expect(await PausedHTTPSProtocol.probe.stops > stoppedBefore)
+        #expect(PausedHTTPSProtocol.probe.counts().stops > stoppedBefore)
     }
 
     @Test func droppingAliasesReleasesRepeatedSessionOwners() async throws {
