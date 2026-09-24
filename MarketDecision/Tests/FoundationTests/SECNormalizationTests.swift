@@ -230,6 +230,39 @@ private actor PausedSECTransport: HTTPTransport {
         }
     }
 
+    @Test func offlineEvidenceKeepsSubmillisecondCutoffAndExcludesTheNextMillisecond() async throws {
+        let future = now.addingTimeInterval(0.001)
+        let transport = SECFixtureTransport([HTTPPayload(statusCode: 200, mediaType: "application/json",
+            body: Data(#"{"fields":["cik","name","ticker","exchange"],"data":[[320193,"Apple Inc.","AAPL","Nasdaq"]]}"#.utf8))])
+        let provider = try SECEdgarProvider(userAgent: "MarketDecision/1.0 research@example.com",
+            transport: transport, gate: SECFixtureGate(), evidenceRef: "sec-official-api",
+            licenseRef: "sec-public-access.v1", now: { future })
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-cutoff-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let store = try BusinessDataStore(path: path)
+        let request = ProviderRequest(providerID: "sec-edgar", feedID: "public-edgar", resourceID: "AAPL",
+            capability: .companyIdentity, mode: .latest, usage: .pitResearch,
+            configurationVersion: "sec-edgar.v1", entitlementVersion: "sec-rights.v1", requestedAt: future)
+        _ = try await SECAcquisitionPipeline(client: FundamentalsDataClient(provider: provider,
+            entitlement: entitlement([.companyIdentity])), store: store).ingest(request)
+        let reader = OfflineResearchEvidenceReader(store: store)
+        let start = now.addingTimeInterval(-1)
+        let early = now.addingTimeInterval(0.0004)
+        let earlyAudit = try await reader.inspect(symbol: "AAPL", cutoff: early,
+            barWindow: .init(start: start, end: early), dictionary: .foundationV1())
+        #expect(earlyAudit.identity == nil)
+        #expect(earlyAudit.cutoff == early)
+        let replay = try JSONDecoder().decode(OfflineResearchEvidence.self, from: ResearchDocument.encoded(earlyAudit))
+        #expect(replay.cutoff == early)
+        let beforeFuture = now.addingTimeInterval(0.0006)
+        let beforeAudit = try await reader.inspect(symbol: "AAPL", cutoff: beforeFuture,
+            barWindow: .init(start: start, end: beforeFuture), dictionary: .foundationV1())
+        #expect(beforeAudit.identity == nil)
+        let atFuture = try await reader.inspect(symbol: "AAPL", cutoff: future,
+            barWindow: .init(start: start, end: future), dictionary: .foundationV1())
+        #expect(atFuture.identity?.cik == "0000320193")
+    }
+
     @Test func acquisitionKeepsPartialCoverageAndRejectsThrottleWithoutWriting() async throws {
         let partial = Data(#"{"cik":"0000320193","filings":{"recent":{"accessionNumber":["0000320193-25-000079"],"filingDate":["2025-08-01"],"reportDate":["2025-06-28"],"acceptanceDateTime":["2025-08-01T20:01:02.000Z"],"form":["10-Q"],"primaryDocument":["aapl-20250628.htm"]},"files":[{"name":"CIK0000320193-submissions-001.json"}]}}"#.utf8)
         let (firstProvider, _, _) = try provider([partial])

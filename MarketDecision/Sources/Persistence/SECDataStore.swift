@@ -109,7 +109,7 @@ public extension BusinessDataStore {
     /// mapping are performed by FinancialNormalizer; current/latest rows are never substituted.
     func secFactVersions(cik: String, asOf cutoff: Date) throws -> [SECCompanyFactRecord] {
         guard SECCompanyIdentityRecord.validCIK(cik) else { throw BusinessStoreError.sourceMismatch }
-        let cutoffMS = try MillisecondInstant(rounding: cutoff).milliseconds
+        let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
         let rows = try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT f.*, d.content_hash AS source_content_hash, d.provider_id AS source_provider_id,
@@ -137,7 +137,7 @@ public extension BusinessDataStore {
         guard ticker.range(of: #"^[A-Z0-9][A-Z0-9.\-]{0,15}\z"#, options: .regularExpression) != nil else {
             throw BusinessStoreError.sourceMismatch
         }
-        let cutoffMS = try MillisecondInstant(rounding: cutoff).milliseconds
+        let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
         let rows = try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT i.*, d.content_hash AS source_content_hash, d.provider_id AS source_provider_id,
@@ -169,7 +169,7 @@ public extension BusinessDataStore {
 
     func secSubmissions(cik: String, asOf cutoff: Date) throws -> [SECSubmissionRecord] {
         guard SECCompanyIdentityRecord.validCIK(cik) else { throw BusinessStoreError.sourceMismatch }
-        let cutoffMS = try MillisecondInstant(rounding: cutoff).milliseconds
+        let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
         let rows = try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT s.*, d.content_hash AS source_content_hash, d.provider_id AS source_provider_id,
@@ -194,7 +194,7 @@ public extension BusinessDataStore {
                            asOf cutoff: Date) throws -> SECFilingDocumentRecord {
         guard SECCompanyIdentityRecord.validCIK(cik), SECSubmissionRecord.validAccession(accessionNumber),
               SECSubmissionRecord.validFileName(fileName) else { throw BusinessStoreError.sourceMismatch }
-        let cutoffMS = try MillisecondInstant(rounding: cutoff).milliseconds
+        let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
         let rows = try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT f.*, d.content_hash AS source_content_hash, d.provider_id AS source_provider_id,
@@ -221,7 +221,7 @@ public extension BusinessDataStore {
         guard SECCompanyIdentityRecord.validCIK(cik), SECSubmissionRecord.validAccession(accessionNumber) else {
             throw BusinessStoreError.sourceMismatch
         }
-        let cutoffMS = try MillisecondInstant(rounding: cutoff).milliseconds
+        let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
         let rows = try database.read { db in
             try Row.fetchAll(db, sql: """
                 SELECT f.*, d.content_hash AS source_content_hash, d.provider_id AS source_provider_id,

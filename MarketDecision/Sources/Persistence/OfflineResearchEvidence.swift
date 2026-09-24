@@ -18,7 +18,8 @@ public enum ResearchEvidenceGap: String, Sendable, Codable, Hashable {
 /// ResearchDocument, valuation, supplier qualification, or live-analysis permission.
 public struct OfflineResearchEvidence: Sendable, Codable {
     public let symbol: String
-    public let cutoff: MillisecondInstant
+    /// Exact requested Date, encoded as Foundation's reference-date seconds for replay.
+    public let cutoff: Date
     public let storeRevision: UUID
     public let identity: SECCompanyIdentityRecord?
     public let normalization: FinancialNormalizationResult?
@@ -38,17 +39,17 @@ public struct OfflineResearchEvidenceReader: Sendable {
                         dictionary: FinancialFieldDictionary) async throws -> OfflineResearchEvidence {
         try EquityRecord.validateSymbol(symbol)
         try barWindow.validate()
-        let instant = try MillisecondInstant(rounding: cutoff)
-        guard barWindow.end <= instant.date else { throw ContractError.invalidRange }
+        _ = try MillisecondInstant(rounding: cutoff) // Supported Date range, without changing the boundary.
+        guard barWindow.end <= cutoff else { throw ContractError.invalidRange }
         let revision = await store.revision()
         let identity: SECCompanyIdentityRecord?
-        do { identity = try await store.secIdentity(ticker: symbol, asOf: instant.date) }
+        do { identity = try await store.secIdentity(ticker: symbol, asOf: cutoff) }
         catch SnapshotError.missingReference { identity = nil }
 
         let normalization: FinancialNormalizationResult?
         if let identity {
-            let facts = try await store.secFactVersions(cik: identity.cik, asOf: instant.date)
-            normalization = try FinancialNormalizer.normalizeComplete(facts, dictionary: dictionary, asOf: instant.date)
+            let facts = try await store.secFactVersions(cik: identity.cik, asOf: cutoff)
+            normalization = try FinancialNormalizer.normalizeComplete(facts, dictionary: dictionary, asOf: cutoff)
         } else { normalization = nil }
         let bars = try await store.equityRecords(symbol: symbol, kind: .dailyBar, range: barWindow)
 
@@ -85,7 +86,7 @@ public struct OfflineResearchEvidenceReader: Sendable {
         else { gaps.append(.unqualifiedDailyBar) }
         gaps += [.missingCapitalAndSplitBasis, .supplierAndLicenseNotQualified,
                  .modelCalibrationNotApproved]
-        return OfflineResearchEvidence(symbol: symbol, cutoff: instant, storeRevision: revision,
+        return OfflineResearchEvidence(symbol: symbol, cutoff: cutoff, storeRevision: revision,
             identity: identity, normalization: normalization, dailyBarCount: bars.count,
             sourceHashes: sourceHashes, gaps: gaps)
     }

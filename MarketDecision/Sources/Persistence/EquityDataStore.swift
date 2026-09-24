@@ -109,8 +109,8 @@ public extension BusinessDataStore {
             try Row.fetchAll(db, sql: """
                 SELECT * FROM p1_equity_records WHERE symbol = ? AND kind = ? AND source_event_ms >= ? AND source_event_ms <= ?
                 ORDER BY source_event_ms, received_at_ms, version_id
-                """, arguments: [symbol, kind.rawValue, try MillisecondInstant(rounding: range.start).milliseconds,
-                                  try MillisecondInstant(rounding: range.end).milliseconds])
+                """, arguments: [symbol, kind.rawValue, try MillisecondInstant(ceiling: range.start).milliseconds,
+                                  try MillisecondInstant(flooring: range.end).milliseconds])
                 .map { try Self.decodeStoredEquityRecord($0, db: db) }
         }
     }
