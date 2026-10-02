@@ -20,7 +20,6 @@ private final class SelectedFileProbe: @unchecked Sendable {
     private var starts = 0, stops = 0, chunks = 0
     private var descriptor: Int32?
     private var descriptorClosedAtEnd = false
-    let resume = DispatchSemaphore(value: 0)
     func begin() { lock.lock(); starts += 1; lock.unlock() }
     func end() {
         lock.lock(); defer { lock.unlock() }
@@ -144,18 +143,34 @@ private final class SelectedFileProbe: @unchecked Sendable {
     @Test func parentCancellationClosesDescriptorAndReleasesScopeBeforeReturning() async throws {
         let fixture = try SelectedFileFixture(Data(repeating: 1, count: 150_000)); defer { fixture.remove() }
         let probe = SelectedFileProbe()
+        let arrival = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
         let pending = Task {
-            try await ResearchSelectedFile.read(fixture.file, maximumBytes: 150_000,
+            // An early read failure must end the arrival wait as well.
+            defer { arrival.signal() }
+            return try await ResearchSelectedFile.read(fixture.file, maximumBytes: 150_000,
                 access: probe.access(), didReadChunk: { descriptor in
-                    if probe.read(descriptor) { _ = probe.resume.wait(timeout: .now() + 5) }
+                    if probe.read(descriptor) {
+                        arrival.signal()
+                        // Only the parent releases this wait, after cancelling.
+                        release.wait()
+                    }
                 })
         }
-        for _ in 0..<200 {
-            if probe.state().chunks > 0 { break }
-            try await Task.sleep(nanoseconds: 10_000_000)
+        defer {
+            pending.cancel()
+            arrival.signal()
+            release.signal()
         }
-        #expect(probe.state().chunks == 1)
-        pending.cancel(); probe.resume.signal()
+        // Cancel independently of the cooperative pool occupied by the read hook.
+        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                arrival.wait()
+                pending.cancel()
+                release.signal()
+                finished.resume()
+            }
+        }
         await #expect(throws: CancellationError.self) { try await pending.value }
         let state = probe.state()
         #expect(state.starts == 1 && state.stops == 1 && state.chunks == 1 && state.closed)
