@@ -555,3 +555,232 @@ private extension Collection {
         #expect(try await reopened.sourceDocument(reference: index.provenance.rawObjectRef!).payload == indexBytes)
     }
 }
+
+@Suite struct SECAvailabilityPrecisionTests {
+    let now = Date(timeIntervalSince1970: 1_757_592_000)
+    let identityBytes = Data(#"{"fields":["cik","name","ticker","exchange"],"data":[[320193,"Apple Inc.","AAPL","Nasdaq"]]}"#.utf8)
+    let submissionBytes = Data(#"{"cik":"0000320193","filings":{"recent":{"accessionNumber":["0000320193-25-000079"],"filingDate":["2025-09-11"],"reportDate":["2025-06-28"],"acceptanceDateTime":["2025-09-11T12:00:00.000Z"],"form":["10-Q"],"primaryDocument":["aapl-20250628.htm"]},"files":[]}}"#.utf8)
+    let factBytes = Data(#"{"cik":320193,"entityName":"Apple Inc.","facts":{"us-gaap":{"RevenueFromContractWithCustomerExcludingAssessedTax":{"label":"Revenue","description":"Revenue","units":{"USD":[{"val":10,"accn":"0000320193-25-000079","fy":2025,"fp":"Q2","form":"10-Q","filed":"2025-09-11","start":"2025-04-01","end":"2025-06-30"}]}}}}}"#.utf8)
+
+    private func client(_ payloads: [HTTPPayload], at received: Date, capabilities: Set<ProviderCapability>) throws
+        -> FundamentalsDataClient<SECEdgarProvider<SECFixtureTransport, SECFixtureGate>> {
+        let provider = try SECEdgarProvider(userAgent: "MarketDecision/1.0 research@example.com",
+            transport: SECFixtureTransport(payloads), gate: SECFixtureGate(), evidenceRef: "sec-official-api",
+            licenseRef: "sec-public-access.v1", now: { received })
+        let rights = EntitlementSnapshot(providerID: "sec-edgar", feedID: "public-edgar", version: "sec-rights.v1",
+            evidenceRef: "sec-official-api", licenseRef: "sec-public-access.v1", capabilities: capabilities,
+            usages: [.pitResearch], validFrom: now.addingTimeInterval(-1), validThrough: now.addingTimeInterval(1))
+        return FundamentalsDataClient(provider: provider, entitlement: rights)
+    }
+
+    private func request(_ capability: ProviderCapability, resource: String, at date: Date) -> ProviderRequest {
+        ProviderRequest(providerID: "sec-edgar", feedID: "public-edgar", resourceID: resource,
+            capability: capability, mode: .latest, usage: .pitResearch, configurationVersion: "sec-edgar.v1",
+            entitlementVersion: "sec-rights.v1", requestedAt: date)
+    }
+
+    private func legacyBytes<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var value = encoder.singleValueContainer()
+            try value.encode(MillisecondInstant(rounding: date).iso8601)
+        }
+        return try encoder.encode(value)
+    }
+
+    /// Synthetic storage fixture with a valid content hash and a matching coarse index.
+    /// This does not claim the SEC Company Facts adapter supplies instant-level availability.
+    private func replaceRecord(_ database: DatabaseStore, table: String, bytes: Data, indexedAt date: Date) throws {
+        try database.transaction { db in
+            try db.execute(sql: "UPDATE " + table + " SET record_json = ?, record_hash = ?, available_at_ms = ?",
+                           arguments: [bytes, digest(bytes), try MillisecondInstant(flooring: date).milliseconds])
+        }
+    }
+
+    @Test func sameMillisecondAcquisitionRetainsExactAvailabilityAfterReopen() async throws {
+        let acquired = now.addingTimeInterval(0.0004), early = now.addingTimeInterval(0.0002)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("precise.sqlite").path
+        let database = try DatabaseStore(path: path), store = try BusinessDataStore(database: database)
+        let client = try client([
+            HTTPPayload(statusCode: 200, mediaType: "application/json", body: identityBytes),
+            HTTPPayload(statusCode: 200, mediaType: "application/json", body: Data(#"{"directory":{"item":[{"name":"aapl-20250628.htm","type":"text/html","size":123}]}}"#.utf8)),
+            HTTPPayload(statusCode: 200, mediaType: "text/html", body: Data("<html>synthetic</html>".utf8))
+        ], at: acquired, capabilities: [.companyIdentity, .filingIndex, .filingDocument])
+        let pipeline = SECAcquisitionPipeline(client: client, store: store)
+        let root = "0000320193/0000320193-25-000079"
+        _ = try await pipeline.ingest(request(.companyIdentity, resource: "AAPL", at: acquired))
+        _ = try await pipeline.ingest(request(.filingIndex, resource: root, at: acquired))
+        _ = try await pipeline.ingest(request(.filingDocument, resource: root + "/aapl-20250628.htm", at: acquired))
+        let reopened = try BusinessDataStore(path: path)
+        for reader in [store, reopened] {
+            await #expect(throws: SnapshotError.missingReference) { try await reader.secIdentity(ticker: "AAPL", asOf: early) }
+            await #expect(throws: SnapshotError.missingReference) {
+                try await reader.secFilingIndex(cik: "0000320193", accessionNumber: "0000320193-25-000079", asOf: early)
+            }
+            await #expect(throws: SnapshotError.missingReference) {
+                try await reader.secFilingDocument(cik: "0000320193", accessionNumber: "0000320193-25-000079",
+                                                  fileName: "aapl-20250628.htm", asOf: early)
+            }
+            let identity = try await reader.secIdentity(ticker: "AAPL", asOf: acquired)
+            #expect(try identity.provenance.availability.upperBound() == acquired)
+            #expect(identity.provenance.receivedAt == acquired)
+            #expect(identity.provenance.requestedAt == acquired)
+            #expect(identity.provenance.sourceEventAt == acquired)
+            let index = try await reader.secFilingIndex(cik: "0000320193", accessionNumber: "0000320193-25-000079", asOf: acquired)
+            let document = try await reader.secFilingDocument(cik: "0000320193", accessionNumber: "0000320193-25-000079",
+                                                            fileName: "aapl-20250628.htm", asOf: acquired)
+            #expect(try index.provenance.availability.upperBound() == acquired)
+            #expect(try document.provenance.availability.upperBound() == acquired)
+            let offline = try await OfflineResearchEvidenceReader(store: reader).inspect(symbol: "AAPL", cutoff: early,
+                barWindow: .init(start: now.addingTimeInterval(-1), end: early), dictionary: .foundationV1())
+            #expect(offline.identity == nil && offline.cutoff == early && !offline.mayRunValuation)
+            let exact = try await OfflineResearchEvidenceReader(store: reader).inspect(symbol: "AAPL", cutoff: acquired,
+                barWindow: .init(start: now.addingTimeInterval(-1), end: acquired), dictionary: .foundationV1())
+            #expect(try exact.identity?.provenance.availability.upperBound() == acquired)
+            let replay = try JSONDecoder().decode(OfflineResearchEvidence.self, from: ResearchDocument.encoded(exact))
+            #expect(try ResearchDocument.encoded(replay) == ResearchDocument.encoded(exact))
+        }
+        let row = try #require(database.read { db in try Row.fetchOne(db, sql: "SELECT * FROM p1_sec_identities") })
+        let bytes: Data = row["record_json"]
+        let decoded = try JSONDecoder().decode(SECCompanyIdentityRecord.self, from: bytes)
+        #expect(try decoded.provenance.availability.upperBound() == acquired)
+        #expect(row["record_hash"] == digest(bytes))
+        #expect(row["available_at_ms"] == (try MillisecondInstant(flooring: acquired).milliseconds))
+        try database.transaction { db in try db.execute(sql: "UPDATE p1_sec_identities SET available_at_ms = available_at_ms - 1") }
+        await #expect(throws: BusinessStoreError.corruptedStorage) { try await reopened.secIdentity(ticker: "AAPL", asOf: acquired) }
+    }
+
+    @Test func factsAndSubmissionsRequireExactSameMillisecondEvidence() async throws {
+        let acquired = now.addingTimeInterval(0.0004), early = now.addingTimeInterval(0.0002)
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-facts-precise-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let database = try DatabaseStore(path: path), store = try BusinessDataStore(database: database)
+        let client = try client([HTTPPayload(statusCode: 200, mediaType: "application/json", body: factBytes),
+                                HTTPPayload(statusCode: 200, mediaType: "application/json", body: submissionBytes)],
+                                at: acquired, capabilities: [.companyFacts, .submissions])
+        let facts = try await client.companyFacts(request(.companyFacts, resource: "0000320193", at: acquired))
+        let submissions = try await client.submissions(request(.submissions, resource: "0000320193", at: acquired))
+        try await store.ingestSECCompanyFacts(facts, expectedRevision: store.revision())
+        try await store.ingestSECSubmissions(submissions, expectedRevision: store.revision())
+        for (table, value) in [("p1_sec_facts", try JSONEncoder().encode(facts.exchange.result.items[0])),
+                               ("p1_sec_submissions", try JSONEncoder().encode(submissions.exchange.result.items[0]))] {
+            var object = try #require(JSONSerialization.jsonObject(with: value) as? [String: Any])
+            var provenance = try #require(object["provenance"] as? [String: Any])
+            provenance["availability"] = ["instant": ["_0": acquired.timeIntervalSinceReferenceDate, "evidence": "synthetic precise availability"]]
+            if table == "p1_sec_submissions" {
+                object["acceptedAt"] = acquired.timeIntervalSinceReferenceDate
+                provenance["sourceEventAt"] = acquired.timeIntervalSinceReferenceDate
+            }
+            object["provenance"] = provenance
+            try replaceRecord(database, table: table, bytes: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), indexedAt: acquired)
+        }
+        let reopened = try BusinessDataStore(path: path)
+        #expect(try await reopened.secFactVersions(cik: "0000320193", asOf: early).isEmpty)
+        #expect(try await reopened.secSubmissions(cik: "0000320193", asOf: early).isEmpty)
+        let availableFacts = try await reopened.secFactVersions(cik: "0000320193", asOf: acquired)
+        let availableSubmissions = try await reopened.secSubmissions(cik: "0000320193", asOf: acquired)
+        #expect(availableFacts.count == 1 && availableSubmissions.count == 1)
+        #expect(availableSubmissions.first?.acceptedAt == acquired)
+        #expect(try availableFacts.first?.provenance.availability.upperBound() == acquired)
+        let dictionary = try FinancialFieldDictionary.foundationV1()
+        let normalized = try FinancialNormalizer.normalizeComplete(availableFacts, dictionary: dictionary, asOf: acquired)
+        let receipt = try await reopened.persistNormalization(normalized, dictionary: dictionary, expectedRevision: reopened.revision())
+        let replayed = try await BusinessDataStore(path: path).normalization(runID: receipt.runID)
+        #expect(replayed == normalized && replayed.asOf == acquired)
+        let legacyResult = try legacyBytes(normalized)
+        try database.transaction { db in
+            try db.execute(sql: "UPDATE p1_financial_normalization_runs SET result_json = ?, result_hash = ? WHERE run_id = ?",
+                           arguments: [legacyResult, digest(legacyResult), receipt.runID])
+        }
+        await #expect(throws: BusinessStoreError.sourceMismatch) {
+            try await BusinessDataStore(path: path).normalization(runID: receipt.runID)
+        }
+        let later = now.addingTimeInterval(1)
+        let recomputed = try FinancialNormalizer.normalizeComplete(availableFacts, dictionary: dictionary, asOf: later)
+        let fresh = try await reopened.persistNormalization(recomputed, dictionary: dictionary, expectedRevision: reopened.revision())
+        #expect(try await BusinessDataStore(path: path).normalization(runID: fresh.runID) == recomputed)
+    }
+
+    @Test func legacyInstantAndIntervalAvailabilityStayConservativeWithoutRewritingBytes() async throws {
+        let acquired = now.addingTimeInterval(0.0004), early = now.addingTimeInterval(0.0002)
+        let next = try MillisecondInstant(milliseconds: MillisecondInstant(rounding: now).milliseconds + 1).date
+        for interval in [false, true] {
+            let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-legacy-\(UUID()).sqlite").path
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            let database = try DatabaseStore(path: path), store = try BusinessDataStore(database: database)
+            let client = try client([HTTPPayload(statusCode: 200, mediaType: "application/json", body: identityBytes)],
+                                    at: acquired, capabilities: [.companyIdentity])
+            let accepted = try await client.companyIdentity(request(.companyIdentity, resource: "AAPL", at: acquired))
+            try await store.ingestSECIdentities(accepted, expectedRevision: store.revision())
+            var legacy = try legacyBytes(accepted.exchange.result.items[0])
+            if interval {
+                var object = try #require(JSONSerialization.jsonObject(with: legacy) as? [String: Any])
+                var provenance = try #require(object["provenance"] as? [String: Any])
+                provenance["availability"] = ["interval": ["earliest": try MillisecondInstant(rounding: now.addingTimeInterval(-1)).iso8601,
+                    "latest": try MillisecondInstant(rounding: acquired).iso8601, "evidence": "synthetic legacy interval"]]
+                object["provenance"] = provenance
+                legacy = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            }
+            try replaceRecord(database, table: "p1_sec_identities", bytes: legacy, indexedAt: now)
+            let reopened = try BusinessDataStore(path: path)
+            for cutoff in [early, now.addingTimeInterval(0.0008)] {
+                await #expect(throws: SnapshotError.missingReference) { try await reopened.secIdentity(ticker: "AAPL", asOf: cutoff) }
+            }
+            let identity = try await reopened.secIdentity(ticker: "AAPL", asOf: next)
+            #expect(try identity.provenance.availability.upperBound() == next)
+            #expect(identity.provenance.receivedAt == now)
+            if interval {
+                guard case let .interval(earliest, latest, _) = identity.provenance.availability else {
+                    Issue.record("Legacy interval disappeared"); return
+                }
+                #expect(earliest == now.addingTimeInterval(-1) && latest == next)
+            }
+            let revision = await reopened.revision()
+            let duplicate = try await reopened.ingestSECIdentities(accepted, expectedRevision: revision)
+            #expect(duplicate.insertedRecords == 0 && duplicate.insertedDocuments == 0 && duplicate.revision == revision)
+            let row = try #require(database.read { db in try Row.fetchOne(db, sql: "SELECT * FROM p1_sec_identities") })
+            let retained: Data = row["record_json"]
+            #expect(retained == legacy && row["record_hash"] == digest(legacy))
+            #expect(row["available_at_ms"] == (try MillisecondInstant(rounding: now).milliseconds))
+            #expect(try await reopened.sourceDocument(reference: accepted.rawPayload.reference).payload == identityBytes)
+        }
+    }
+
+    @Test func legacySubmissionDuplicatesAndDateOnlyNormalizationRemainCompatible() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("sec-legacy-normalize-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let database = try DatabaseStore(path: path), store = try BusinessDataStore(database: database)
+        let client = try client([HTTPPayload(statusCode: 200, mediaType: "application/json", body: submissionBytes),
+                                HTTPPayload(statusCode: 200, mediaType: "application/json", body: factBytes)],
+                                at: now, capabilities: [.submissions, .companyFacts])
+        let submissions = try await client.submissions(request(.submissions, resource: "0000320193", at: now))
+        let facts = try await client.companyFacts(request(.companyFacts, resource: "0000320193", at: now))
+        try await store.ingestSECSubmissions(submissions, expectedRevision: store.revision())
+        try await store.ingestSECCompanyFacts(facts, expectedRevision: store.revision())
+        let legacySubmission = try legacyBytes(submissions.exchange.result.items[0])
+        try replaceRecord(database, table: "p1_sec_submissions", bytes: legacySubmission, indexedAt: now)
+        let fact = facts.exchange.result.items[0], bound = try fact.provenance.availability.upperBound()
+        try replaceRecord(database, table: "p1_sec_facts", bytes: legacyBytes(fact), indexedAt: bound)
+        let reopened = try BusinessDataStore(path: path)
+        let revision = await reopened.revision()
+        let duplicate = try await reopened.ingestSECSubmissions(submissions, expectedRevision: revision)
+        #expect(duplicate.insertedRecords == 0 && duplicate.insertedDocuments == 0 && duplicate.revision == revision)
+        let restored = try await reopened.secSubmissions(cik: "0000320193", asOf: now.addingTimeInterval(1))
+        #expect(restored.first?.acceptedAt == now && restored.first?.provenance.sourceEventAt == now)
+        let availableFacts = try await reopened.secFactVersions(cik: "0000320193", asOf: bound)
+        #expect(availableFacts == [fact]) // Date-only evidence has no unknown submillisecond instant.
+        let dictionary = try FinancialFieldDictionary.foundationV1()
+        let normalized = try FinancialNormalizer.normalizeComplete(availableFacts, dictionary: dictionary, asOf: bound)
+        let receipt = try await reopened.persistNormalization(normalized, dictionary: dictionary, expectedRevision: reopened.revision())
+        #expect(try await BusinessDataStore(path: path).normalization(runID: receipt.runID) == normalized)
+        let legacyResult = try legacyBytes(normalized)
+        try database.transaction { db in
+            try db.execute(sql: "UPDATE p1_financial_normalization_runs SET result_json = ?, result_hash = ? WHERE run_id = ?",
+                           arguments: [legacyResult, digest(legacyResult), receipt.runID])
+        }
+        #expect(try await BusinessDataStore(path: path).normalization(runID: receipt.runID) == normalized)
+    }
+}

@@ -146,7 +146,7 @@ public enum FinancialNormalizer {
     public static func normalize(_ facts: [SECCompanyFactRecord], dictionary: FinancialFieldDictionary,
                                  asOf cutoff: Date) throws -> FinancialNormalizationResult {
         guard cutoff.timeIntervalSince1970.isFinite else { throw ContractError.invalidTime }
-        let cutoff = try MillisecondInstant(rounding: cutoff).date
+        _ = try MillisecondInstant(rounding: cutoff) // Validate range while retaining the exact PIT boundary.
         var selected: [SECCompanyFactRecord] = [], issues: [FinancialNormalizationIssue] = []
         for factID in Set(facts.map(\.factID)).sorted() {
             let versions = facts.filter { $0.factID == factID }

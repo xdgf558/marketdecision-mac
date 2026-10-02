@@ -107,6 +107,7 @@ public extension BusinessDataStore {
 
     /// Returns every stored fact version that was available by the cutoff. Revision choice and
     /// mapping are performed by FinancialNormalizer; current/latest rows are never substituted.
+    /// Millisecond indexes only select candidates; decoded evidence must satisfy the exact cutoff.
     func secFactVersions(cik: String, asOf cutoff: Date) throws -> [SECCompanyFactRecord] {
         guard SECCompanyIdentityRecord.validCIK(cik) else { throw BusinessStoreError.sourceMismatch }
         let cutoffMS = try MillisecondInstant(flooring: cutoff).milliseconds
@@ -130,7 +131,7 @@ public extension BusinessDataStore {
                   row["filed_date"] == item.filedDate.iso8601, row["canonical_value"] == item.value.decimalString
             else { throw BusinessStoreError.corruptedStorage }
             return item
-        }
+        }.filter { $0.provenance.isAvailable(asOf: cutoff) }
     }
 
     func secIdentity(ticker: String, asOf cutoff: Date) throws -> SECCompanyIdentityRecord {
@@ -157,7 +158,9 @@ public extension BusinessDataStore {
                   row["cik"] == item.cik, item.listings.contains(where: { $0.ticker == ticker }) else {
                 throw BusinessStoreError.corruptedStorage
             }
-            versions[item.recordID, default: []].append(item)
+            if item.provenance.isAvailable(asOf: cutoff) {
+                versions[item.recordID, default: []].append(item)
+            }
         }
         let selected = try versions.keys.sorted().map { try AsOfSelector.select(versions[$0]!, cutoff: cutoff) }
         guard selected.count == 1, let identity = selected.first else {
@@ -185,7 +188,9 @@ public extension BusinessDataStore {
             guard row["record_id"] == item.recordID, row["version_id"] == item.provenance.versionID,
                   row["cik"] == item.cik, row["accession_number"] == item.accessionNumber,
                   row["filing_date"] == item.filingDate.iso8601 else { throw BusinessStoreError.corruptedStorage }
-            versions[item.recordID, default: []].append(item)
+            if item.provenance.isAvailable(asOf: cutoff) {
+                versions[item.recordID, default: []].append(item)
+            }
         }
         return try versions.keys.sorted().map { try AsOfSelector.select(versions[$0]!, cutoff: cutoff) }
     }
@@ -211,7 +216,7 @@ public extension BusinessDataStore {
                   row["cik"] == item.cik, row["accession_number"] == item.accessionNumber,
                   row["file_name"] == item.fileName else { throw BusinessStoreError.corruptedStorage }
             return item
-        }
+        }.filter { $0.provenance.isAvailable(asOf: cutoff) }
         guard !versions.isEmpty else { throw SnapshotError.missingReference }
         return try AsOfSelector.select(versions, cutoff: cutoff)
     }
@@ -239,7 +244,7 @@ public extension BusinessDataStore {
                 throw BusinessStoreError.corruptedStorage
             }
             return item
-        }
+        }.filter { $0.provenance.isAvailable(asOf: cutoff) }
         guard !versions.isEmpty else { throw SnapshotError.missingReference }
         return try AsOfSelector.select(versions, cutoff: cutoff)
     }
@@ -273,10 +278,14 @@ public extension BusinessDataStore {
                 else { throw BusinessStoreError.sourceMismatch }
             }
             for fact in result.selectedSourceFacts {
-                let bytes = try Self.encodeSEC(fact)
-                guard let stored = try String.fetchOne(db, sql: """
-                    SELECT record_hash FROM p1_sec_facts WHERE record_id = ? AND version_id = ?
-                    """, arguments: [fact.recordID, fact.provenance.versionID!]), stored == digest(bytes)
+                guard let stored = try Row.fetchOne(db, sql: """
+                    SELECT record_hash, record_json FROM p1_sec_facts WHERE record_id = ? AND version_id = ?
+                    """, arguments: [fact.recordID, fact.provenance.versionID!])
+                else { throw BusinessStoreError.sourceMismatch }
+                let bytes: Data = stored["record_json"]
+                guard digest(bytes) == stored["record_hash"] else { throw BusinessStoreError.corruptedStorage }
+                // Compare validated content, not the newer date codec's bytes with legacy bytes.
+                guard try Self.decodeSEC(SECCompanyFactRecord.self, bytes: bytes) == fact
                 else { throw BusinessStoreError.sourceMismatch }
             }
             let insertedValues: Int
@@ -321,6 +330,9 @@ public extension BusinessDataStore {
               try MillisecondInstant(rounding: result.asOf).milliseconds == row["cutoff_ms"] else {
             throw BusinessStoreError.corruptedStorage
         }
+        // A legacy rounded source bound may now be later than its cached result. Reject an
+        // inconsistent artifact rather than grant it the old, earlier availability; recompute.
+        try Self.validateNormalization(result, dictionary: financialDictionary(version: result.dictionaryVersion))
         return result
     }
 
@@ -350,7 +362,7 @@ public extension BusinessDataStore {
         let encoded = try result.items.map { item -> (Item, String, MillisecondInstant, Data) in
             try Self.validateSECSource(item.provenance, document: document)
             guard let version = item.provenance.versionID else { throw BusinessStoreError.sourceMismatch }
-            return (item, version, try MillisecondInstant(rounding: item.provenance.availability.upperBound()), try Self.encodeSEC(item))
+            return (item, version, try MillisecondInstant(flooring: item.provenance.availability.upperBound()), try Self.encodeSEC(item))
         }
         let nextRevision = UUID()
         let changes = try database.transaction { db -> (Int, Int) in
@@ -402,6 +414,11 @@ public extension BusinessDataStore {
             "endpointDescriptor", "versionID", "versionKind", "normalizationVersion",
             "licenseRef", "attribution"]
         record["provenance"] = provenance.filter { stableKeys.contains($0.key) }
+        // Submissions have one source Date outside provenance. Its representation changed,
+        // but an equal recorded acceptance time still denotes the same immutable content.
+        if let text = record["acceptedAt"] as? String {
+            record["acceptedAt"] = try MillisecondInstant(iso8601: text).date.timeIntervalSinceReferenceDate
+        }
         let canonical = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
         return digest(canonical)
     }
@@ -465,14 +482,30 @@ public extension BusinessDataStore {
     private static func encodeSEC<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .custom { date, encoder in
-            var value = encoder.singleValueContainer(); try value.encode(MillisecondInstant(rounding: date).iso8601)
+            _ = try MillisecondInstant(rounding: date) // Validate range without rounding the evidence.
+            var value = encoder.singleValueContainer()
+            try value.encode(date.timeIntervalSinceReferenceDate)
         }
         return try encoder.encode(value)
     }
     private static func decodeSEC<T: Decodable>(_ type: T.Type, bytes: Data) throws -> T {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
-            try MillisecondInstant(iso8601: decoder.singleValueContainer().decode(String.self)).date
+            let value = try decoder.singleValueContainer()
+            if let seconds = try? value.decode(Double.self) {
+                let date = Date(timeIntervalSinceReferenceDate: seconds)
+                _ = try MillisecondInstant(rounding: date)
+                return date
+            }
+            let legacy = try MillisecondInstant(iso8601: value.decode(String.self))
+            // Legacy availability was rounded and its original precision cannot be recovered.
+            // Widen only that evidence's upper bound to the next canonical millisecond;
+            // leave source/retrieval times, cutoff and date-only evidence unchanged.
+            let path = decoder.codingPath.map(\.stringValue)
+            if path.contains("availability"), path.last == "_0" || path.last == "latest" {
+                return try MillisecondInstant(milliseconds: legacy.milliseconds + 1).date
+            }
+            return legacy.date
         }
         return try decoder.decode(type, from: bytes)
     }
@@ -481,6 +514,12 @@ public extension BusinessDataStore {
         guard digest(bytes) == row["record_hash"] else { throw BusinessStoreError.corruptedStorage }
         let item = try decodeSEC(type, bytes: bytes)
         if let record = item as? any ProviderRecord {
+            try record.provenance.validate()
+            let bound = try MillisecondInstant(flooring: record.provenance.availability.upperBound()).milliseconds
+            let legacy = try legacyAvailabilityWasRounded(bytes)
+            guard row["available_at_ms"] == bound - (legacy ? 1 : 0) else {
+                throw BusinessStoreError.corruptedStorage
+            }
             guard record.provenance.rawHash == row["source_content_hash"],
                   record.provenance.providerID == row["source_provider_id"],
                   record.provenance.feedID == row["source_feed_id"],
@@ -492,6 +531,19 @@ public extension BusinessDataStore {
         }
         return item
     }
+    /// The index is only a coarse candidate gate. Old ISO Date availability receives a
+    /// conservative one-millisecond decoding bound; immutable stored bytes/index stay intact.
+    private static func legacyAvailabilityWasRounded(_ bytes: Data) throws -> Bool {
+        guard let root = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let provenance = root["provenance"] as? [String: Any],
+              let availability = provenance["availability"] as? [String: Any] else {
+            throw BusinessStoreError.corruptedStorage
+        }
+        if let instant = availability["instant"] as? [String: Any] { return instant["_0"] is String }
+        if let interval = availability["interval"] as? [String: Any] { return interval["latest"] is String }
+        return false // dateOnly has its own exact calendar-day upper bound; unknown is rejected above.
+    }
+
     private static func secCheckRevision(_ expected: UUID, db: Database) throws {
         guard let value = try String.fetchOne(db, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1"),
               UUID(uuidString: value) == expected else { throw SnapshotError.stalePlan }
