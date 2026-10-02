@@ -75,6 +75,22 @@ private final class CodecTestBundleAnchor: NSObject {}
         #expect(throws: InstantError.outOfRange) { try MillisecondInstant(milliseconds: Int64.max) }
         #expect(throws: (any Error).self) { try JSONDecoder().decode(MillisecondInstant.self, from: Data("123.4".utf8)) }
     }
+    @Test func inclusiveDateBoundsNeverExpandAcrossAdjacentMilliseconds() throws {
+        let base = Date(timeIntervalSince1970: 1_757_592_000)
+        let early = base.addingTimeInterval(0.0004)
+        let late = base.addingTimeInterval(0.0006)
+        let baseMS: Int64 = 1_757_592_000_000
+        let next = try MillisecondInstant(milliseconds: baseMS + 1).date
+        #expect(try MillisecondInstant(flooring: early).milliseconds == baseMS)
+        #expect(try MillisecondInstant(flooring: late).milliseconds == baseMS)
+        #expect(try MillisecondInstant(ceiling: early).milliseconds == baseMS + 1)
+        #expect(try MillisecondInstant(ceiling: late).milliseconds == baseMS + 1)
+        #expect(try MillisecondInstant(flooring: next).milliseconds == baseMS + 1)
+        #expect(try MillisecondInstant(ceiling: next).milliseconds == baseMS + 1)
+        let beforeEpoch = Date(timeIntervalSince1970: -0.0004)
+        #expect(try MillisecondInstant(flooring: beforeEpoch).milliseconds == -1)
+        #expect(try MillisecondInstant(ceiling: beforeEpoch).milliseconds == 0)
+    }
     @Test func modelFingerprintSurvivesFractionalTimeAndSeparateProcesses() throws {
         let parameters = sampleParameters(), original = sampleModel(parameters: sampleParameters())
         var modelJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])

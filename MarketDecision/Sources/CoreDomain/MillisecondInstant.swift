@@ -3,7 +3,7 @@ import Foundation
 public enum InstantError: Error, Equatable { case invalidFormat, outOfRange }
 
 /// Stable UTC millisecond value. Codable is exactly yyyy-MM-dd'T'HH:mm:ss.SSS'Z'.
-/// Date conversion is an explicit nearest-millisecond (ties-to-even) boundary, never a hash input.
+/// Date conversion explicitly chooses nearest (ties-to-even), floor or ceiling; none is a hash input.
 public struct MillisecondInstant: Sendable, Equatable, Comparable, Hashable, Codable {
     public let milliseconds: Int64
     public init(milliseconds: Int64) throws {
@@ -14,6 +14,16 @@ public struct MillisecondInstant: Sendable, Equatable, Comparable, Hashable, Cod
         let value = (date.timeIntervalSince1970 * 1000).rounded(.toNearestOrEven)
         guard value.isFinite, let milliseconds = Int64(exactly: value) else { throw InstantError.outOfRange }
         try self.init(milliseconds: milliseconds)
+    }
+    /// Largest stored millisecond that is not later than the exact Date boundary.
+    public init(flooring date: Date) throws {
+        let nearest = try Self(rounding: date)
+        try self.init(milliseconds: nearest.date > date ? nearest.milliseconds - 1 : nearest.milliseconds)
+    }
+    /// Smallest stored millisecond that is not earlier than the exact Date boundary.
+    public init(ceiling date: Date) throws {
+        let nearest = try Self(rounding: date)
+        try self.init(milliseconds: nearest.date < date ? nearest.milliseconds + 1 : nearest.milliseconds)
     }
     public init(iso8601 text: String) throws {
         guard text.range(of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z\z"#, options: .regularExpression) != nil,

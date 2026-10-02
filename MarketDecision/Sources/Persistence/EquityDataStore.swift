@@ -23,7 +23,7 @@ public extension BusinessDataStore {
     /// Raw + typed + page coverage commit atomically. The accepted wrapper is not publicly
     /// constructible; quote/bars capability, rights and exact request are checked before this API.
     @discardableResult
-    func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) throws -> EquityIngestReceipt {
+    internal func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) throws -> EquityIngestReceipt {
         let result = accepted.exchange.result, raw = accepted.rawPayload, request = result.request
         guard case .latest = request.mode, request.providerID == "alpaca", request.feedID == "iex" else { throw ContractError.invalidRequest }
         guard [.quote, .bars].contains(request.capability), [.complete, .partial, .empty].contains(result.status),
@@ -109,8 +109,8 @@ public extension BusinessDataStore {
             try Row.fetchAll(db, sql: """
                 SELECT * FROM p1_equity_records WHERE symbol = ? AND kind = ? AND source_event_ms >= ? AND source_event_ms <= ?
                 ORDER BY source_event_ms, received_at_ms, version_id
-                """, arguments: [symbol, kind.rawValue, try MillisecondInstant(rounding: range.start).milliseconds,
-                                  try MillisecondInstant(rounding: range.end).milliseconds])
+                """, arguments: [symbol, kind.rawValue, try MillisecondInstant(ceiling: range.start).milliseconds,
+                                  try MillisecondInstant(flooring: range.end).milliseconds])
                 .map { try Self.decodeStoredEquityRecord($0, db: db) }
         }
     }

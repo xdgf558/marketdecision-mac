@@ -5,7 +5,7 @@ import CoreDomain
 import DataContracts
 import DataProviders
 @testable import MarketDataProviders
-import Persistence
+@testable import Persistence
 
 private func equityDate(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
 private let equityNow = equityDate("2026-09-18T15:00:00Z")
@@ -309,6 +309,43 @@ private struct IncorrectRawEquityProvider: EquityDataProvider {
 }
 
 @Suite struct PhaseOneEquityPersistenceTests {
+    @Test func emptyOfflineStoreReportsMissingInputsWithoutProducingAResearchPrice() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("empty-evidence-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let audit = try await OfflineResearchEvidenceReader(store: BusinessDataStore(path: path)).inspect(
+            symbol: "AAPL", cutoff: equityNow,
+            barWindow: .init(start: equityDate("2026-09-16T00:00:00Z"), end: equityNow),
+            dictionary: .foundationV1())
+        #expect(audit.identity == nil && audit.normalization == nil)
+        #expect(audit.sourceHashes.isEmpty && audit.dailyBarCount == 0)
+        #expect(audit.gaps.contains(.missingIdentity))
+        #expect(audit.gaps.contains(.missingFinancialFacts))
+        #expect(audit.gaps.contains(.missingDailyBar))
+        #expect(!audit.mayRunValuation)
+    }
+
+    @Test func acquisitionPipelineRetainsUnknownAvailabilityInOfflineEvidence() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("equity-pipeline-\(UUID()).sqlite").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let store = try BusinessDataStore(path: path)
+        let transport = EquityFixtureTransport([equityPayload(barsJSON)])
+        let pipeline = EquityAcquisitionPipeline(client: EquityDataClient(
+            provider: try equityProvider(transport), entitlement: equityRights()), store: store)
+        let receipt = try await pipeline.ingest(equityRequest(.bars))
+        #expect(receipt.status == .complete && receipt.itemCount == 1)
+        #expect(receipt.insertedDocuments == 1 && receipt.insertedRecords == 1)
+        let audit = try await OfflineResearchEvidenceReader(store: store).inspect(symbol: "AAPL",
+            cutoff: equityNow, barWindow: .init(start: equityDate("2026-09-16T00:00:00Z"), end: equityNow),
+            dictionary: .foundationV1())
+        #expect(audit.identity == nil && audit.normalization == nil)
+        #expect(audit.dailyBarCount == 1)
+        #expect(audit.gaps.contains(.missingIdentity))
+        #expect(audit.gaps.contains(.unqualifiedDailyBar))
+        #expect(!audit.mayRunValuation)
+        #expect(audit.sourceHashes.count == 1)
+        #expect(await transport.captured().count == 1)
+    }
+
     @Test func acceptedRawTypedAndPartialPageSurviveRestartWithoutPITPromotion() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("equity-\(UUID()).sqlite").path
         defer { try? FileManager.default.removeItem(atPath: path) }
