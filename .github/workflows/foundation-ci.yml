@@ -34,12 +34,18 @@ jobs:
         env:
           REQUIRE_UI_OS_MAJOR: '15'
         run: bash MarketDecision/Scripts/verify-native-ui.sh
+      - name: File panels with production Release permissions
+        id: file_panels
+        env:
+          REQUIRE_UI_OS_MAJOR: '15'
+        run: bash MarketDecision/Scripts/verify-file-panels.sh
       - name: Record evidence limits
         if: always()
         env:
           TEST_OUTCOME: ${{ steps.tests.outcome }}
           BUILD_OUTCOME: ${{ steps.builds.outcome }}
           NATIVE_UI_OUTCOME: ${{ steps.native_ui.outcome }}
+          FILE_PANEL_OUTCOME: ${{ steps.file_panels.outcome }}
         run: |
           {
             echo '## Foundation CI evidence'
@@ -49,7 +55,9 @@ jobs:
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
             echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'
-            echo '- Production file-panel import/export: NOT EXECUTED by the isolated synthetic host; entitlement checks are separate from panel execution.'
+            echo "- Actual file-panel suite (three cases, production Release sources/permissions, isolated SQLite container): $FILE_PANEL_OUTCOME"
+            echo '- File-panel PASS requires every declared case to execute; runner initialization errors and skipped cases never count as a pass.'
+            echo '- File-panel data remains synthetic; these checks do not admit real-provider backups or full product backup.'
             echo '- Native UI uses shared production views in a separate in-memory test app; no signed Keychain, VoiceOver speech or real IME composition evidence.'
             echo '- No notarization, performance or full private acceptance evidence. No artifact uploads.'
             echo '- CI success does not close Phase 0 or DATA-001.'
