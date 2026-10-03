@@ -135,6 +135,14 @@ struct SnapshotGraph: Sendable {
     var objects: [ObjectAddress: PersistedObject]
     var roots: [ObjectAddress: PersistedRoot]
 }
+/// Complete namespace-aware mappings for an archive that may contain several
+/// imported copies of an immutable identity. The retained StoragePlan still owns
+/// the only approval and transaction; these mappings are its preview details.
+struct GraphRestorePlan: Sendable {
+    let summary: StoragePlan
+    let importedObjects: [ObjectAddress: ObjectAddress]
+    let importedRoots: [ObjectAddress: ObjectAddress]
+}
 private struct OriginContent: Hashable {
     let source: ObjectAddress
     let hash: String
@@ -469,6 +477,93 @@ public actor BusinessDataStore: SnapshotStorage {
                               deduplicated: 0, baseRevision: expectedRevision)
     }
 
+    /// Internal archive entry point for the closed, leaf-object research profile.
+    /// It preserves origin addresses across repeated merge/rebackup cycles instead
+    /// of flattening several namespaces into SnapshotBundle's single namespace.
+    func prepareRestoreGraph(_ incoming: SnapshotGraph, mode: RestoreMode,
+                             expectedRevision: UUID) throws -> GraphRestorePlan {
+        try Self.validate(incoming)
+        guard incoming.objects.count + incoming.roots.count <= 100_000 else { throw SnapshotError.resourceLimit }
+        for (address, item) in incoming.objects {
+            guard address.identity == item.source.identity, item.object.references.isEmpty, item.targets.isEmpty,
+                  item.object.permission.mayStore, item.object.permission.mayBackup else { throw SnapshotError.retentionDenied }
+        }
+        let current: SnapshotGraph
+        let replacedAddresses: (objects: Set<ObjectAddress>, roots: Set<ObjectAddress>)?
+        if mode == .replace {
+            replacedAddresses = try database.read { db in
+                try Self.checkRevision(expectedRevision, db: db)
+                return try Self.graphAddresses(db)
+            }
+            current = SnapshotGraph(objects: [:], roots: [:])
+        } else {
+            current = try database.read { db in
+                try Self.checkRevision(expectedRevision, db: db)
+                return try Self.loadGraph(db)
+            }
+            replacedAddresses = nil
+        }
+        var graph = current
+        var usedNamespaces = Set(graph.objects.keys.map(\.namespace) + graph.roots.keys.map(\.namespace))
+        var namespaces: [UUID: UUID] = [:]
+        for source in Set(incoming.objects.keys.map(\.namespace) + incoming.roots.keys.map(\.namespace)) {
+            var imported = UUID()
+            while !usedNamespaces.insert(imported).inserted { imported = UUID() }
+            namespaces[source] = imported
+        }
+        var objectIndex: [OriginContent: ObjectAddress] = [:]
+        var rootIndex: [OriginContent: [ObjectAddress]] = [:]
+        for address in graph.objects.keys.sorted(by: { Self.addressKey($0) < Self.addressKey($1) }) {
+            let item = graph.objects[address]!, hash = try item.object.contentHash()
+            for origin in [item.source, address] {
+                let key = OriginContent(source: origin, hash: hash)
+                if objectIndex[key] == nil { objectIndex[key] = address }
+            }
+        }
+        for address in graph.roots.keys.sorted(by: { Self.addressKey($0) < Self.addressKey($1) }) {
+            let item = graph.roots[address]!, hash = try item.root.contentHash()
+            for origin in Set([item.source, address]) { rootIndex[.init(source: origin, hash: hash), default: []].append(address) }
+        }
+        var mapping: [ObjectAddress: ObjectAddress] = [:], roots: [ObjectAddress: ObjectAddress] = [:]
+        var deduplicated = 0
+        for source in incoming.objects.keys.sorted(by: { Self.addressKey($0) < Self.addressKey($1) }) {
+            let item = incoming.objects[source]!, hash = try item.object.contentHash()
+            let key = OriginContent(source: item.source, hash: hash)
+            if let existing = objectIndex[key] ?? objectIndex[.init(source: source, hash: hash)] {
+                mapping[source] = existing; deduplicated += 1
+            } else {
+                let address = ObjectAddress(namespace: namespaces[source.namespace]!, identity: source.identity)
+                graph.objects[address] = PersistedObject(object: item.object, source: item.source, targets: [:])
+                mapping[source] = address; objectIndex[key] = address
+                objectIndex[.init(source: source, hash: hash)] = address
+            }
+        }
+        for source in incoming.roots.keys.sorted(by: { Self.addressKey($0) < Self.addressKey($1) }) {
+            let item = incoming.roots[source]!, hash = try item.root.contentHash()
+            guard source.identity == item.source.identity else { throw SnapshotError.invalidIdentity }
+            var targets: [String: ObjectAddress] = [:]
+            for reference in item.root.references {
+                guard let incomingTarget = item.targets[reference.role], incomingTarget.identity == reference.target,
+                      let target = mapping[incomingTarget] else { throw SnapshotError.missingReference }
+                targets[reference.role] = target
+            }
+            let key = OriginContent(source: item.source, hash: hash)
+            let candidates = (rootIndex[key] ?? []) + (rootIndex[.init(source: source, hash: hash)] ?? [])
+            if let existing = candidates.first(where: { graph.roots[$0]?.targets == targets }) { roots[source] = existing }
+            else {
+                let address = ObjectAddress(namespace: namespaces[source.namespace]!, identity: source.identity)
+                graph.roots[address] = PersistedRoot(root: item.root, source: item.source, targets: targets)
+                roots[source] = address; rootIndex[key, default: []].append(address)
+                rootIndex[.init(source: source, hash: hash), default: []].append(address)
+            }
+        }
+        try Self.validate(graph)
+        let summary = try retainPlan(operation: mode == .merge ? .restoreMerge : .restoreReplace, graph: graph,
+            mapping: [:], rootMapping: [:], deduplicated: deduplicated, baseRevision: expectedRevision,
+            addressMapping: mapping, rootAddressMapping: roots, currentAddresses: replacedAddresses)
+        return GraphRestorePlan(summary: summary, importedObjects: mapping, importedRoots: roots)
+    }
+
     public func commit(_ approval: PlanApproval) throws -> StorageCommit {
         guard let candidate = plans[approval.planID] else { throw SnapshotError.unknownPlan }
         guard candidate.summary.digest == approval.digest else { throw SnapshotError.approvalMismatch }
@@ -499,8 +594,17 @@ public actor BusinessDataStore: SnapshotStorage {
 
     private func retainPlan(operation: StorageOperation, graph: SnapshotGraph,
                             mapping: [ObjectIdentity: ObjectAddress], rootMapping: [ObjectIdentity: ObjectAddress],
-                            deduplicated: Int, baseRevision: UUID) throws -> StoragePlan {
-        let current = try database.read(Self.loadGraph), id = UUID()
+                            deduplicated: Int, baseRevision: UUID,
+                            addressMapping: [ObjectAddress: ObjectAddress] = [:],
+                            rootAddressMapping: [ObjectAddress: ObjectAddress] = [:],
+                            currentAddresses: (objects: Set<ObjectAddress>, roots: Set<ObjectAddress>)? = nil) throws -> StoragePlan {
+        let addresses: (objects: Set<ObjectAddress>, roots: Set<ObjectAddress>)
+        if let currentAddresses { addresses = currentAddresses }
+        else {
+            let current = try database.read(Self.loadGraph)
+            addresses = (Set(current.objects.keys), Set(current.roots.keys))
+        }
+        let id = UUID()
         func list(_ values: Set<ObjectAddress>) -> CanonicalValue {
             .array(values.sorted(by: { Self.addressKey($0) < Self.addressKey($1) }).map { .string(Self.addressKey($0)) })
         }
@@ -508,15 +612,24 @@ public actor BusinessDataStore: SnapshotStorage {
             .map { CanonicalValue.string($0.key.id + "/" + $0.key.version + "=" + Self.addressKey($0.value)) }
         let importedRoots = rootMapping.sorted(by: { $0.key.id + $0.key.version < $1.key.id + $1.key.version })
             .map { CanonicalValue.string($0.key.id + "/" + $0.key.version + "=" + Self.addressKey($0.value)) }
-        let removedObjects = Set(current.objects.keys).subtracting(graph.objects.keys)
-        let removedRoots = Set(current.roots.keys).subtracting(graph.roots.keys)
-        let fields: [CanonicalMember] = [
+        let removedObjects = addresses.objects.subtracting(graph.objects.keys)
+        let removedRoots = addresses.roots.subtracting(graph.roots.keys)
+        var fields: [CanonicalMember] = [
             .init("planID", .string(id.uuidString.lowercased())), .init("baseRevision", .string(baseRevision.uuidString.lowercased())),
             .init("operation", .string(operation.rawValue)), .init("objectCount", .integer(Int64(graph.objects.count))),
             .init("rootCount", .integer(Int64(graph.roots.count))), .init("deduplicated", .integer(Int64(deduplicated))),
             .init("removedObjects", list(removedObjects)), .init("removedRoots", list(removedRoots)),
             .init("imported", .array(imported)), .init("importedRoots", .array(importedRoots))
         ]
+        if !addressMapping.isEmpty || !rootAddressMapping.isEmpty {
+            func addressed(_ values: [ObjectAddress: ObjectAddress]) -> CanonicalValue {
+                .array(values.sorted { Self.addressKey($0.key) < Self.addressKey($1.key) }.map {
+                    .string(Self.addressKey($0.key) + "=" + Self.addressKey($0.value))
+                })
+            }
+            fields += [.init("importedAddressedObjects", addressed(addressMapping)),
+                       .init("importedAddressedRoots", addressed(rootAddressMapping))]
+        }
         let summary = StoragePlan(id: id, baseRevision: baseRevision, operation: operation,
                                   digest: digest(try CanonicalValue.object(fields).canonicalData()),
                                   objectCount: graph.objects.count, rootCount: graph.roots.count,
@@ -587,6 +700,21 @@ public actor BusinessDataStore: SnapshotStorage {
             }
         }
         return protected
+    }
+
+    /// Replacement previews list discarded addresses without treating their
+    /// damaged content/JSON as trustworthy or making it a prerequisite to repair.
+    private static func graphAddresses(_ db: Database) throws -> (objects: Set<ObjectAddress>, roots: Set<ObjectAddress>) {
+        func addresses(table: String, id: String, version: String) throws -> Set<ObjectAddress> {
+            try Set(Row.fetchAll(db, sql: "SELECT namespace, \(id), \(version) FROM \(table)").map { row in
+                guard let namespace = UUID(uuidString: row["namespace"]) else { throw BusinessStoreError.corruptedStorage }
+                let identity = ObjectIdentity(id: row[id], version: row[version])
+                try identity.validate()
+                return ObjectAddress(namespace: namespace, identity: identity)
+            })
+        }
+        return (try addresses(table: "p1_snapshot_objects", id: "object_id", version: "object_version"),
+                try addresses(table: "p1_snapshot_roots", id: "root_id", version: "root_version"))
     }
 
     static func loadGraph(_ db: Database) throws -> SnapshotGraph {

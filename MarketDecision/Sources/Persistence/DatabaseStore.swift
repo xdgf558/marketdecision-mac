@@ -1,7 +1,13 @@
 import Foundation
 import GRDB
 
-public enum MigrationError: Error, Equatable { case invalidCatalog, unsupportedHistory }
+public enum MigrationError: Error, Equatable { case invalidCatalog, unsupportedHistory, incompatiblePurpose }
+public enum DatabasePurpose: Sendable, Equatable {
+    case business, offlineIssuerResearch
+    // Stable SQLite file markers: MDB1 and MDO1. These are independent of the
+    // migration history and survive clearing the business rows.
+    var applicationID: Int { self == .business ? 0x4d444231 : 0x4d444f31 }
+}
 public struct DatabaseMigration: Sendable {
     public let identifier: String
     let migrate: @Sendable (Database) throws -> Void
@@ -14,13 +20,28 @@ public struct DatabaseMigration: Sendable {
 /// No erase-on-schema-change or guessed compatibility.
 public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
-    public init(path: String, migrations: [DatabaseMigration] = []) throws {
+    public let purpose: DatabasePurpose
+    public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
+        guard purpose != .offlineIssuerResearch || migrations.isEmpty else { throw MigrationError.invalidCatalog }
         let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
         }
+        self.purpose = purpose
         queue = try DatabaseQueue(path: path)
+        // A separate path alone is not isolation: refuse the wrong file before
+        // running migrations or creating any business tables. Only an empty,
+        // unmarked SQLite file may become an offline archive store.
+        try queue.write { db in
+            let marker = try Int.fetchOne(db, sql: "PRAGMA application_id") ?? 0
+            guard marker == 0 || marker == purpose.applicationID else { throw MigrationError.incompatiblePurpose }
+            if marker == 0, purpose == .offlineIssuerResearch {
+                let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'") ?? 0
+                guard count == 0 else { throw MigrationError.incompatiblePurpose }
+            }
+            if marker == 0 { try db.execute(sql: "PRAGMA application_id = \(purpose.applicationID)") }
+        }
         var migrator = DatabaseMigrator()
         migrator.registerMigration("foundation.v1") { _ in }
         for migration in coreMigrations { migrator.registerMigration(migration.identifier, migrate: migration.migrate) }
