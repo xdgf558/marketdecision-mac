@@ -141,6 +141,8 @@ private final class SelectedFileProbe: @unchecked Sendable {
     }
 
     @Test func parentCancellationClosesDescriptorAndReleasesScopeBeforeReturning() async throws {
+        // Holding this post-read hook tests the next cooperative cancellation boundary,
+        // not the ability to interrupt a blocked filesystem syscall.
         let fixture = try SelectedFileFixture(Data(repeating: 1, count: 150_000)); defer { fixture.remove() }
         let probe = SelectedFileProbe()
         let arrival = DispatchSemaphore(value: 0)
@@ -163,14 +165,17 @@ private final class SelectedFileProbe: @unchecked Sendable {
             release.signal()
         }
         // Cancel independently of the cooperative pool occupied by the read hook.
-        await withCheckedContinuation { (finished: CheckedContinuation<Void, Never>) in
+        let scopeHeldWhileBlocked = await withCheckedContinuation { (finished: CheckedContinuation<Bool, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
                 arrival.wait()
                 pending.cancel()
+                let state = probe.state()
+                let scopeHeld = state.starts == 1 && state.stops == 0
                 release.signal()
-                finished.resume()
+                finished.resume(returning: scopeHeld)
             }
         }
+        #expect(scopeHeldWhileBlocked)
         await #expect(throws: CancellationError.self) { try await pending.value }
         let state = probe.state()
         #expect(state.starts == 1 && state.stops == 1 && state.chunks == 1 && state.closed)

@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 import CryptoKit
 
 /// Real system panels against the production app sources, Release configuration and
@@ -8,6 +9,7 @@ import CryptoKit
     private let acceptanceID = "local.marketdecision.file-acceptance"
     private var app: XCUIApplication!
     private var files: URL!
+    private var savedClipboard: [NSPasteboardItem]?
     private var window: XCUIElement {
         app.windows.containing(.button, identifier: "pageResearch").firstMatch
     }
@@ -15,6 +17,11 @@ import CryptoKit
     private var message: XCUIElement { window.staticTexts["researchTransferMessage"].firstMatch }
 
     override func tearDown() async throws {
+        if let savedClipboard {
+            NSPasteboard.general.clearContents()
+            if !savedClipboard.isEmpty { NSPasteboard.general.writeObjects(savedClipboard) }
+            self.savedClipboard = nil
+        }
         app?.terminate()
         app = nil
         // Keep only xcresult attachments; never delete any application container here.
@@ -46,18 +53,15 @@ import CryptoKit
 
         tab("备份")
         click("researchExportBackup")
-        XCTAssertTrue(panel.waitForExistence(timeout: 10), window.debugDescription)
+        let cancelledSave = waitFilePanel(.save)
         let cancelled = files.appendingPathComponent("cancelled.zip")
-        setSaveDestination(cancelled)
-        app.typeKey(.escape, modifierFlags: [])
-        waitAbsent(panel)
+        setSaveDestination(cancelled, in: cancelledSave)
+        cancelFilePanel(cancelledSave)
         waitText("文件操作已取消", in: message)
         XCTAssertFalse(FileManager.default.fileExists(atPath: cancelled.path))
 
         click("researchImport")
-        XCTAssertTrue(panel.waitForExistence(timeout: 10))
-        app.typeKey(.escape, modifierFlags: [])
-        waitAbsent(panel)
+        cancelFilePanel(waitFilePanel(.open))
         waitText("文件操作已取消", in: message)
         let afterCancel = try exportArchive("after-cancel.zip")
         XCTAssertEqual(afterCancel.stateBytes, baseline.stateBytes)
@@ -194,8 +198,34 @@ import CryptoKit
 
     private func openResearch() {
         let button = app.buttons["pageResearch"]
-        XCTAssertTrue(button.waitForExistence(timeout: 20)); button.click()
+        app.activate()
+        XCTAssertTrue(button.waitForExistence(timeout: 20))
+        // Restored window frames can extend past a smaller CI display. Use the
+        // system Window menu so off-screen titlebar controls are not clicked.
+        if !windowIsVisible || !button.isHittable {
+            let menu = app.menuBars.menuBarItems.containing(.menuItem, identifier: "performZoom:").firstMatch
+            XCTAssertTrue(menu.waitForExistence(timeout: 10)); menu.click()
+            let fill = menu.menuItems["_zoomFill:"]
+            waitEnabled(fill, true); fill.click()
+        }
+        let ready = NSPredicate { _, _ in
+            self.windowIsVisible && button.exists && button.isEnabled && button.isHittable
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 20),
+                       .completed, window.debugDescription)
+        attachHierarchy(window, name: "visible-research-window")
+        button.click()
         XCTAssertTrue(window.staticTexts["researchCompany"].waitForExistence(timeout: 20), window.debugDescription)
+    }
+    private var windowIsVisible: Bool {
+        guard window.exists, let primary = NSScreen.screens.first else { return false }
+        // XCTest uses a top-left origin; AppKit screen rectangles use bottom-left.
+        return NSScreen.screens.contains { screen in
+            let frame = screen.visibleFrame
+            let visible = CGRect(x: frame.minX, y: primary.frame.maxY - frame.maxY,
+                                 width: frame.width, height: frame.height)
+            return visible.contains(window.frame.insetBy(dx: 2, dy: 2))
+        }
     }
     private func seedResearch() throws {
         tab("概览"); click("researchDemo")
@@ -206,20 +236,22 @@ import CryptoKit
     private func addWatch(symbol: String, target: String) {
         tab("自选"); click("researchAddWatch")
         XCTAssertTrue(panel.waitForExistence(timeout: 10))
-        panel.textFields["watchSymbol"].click(); panel.textFields["watchSymbol"].typeText(symbol)
-        panel.textFields["watchTarget"].click(); panel.textFields["watchTarget"].typeText(target)
+        replaceText(panel.textFields["watchSymbol"], with: symbol)
+        replaceText(panel.textFields["watchTarget"], with: target)
         panel.buttons["watchSave"].click(); waitAbsent(panel)
         XCTAssertTrue(window.staticTexts[symbol].waitForExistence(timeout: 10))
     }
     private func tab(_ title: String) {
+        app.activate()
         let radio = window.radioButtons[title]
-        if radio.exists { radio.click() }
+        if radio.exists { waitHittable(radio); radio.click() }
         else {
             let button = window.buttons[title]
             XCTAssertTrue(button.waitForExistence(timeout: 10), window.debugDescription); button.click()
         }
     }
     private func click(_ identifier: String) {
+        app.activate()
         let button = window.buttons[identifier]
         for _ in 0..<12 where !button.isHittable { window.scrollViews.firstMatch.swipeUp() }
         XCTAssertTrue(button.waitForExistence(timeout: 10) && button.isHittable, window.debugDescription)
@@ -233,7 +265,7 @@ import CryptoKit
     }
     private func commitPlan() {
         let confirm = panel.textFields["researchTransferConfirmText"]
-        confirm.click(); confirm.typeText("确认")
+        replaceText(confirm, with: "确认")
         let commit = panel.buttons["researchTransferCommit"]
         waitEnabled(commit, true); commit.click(); waitAbsent(panel)
         waitText("操作已提交", in: message)
@@ -243,45 +275,144 @@ import CryptoKit
         let option = window.radioButtons[replace ? "覆盖 · 替换研究与自选" : "合并 · 冲突保留两份"]
         XCTAssertTrue(option.waitForExistence(timeout: 10)); option.click()
         click("researchImport")
-        XCTAssertTrue(panel.waitForExistence(timeout: 10), window.debugDescription)
-        goTo(url)
-        let open = panel.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "打开", "Open")).firstMatch
-        waitEnabled(open, true); open.click()
+        let picker = waitFilePanel(.open)
+        goTo(url, in: picker)
+        activateAndClick(fileAction(in: picker, kind: .open))
+        waitAbsent(picker)
     }
     private func export(button: String, to url: URL) throws {
         tab("备份"); click(button)
-        XCTAssertTrue(panel.waitForExistence(timeout: 15), window.debugDescription)
-        setSaveDestination(url)
-        let save = panel.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "存储", "Save")).firstMatch
-        waitEnabled(save, true); save.click(); waitAbsent(panel)
+        let picker = waitFilePanel(.save)
+        setSaveDestination(url, in: picker)
+        attachHierarchy(picker, name: "save-panel-accessibility")
+        activateAndClick(fileAction(in: picker, kind: .save))
+        waitAbsent(picker)
         waitText("文件已导出", in: message)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "Export must create the selected external file: " + url.path)
     }
-    private func setSaveDestination(_ url: URL) {
-        goTo(url.deletingLastPathComponent())
-        // The standard save panel exposes the filename as its editable text field;
-        // search fields and tag combo boxes have different accessibility roles.
-        let fields = panel.textFields.allElementsBoundByIndex.filter { $0.isHittable && $0.isEnabled }
-        XCTAssertEqual(fields.count, 1, panel.debugDescription)
-        guard let filename = fields.first else { return }
+    private enum FilePanelKind {
+        case save, open
+        var titles: [String] {
+            self == .save ? ["导出", "Export", "保存", "存储", "Save"] : ["打开", "Open", "导入", "Import"]
+        }
+    }
+    private func fileAction(in picker: XCUIElement, kind: FilePanelKind) -> XCUIElement {
+        // Both identifiers were observed in real system-panel AX attachments.
+        // A translated title fallback remains scoped to the verified file panel.
+        let identified = picker.buttons["OKButton"]
+        if identified.exists { return identified }
+        let matches = picker.buttons.matching(NSPredicate(format: "label IN %@ OR title IN %@", kind.titles, kind.titles))
+        XCTAssertEqual(matches.count, 1, picker.debugDescription)
+        return matches.firstMatch
+    }
+    private func waitFilePanel(_ kind: FilePanelKind) -> XCUIElement {
+        app.activate()
+        var found: XCUIElement?
+        let ready = NSPredicate { _, _ in
+            // System panels may be sheets or independent dialogs. Do not route
+            // this query through controls in the temporarily disabled main window.
+            let identified = self.app.descendants(matching: .any).matching(identifier: kind == .save ? "save-panel" : "open-panel")
+            if identified.count == 1 { found = identified.firstMatch; return true }
+            for query in [self.app.sheets, self.app.dialogs, self.app.windows] {
+                let candidates = query.allElementsBoundByIndex.filter { candidate in
+                    let names = candidate.textFields["saveAsNameTextField"]
+                    let actions = candidate.buttons.matching(NSPredicate(format: "label IN %@ OR title IN %@", kind.titles, kind.titles))
+                    return (kind == .save ? names.exists : !names.exists) && actions.count == 1 && candidate.buttons["CancelButton"].exists
+                }
+                if candidates.count == 1 { found = candidates[0]; return true }
+            }
+            return false
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: nil)], timeout: 15),
+                       .completed, visibleWindowDiagnostics)
+        guard let found else { fatalError("The assertion above must stop a missing file-panel test") }
+        return found
+    }
+    private func cancelFilePanel(_ picker: XCUIElement) {
+        activateAndClick(picker.buttons["CancelButton"])
+        waitAbsent(picker)
+    }
+    private func activateAndClick(_ element: XCUIElement) {
+        app.activate(); waitHittable(element); element.click()
+    }
+    private func setSaveDestination(_ url: URL, in picker: XCUIElement) {
+        goTo(url.deletingLastPathComponent(), in: picker)
+        let filename = picker.textFields["saveAsNameTextField"]
         replaceText(filename, with: url.lastPathComponent)
     }
-    private func goTo(_ url: URL) {
-        // Use the system Go to Folder shortcut, not OS-version-specific AX IDs.
-        app.typeKey("g", modifierFlags: [.command, .shift])
-        app.typeText(url.path)
-        app.typeKey(.return, modifierFlags: [])
+    private func goTo(_ url: URL, in picker: XCUIElement) {
+        // Wait for the real Go to Folder dialog before sending path or Return.
+        // Never allow either keystroke to reach the save filename/default action.
+        app.activate()
+        waitHittable(picker.buttons["CancelButton"])
+        picker.typeKey("g", modifierFlags: [.command, .shift])
+        // PathTextField is the observed field in the actual Go to Folder sheet.
+        // Resolve it directly before inspecting its container; probing every AX
+        // subtree inside a waiter can time out while the remote panel is opening.
+        let pathField = app.textFields["PathTextField"]
+        XCTAssertTrue(pathField.waitForExistence(timeout: 15), visibleWindowDiagnostics)
+        var containers: [XCUIElement] = []
+        for query in [app.dialogs, app.sheets, app.windows] {
+            containers = query.containing(.textField, identifier: "PathTextField").allElementsBoundByIndex.filter {
+                // Empty AX identifiers do not establish that two containers are
+                // the same panel. Keep the uniqueness assertion below instead.
+                (picker.identifier.isEmpty || $0.identifier != picker.identifier) && !$0.buttons["pageResearch"].exists
+            }
+            if !containers.isEmpty { break }
+        }
+        XCTAssertEqual(containers.count, 1, visibleWindowDiagnostics)
+        guard let goToDialog = containers.first else { return }
+        attachHierarchy(goToDialog, name: "go-to-dialog-accessibility")
+        replaceText(pathField, with: url.path)
+        pathField.typeKey(.return, modifierFlags: [])
+        waitAbsent(goToDialog)
+        XCTAssertTrue(picker.exists, visibleWindowDiagnostics)
     }
     private func replaceText(_ field: XCUIElement, with text: String) {
-        XCTAssertTrue(field.waitForExistence(timeout: 10)); field.click()
-        app.typeKey("a", modifierFlags: .command); field.typeText(text)
+        XCTAssertTrue(field.waitForExistence(timeout: 10))
+        activateAndClick(field)
+        // macOS exposes keyboard focus in the public AX debug snapshot, but not
+        // through XCUIElement.hasFocus (that property excludes macOS).
+        let focused = NSPredicate { _, _ in
+            field.exists && field.debugDescription.components(separatedBy: "\n").first?.contains("Keyboard Focused") == true
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: focused, object: nil)], timeout: 10),
+                       .completed, field.debugDescription)
+        field.typeKey("a", modifierFlags: .command); paste(text, into: field)
+        XCTAssertEqual(field.value as? String, text)
+    }
+    private func paste(_ text: String, into field: XCUIElement) {
+        // Preserve the user's clipboard; do not depend on the active IME to type
+        // synthetic filenames/paths. Clipboard contents never enter diagnostics.
+        let clipboard = NSPasteboard.general
+        if savedClipboard == nil {
+            savedClipboard = (clipboard.pasteboardItems ?? []).map { item in
+                let copy = NSPasteboardItem()
+                for type in item.types {
+                    if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+                }
+                return copy
+            }
+        }
+        clipboard.clearContents()
+        XCTAssertTrue(clipboard.setString(text, forType: .string))
+        field.typeKey("v", modifierFlags: .command)
+    }
+    private var visibleWindowDiagnostics: String {
+        // Exclude menu bars and their user Recent Items from local diagnostics.
+        app.windows.allElementsBoundByIndex.map(\.debugDescription).joined(separator: "\n")
+    }
+    private func waitHittable(_ element: XCUIElement) {
+        let predicate = NSPredicate(format: "exists == true AND enabled == true AND hittable == true")
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: 20),
+                       .completed, element.debugDescription)
     }
     private func waitEnabled(_ element: XCUIElement, _ enabled: Bool) {
         let predicate = NSPredicate(format: "exists == true AND enabled == %@", NSNumber(value: enabled))
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)], timeout: 20), .completed, element.debugDescription)
     }
     private func waitAbsent(_ element: XCUIElement) {
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)], timeout: 20), .completed, window.debugDescription)
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)], timeout: 20), .completed, visibleWindowDiagnostics)
     }
     private func waitText(_ text: String, in element: XCUIElement) {
         let predicate = NSPredicate { _, _ in
@@ -349,6 +480,11 @@ import CryptoKit
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0, String(decoding: diagnostics, as: UTF8.self))
         return data
+    }
+    private func attachHierarchy(_ element: XCUIElement, name: String) {
+        let attachment = XCTAttachment(string: element.debugDescription)
+        attachment.name = name; attachment.lifetime = .keepAlways
+        add(attachment)
     }
     private func sha256(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
     private func attachFile(_ url: URL, name: String) {

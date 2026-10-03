@@ -26,13 +26,13 @@ struct ResearchTransferContent: View {
     @State private var mode = RestoreMode.merge
     @State private var confirmation = ""
     @State private var visibleSession: UUID?
-    @State private var fileRequest: UUID?
+    @State private var fileFlow = ResearchFileRequestFlow()
     @State private var fileTask: Task<Void,Never>?
     @State private var importMode = RestoreMode.merge
-    private var fileBusy: Bool { fileRequest != nil }
+    private var fileBusy: Bool { fileFlow.isBusy }
     var body: some View {
         // Each panel callback belongs to the request rendered with this view.
-        let request = fileRequest
+        let request = fileFlow.id
         let displayedPlanID = transfer.plan?.id
         VStack(alignment:.leading,spacing:16) {
             Text("导出与恢复").font(.title2.bold())
@@ -74,18 +74,19 @@ struct ResearchTransferContent: View {
             Text("清空包括研究、自选、冲突和源缓存。外部备份文件和 Keychain 不变；不承诺磁盘物理擦除。").font(.caption).foregroundStyle(.secondary)
         }
         .fileExporter(isPresented:$exporting,document:exportFile,contentTypes:[exportType],defaultFilename:exportName) { result in
-            guard current(request) else { return }
-            switch result { case .success: transfer.exported(); case .failure: transfer.fileFailed() }
-            finishFileRequest(request)
+            switch result {
+            case .success: report(.succeeded, for: request)
+            case .failure: report(.failed, for: request)
+            }
         } onCancellation: {
-            guard current(request) else { return }
-            transfer.fileCancelled(); finishFileRequest(request)
+            report(.cancelled, for: request)
         }
         .fileImporter(isPresented:$importing,allowedContentTypes:[.zip],allowsMultipleSelection:false) { result in
             guard current(request) else { return }
             guard case let .success(urls) = result, urls.count == 1, let url = urls.first else {
-                transfer.fileFailed(); finishFileRequest(request); return
+                report(.failed, for: request); return
             }
+            guard fileFlow.selectFile(for: request) else { return }
             let selectedMode = importMode
             fileTask = Task {
                 guard current(request), !Task.isCancelled else { return }
@@ -95,8 +96,7 @@ struct ResearchTransferContent: View {
                 finishFileRequest(request)
             }
         } onCancellation: {
-            guard current(request) else { return }
-            transfer.fileCancelled(); finishFileRequest(request)
+            report(.cancelled, for: request)
         }
         .sheet(item:Binding(get:{transfer.plan},set:{if $0 == nil, let displayedPlanID, transfer.plan?.id == displayedPlanID { transfer.dismiss() }})) { plan in
             VStack(alignment:.leading,spacing:14) {
@@ -119,11 +119,14 @@ struct ResearchTransferContent: View {
         .onDisappear {
             visibleSession = nil
             fileTask?.cancel(); fileTask = nil
-            fileRequest = nil; exportFile = nil; exporting = false; importing = false
+            fileFlow.dismiss(); exportFile = nil; exporting = false; importing = false
             transfer.dismiss()
         }
     }
     private func runVisible(_ action: @escaping @MainActor () async -> Void) {
+        // A new non-file operation ends the previous panel's callback window.
+        // Its late cancellation must not overwrite a clear/refresh outcome.
+        if !fileFlow.isBusy { fileFlow.dismiss() }
         let session = visibleSession
         Task {
             guard let session, visibleSession == session, !Task.isCancelled else { return }
@@ -131,21 +134,37 @@ struct ResearchTransferContent: View {
         }
     }
     private func current(_ request: UUID?) -> Bool {
-        visibleSession != nil && request != nil && fileRequest == request
+        visibleSession != nil && fileFlow.owns(request)
+    }
+    private func report(_ outcome: ResearchFileRequestFlow.Outcome, for request: UUID?) {
+        let wasReading = fileFlow.isReading
+        guard current(request), fileFlow.receive(outcome, for: request) else { return }
+        switch outcome {
+        case .succeeded: transfer.exported()
+        case .failed: transfer.fileFailed()
+        case .cancelled:
+            fileTask?.cancel()
+            // A cancelled syscall may later fail with its original POSIX error.
+            // Invalidate publication now; task cancellation alone is insufficient.
+            if wasReading { transfer.dismiss() }
+            transfer.fileCancelled()
+        }
+        finishFileRequest(request)
     }
     private func finishFileRequest(_ request: UUID?) {
         guard current(request) else { return }
-        fileRequest = nil; fileTask = nil; exportFile = nil
+        fileFlow.finish(for: request); fileTask = nil; exportFile = nil
     }
     private func beginImport() {
         guard visibleSession != nil, !fileBusy, !transfer.isBusy else { return }
-        fileRequest = UUID(); importMode = mode; importing = true
+        guard fileFlow.begin() != nil else { return }
+        importMode = mode; importing = true
     }
     private func beginExport(markdown: Bool) {
         guard visibleSession != nil, !fileBusy, !transfer.isBusy else { return }
-        let request = UUID(), document = research.document
+        let document = research.document
         if markdown && document == nil { return }
-        fileRequest = request
+        guard let request = fileFlow.begin() else { return }
         fileTask = Task {
             guard current(request), !Task.isCancelled else { return }
             do {
@@ -160,7 +179,7 @@ struct ResearchTransferContent: View {
                 fileTask = nil; exporting = true
             } catch {
                 guard current(request), !Task.isCancelled else { return }
-                transfer.fileFailed(); finishFileRequest(request)
+                report(.failed, for: request)
             }
         }
     }

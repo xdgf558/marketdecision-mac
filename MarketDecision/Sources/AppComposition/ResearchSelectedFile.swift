@@ -1,8 +1,12 @@
 import Foundation
 import Darwin
 
-/// Copies a user-selected local file while its temporary security scope is active.
+/// Copies a user-selected local file URL while its temporary security scope is active.
 /// The returned bytes do not retain a file mapping, URL bookmark, or access grant.
+/// A file URL may refer to a network mount or file-provider-backed storage. Cancellation
+/// is cooperative between synchronous filesystem calls, not an interruption of them.
+/// If a call blocks, this operation and its resources remain pending until it returns;
+/// cancellation has no guaranteed deadline. Resources are released before this API returns.
 public enum ResearchSelectedFile {
     static let maximumBytes = 2_147_483_648
 
@@ -34,6 +38,8 @@ public enum ResearchSelectedFile {
             try Task.checkCancellation()
             return bytes
         } onCancel: {
+            // Mark cancellation only; the worker retains ownership of its descriptor
+            // and access scope until the current synchronous operation returns.
             reader.cancel()
         }
     }
@@ -54,6 +60,8 @@ public enum ResearchSelectedFile {
         try Task.checkCancellation()
         let descriptor = try url.withUnsafeFileSystemRepresentation { path in
             guard let path else { throw ReadError.nonLocalFile }
+            // O_NONBLOCK avoids waiting on a FIFO before rejecting its type. It does
+            // not make regular-file filesystem calls asynchronous or interruptible.
             let descriptor = Darwin.open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
             guard descriptor >= 0 else { throw posixError() }
             return descriptor
@@ -84,6 +92,8 @@ public enum ResearchSelectedFile {
         }
         var final = stat()
         guard Darwin.fstat(descriptor, &final) == 0 else { throw posixError() }
+        // Observed size/time changes reject this copy; these metadata checks cannot
+        // establish an atomic filesystem snapshot under arbitrary concurrent writes.
         guard final.st_size == initial.st_size, final.st_size == bytes.count,
               final.st_mtimespec.tv_sec == initial.st_mtimespec.tv_sec,
               final.st_mtimespec.tv_nsec == initial.st_mtimespec.tv_nsec,

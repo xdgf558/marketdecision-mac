@@ -2,6 +2,7 @@
   "version": 1,
   "scope": "Public source, synthetic tests and fixed issuer-excerpt accounting only; private requirements and full source evidence remain local.",
   "sources": [
+    {"path": "Sources/AppComposition/ResearchFileRequestFlow.swift", "kind": "tested", "suites": ["FoundationTests.ResearchFileRequestFlowTests"], "reason": "Native panel callback arbitration: cancellation dominates same-request failure in either order; obsolete/duplicate callbacks cannot complete a newer file operation. Native panels remain separately executed."},
     {"path": "Sources/Persistence/AcceptedDataPipeline.swift", "kind": "tested", "suites": ["FoundationTests.PhaseOneSECProviderTests", "FoundationTests.PhaseOneEquityPersistenceTests", "FoundationTests.SECAvailabilityPrecisionTests"], "reason": "Accepted one-page SEC/IEX response and fixed pre-dispatch SQLite revision; fixture transport and storage tests do not grant real supplier, license, analysis or production-network qualification."},
     {"path": "Sources/Persistence/OfflineResearchEvidence.swift", "kind": "tested", "suites": ["FoundationTests.PhaseOneSECProviderTests", "FoundationTests.PhaseOneEquityPersistenceTests", "FoundationTests.SECAvailabilityPrecisionTests"], "reason": "Offline source-byte and as-of evidence inventory reports missing/unqualified prices and never produces a valuation or promotes candidate supplier rights."},
     {"path": "Sources/FundamentalsEngine/FundamentalCompletion.swift", "kind": "tested", "suites": ["FoundationTests.FundamentalCompletionTests", "FoundationTests.IssuerCompletionGoldenTests"], "reason": "Versioned approved fiscal-year/cash-allocation/ex-SBC rules and exact dictionary additions. Synthetic boundaries and bounded issuer excerpts do not qualify a provider, price history, production workflow or every financial field."},
@@ -83,6 +84,16 @@
     {"path": "Sources/AppComposition/ResearchSelectedFile.swift", "kind": "tested", "suites": ["FoundationTests.ResearchSelectedFileTests"], "reason": "Bounded local selected-file copies, cancellation, descriptor and temporary access cleanup with real temporary files. Actual sandbox panel grants are verified separately."}
   ],
   "tests": [
+    {"selector": "FoundationTests.ResearchFileLifecycleTests/dismissedCommittedConflictReadCannotPublishIntoNewSession()", "source": "Tests/FoundationTests/ResearchFileLifecycleTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileLifecycleTests/dismissAfterFailedTransactionDuringWorkspaceRefreshCleansPlanOnce()", "source": "Tests/FoundationTests/ResearchFileLifecycleTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileLifecycleTests/staleCommitCleanupKeepsOriginalIdentityAcrossDismissal()", "source": "Tests/FoundationTests/ResearchFileLifecycleTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileLifecycleTests/cancelledReadOriginalErrorCannotReplaceNewSessionOrUnlockNewRead()", "source": "Tests/FoundationTests/ResearchFileLifecycleTests.swift", "execution": "required"},
+
+    {"selector": "FoundationTests.ResearchFileRequestFlowTests/cancellationWinsFailureInEitherCallbackOrder()", "source": "Tests/FoundationTests/ResearchFileRequestFlowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileRequestFlowTests/obsoletePanelCallbacksCannotCompleteNewRequestOrReopenAfterDismiss()", "source": "Tests/FoundationTests/ResearchFileRequestFlowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileRequestFlowTests/importSelectionAndCleanupBelongToExactlyOneRequest()", "source": "Tests/FoundationTests/ResearchFileRequestFlowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.ResearchFileRequestFlowTests/successfulExportCannotBeRelabelledCancelledOrFailed()", "source": "Tests/FoundationTests/ResearchFileRequestFlowTests.swift", "execution": "required"},
+
     {"selector": "FoundationTests.SECAvailabilityPrecisionTests/sameMillisecondAcquisitionRetainsExactAvailabilityAfterReopen()", "source": "Tests/FoundationTests/SECNormalizationTests.swift", "execution": "required"},
     {"selector": "FoundationTests.SECAvailabilityPrecisionTests/factsAndSubmissionsRequireExactSameMillisecondEvidence()", "source": "Tests/FoundationTests/SECNormalizationTests.swift", "execution": "required"},
     {"selector": "FoundationTests.SECAvailabilityPrecisionTests/legacyInstantAndIntervalAvailabilityStayConservativeWithoutRewritingBytes()", "source": "Tests/FoundationTests/SECNormalizationTests.swift", "execution": "required"},

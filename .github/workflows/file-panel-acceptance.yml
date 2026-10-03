@@ -1,0 +1,40 @@
+name: File panel acceptance (manual only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: file-panel-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  file_panels:
+    name: macOS 15 actual file panels (explicit manual run)
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+      REQUIRE_UI_OS_MAJOR: '15'
+      MARKETDECISION_TEST_KEYCHAIN: '0'
+    steps:
+      - name: Checkout public source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0 (Node 24)
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: File panels with production Release permissions
+        id: panels
+        run: bash MarketDecision/Scripts/verify-file-panels.sh
+      - name: Record evidence limits
+        if: always()
+        env:
+          PANEL_OUTCOME: ${{ steps.panels.outcome }}
+        run: |
+          {
+            echo '## Manually requested file-panel evidence'
+            echo "- Exact source commit: $GITHUB_SHA"
+            echo "- Actual file-panel suite: $PANEL_OUTCOME"
+            echo '- PASS requires exactly three executed Passed cases, zero skips/failures, unchanged source fingerprints and exact production Release permissions.'
+            echo '- A failed, cancelled, timed-out or unstarted step is not a file-panel pass.'
+            echo '- The app uses an isolated SQLite container and synthetic research only; no account signing, real Keychain or real-provider backup acceptance.'
+            echo '- No artifact uploads. This workflow does not close Phase 1/G1 or DATA-000/G5.'
+          } >> "$GITHUB_STEP_SUMMARY"

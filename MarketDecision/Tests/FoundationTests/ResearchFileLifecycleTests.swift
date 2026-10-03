@@ -29,9 +29,12 @@ private actor FileLifecycleStore: ResearchTransferStorage {
     var commitGate: FileOperationGate?
     var failConflict = false
     var failCommit = false
+    var staleCommit = false
     var plans: [UUID: ResearchTransferPlan] = [:]
+    var cancellations: [UUID] = []
     var preparations = 0
     var commits = 0
+    var conflictReads = 0
     var selectedReads = 0
     func seedConflicts() throws {
         currentConflicts = [.init(id: "old-conflict", entry: try WatchlistEntry(symbol: "OLD"))]
@@ -42,7 +45,7 @@ private actor FileLifecycleStore: ResearchTransferStorage {
     func holdBackup(_ gate: FileOperationGate) { backupGate = gate }
     func holdCancel(_ gate: FileOperationGate) { cancelGate = gate }
     func holdCommit(_ gate: FileOperationGate) { commitGate = gate }
-    func rejectCommit() { failCommit = true }
+    func rejectCommit(stale: Bool = false) { failCommit = true; staleCommit = stale }
     func selectedBytes() -> Data { selectedReads += 1; return Data("selected".utf8) }
     func exportBackup() async throws -> Data {
         if let gate = backupGate { backupGate = nil; await gate.pause() }
@@ -62,14 +65,17 @@ private actor FileLifecycleStore: ResearchTransferStorage {
     func commit(_ approval: PlanApproval) async throws {
         if let gate = commitGate { commitGate = nil; await gate.pause() }
         guard let plan = plans[approval.planID], plan.digest == approval.digest else { throw SnapshotError.unknownPlan }
+        if staleCommit { plans[approval.planID] = nil; throw SnapshotError.stalePlan }
         if failCommit { throw BusinessStoreError.corruptedStorage }
         commits += 1; currentConflicts = []; plans[approval.planID] = nil
     }
     func cancel(_ id: UUID) async {
+        cancellations.append(id)
         if let gate = cancelGate { cancelGate = nil; await gate.pause() }
         plans[id] = nil
     }
     func conflicts() async throws -> [WatchlistConflict] {
+        conflictReads += 1
         let captured = currentConflicts
         if let gate = conflictGate {
             conflictGate = nil; let fail = failConflict
@@ -194,20 +200,127 @@ private actor FileLifecycleStore: ResearchTransferStorage {
         }
     }
     @Test func dismissedCommitStillReportsActualOutcomeAndCleansFailedPlan() async throws {
-        for fails in [false, true] {
+        for outcome in ["success", "failure", "stale"] {
+            let fails = outcome != "success"
             let store = FileLifecycleStore(), gate = FileOperationGate()
             let model = ResearchTransferModel(store: store)
             await model.prepareClear(); let plan = try #require(model.plan)
-            if fails { await store.rejectCommit() }
+            if fails { await store.rejectCommit(stale: outcome == "stale") }
             await store.holdCommit(gate)
             let commit = Task { await model.confirm(id: plan.id, digest: plan.digest) }
             await gate.waitStarted(); await model.dismiss().value
             #expect(model.isBusy); #expect(await store.plans[plan.id]?.id == plan.id)
+            #expect(await store.cancellations.isEmpty)
+            model.fileFailed(); let newerMessage = model.message
+            // The transaction retains the busy reservation through its final
+            // workspace refresh; a new preview cannot take that reservation.
+            await model.prepareClear(); #expect(model.plan == nil)
             await gate.release(); #expect(await commit.value == !fails)
             #expect(await store.commits == (fails ? 0 : 1))
             #expect(await store.plans.isEmpty); #expect(!model.isBusy)
-            #expect(model.message?.contains(fails ? "请重新预检" : "操作已提交") == true)
-            #expect(model.message?.contains("已取消") == false)
+            #expect(model.message == newerMessage)
+            #expect(await store.conflictReads == 0)
+            #expect(await store.cancellations == (fails ? [plan.id] : []))
+            await model.prepareClear()
+            #expect(model.plan != nil); #expect(!model.isBusy)
+        }
+    }
+    @Test func dismissedCommittedConflictReadCannotPublishIntoNewSession() async throws {
+        for fails in [false, true] {
+            let store = FileLifecycleStore(), gate = FileOperationGate()
+            let model = ResearchTransferModel(store: store)
+            await model.prepareClear(); let plan = try #require(model.plan)
+            await store.holdConflicts(gate, fail: fails)
+            let commit = Task { await model.confirm(id: plan.id, digest: plan.digest) }
+            await gate.waitStarted()
+            #expect(await store.commits == 1)
+            await model.dismiss().value; model.fileCancelled()
+            let newerMessage = model.message
+            #expect(model.isBusy)
+            try await store.seedConflicts()
+            await gate.release(); #expect(await commit.value)
+            #expect(model.message == newerMessage); #expect(model.conflicts.isEmpty)
+            #expect(await store.cancellations.isEmpty); #expect(!model.isBusy)
+            await model.readConflicts()
+            #expect(model.conflicts.map(\.id) == ["old-conflict"])
+        }
+    }
+    @Test func dismissAfterFailedTransactionDuringWorkspaceRefreshCleansPlanOnce() async throws {
+        let store = FileLifecycleStore(), gate = FileOperationGate()
+        let model = ResearchTransferModel(store: store)
+        await model.prepareClear(); let plan = try #require(model.plan)
+        await store.rejectCommit()
+        model.commitDidFinish = { await gate.pause() }
+        let commit = Task { await model.confirm(id: plan.id, digest: plan.digest) }
+        await gate.waitStarted()
+        #expect(model.plan?.id == plan.id)
+        #expect(await store.plans[plan.id]?.id == plan.id)
+        #expect(model.message?.contains("可重试当前计划") == true)
+        await model.dismiss().value
+        #expect(await store.cancellations == [plan.id])
+        #expect(await store.plans[plan.id] == nil)
+        model.fileCancelled(); let newerMessage = model.message
+        await model.prepareClear(); #expect(model.plan == nil); #expect(model.isBusy)
+        await gate.release(); #expect(!(await commit.value))
+        #expect(model.message == newerMessage); #expect(!model.isBusy)
+        #expect(await store.commits == 0)
+        await model.prepareClear()
+        #expect(model.plan != nil); #expect(await store.cancellations == [plan.id])
+    }
+    @Test func staleCommitCleanupKeepsOriginalIdentityAcrossDismissal() async throws {
+        let store = FileLifecycleStore(), gate = FileOperationGate()
+        let unrelated = try await store.prepareClear()
+        let model = ResearchTransferModel(store: store)
+        await model.prepareClear(); let plan = try #require(model.plan)
+        await store.rejectCommit(stale: true); await store.holdCancel(gate)
+        let commit = Task { await model.confirm(id: plan.id, digest: plan.digest) }
+        await gate.waitStarted()
+        #expect(model.plan == nil); #expect(model.isBusy)
+        await model.dismiss().value; model.fileCancelled()
+        let newerMessage = model.message
+        await gate.release(); #expect(!(await commit.value))
+        #expect(model.message == newerMessage); #expect(!model.isBusy)
+        #expect(await store.cancellations == [plan.id])
+        #expect(await store.plans[plan.id] == nil)
+        #expect(await store.plans[unrelated.id]?.id == unrelated.id)
+        await model.prepareClear(); #expect(model.plan != nil)
+    }
+    @Test func cancelledReadOriginalErrorCannotReplaceNewSessionOrUnlockNewRead() async throws {
+        for newerPreview in [false, true] {
+            for permissionError in [false, true] {
+                let store = FileLifecycleStore(), oldGate = FileOperationGate(), newGate = FileOperationGate()
+                let model = ResearchTransferModel(store: store)
+                let oldRead = Task {
+                    await model.prepare(mode: .replace) {
+                        await oldGate.pause()
+                        if permissionError { throw CocoaError(.fileReadNoPermission) }
+                        throw POSIXError(.EIO)
+                    }
+                }
+                await oldGate.waitStarted()
+                oldRead.cancel(); await model.dismiss().value; model.fileCancelled()
+                #expect(model.message?.contains("已取消") == true)
+                let newRead: Task<Void, Never>?
+                if newerPreview {
+                    newRead = Task {
+                        await model.prepare(mode: .merge) {
+                            await newGate.pause(); return await store.selectedBytes()
+                        }
+                    }
+                    await newGate.waitStarted()
+                } else { newRead = nil }
+                let newerMessage = model.message
+                await oldGate.release(); await oldRead.value
+                #expect(model.message == newerMessage)
+                #expect(model.isBusy == newerPreview); #expect(model.plan == nil)
+                #expect(await store.preparations == 0)
+                if let newRead {
+                    await newGate.release(); await newRead.value
+                    #expect(model.plan?.operation == .merge)
+                    #expect(await store.preparations == 1)
+                }
+                #expect(!model.isBusy); #expect(await store.commits == 0)
+            }
         }
     }
     @Test func cancelledAndUnreadableSelectedFilesDoNotPrepareOrMutate() async throws {

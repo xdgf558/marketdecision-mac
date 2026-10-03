@@ -12,7 +12,9 @@ import Persistence
     private let store: any ResearchTransferStorage
     private var session = UUID()
     private var conflictRequest = UUID()
-    private var committing = false
+    private var commitOperation: UUID?
+    private var pendingCommitPlanID: UUID?
+    private var committing: Bool { commitOperation != nil }
     var commitWillBegin: (() -> Void)?
     var commitDidFinish: (() async -> Void)?
     public init(store: any ResearchTransferStorage) { self.store = store }
@@ -81,30 +83,46 @@ import Persistence
     /// UI must supply the displayed plan identity. A stale sheet cannot approve a newer plan.
     public func confirm(id: UUID, digest: String) async -> Bool {
         guard !isBusy, let current = plan, current.id == id, current.digest == digest else { return false }
-        isBusy = true; committing = true; conflictRequest = UUID()
-        defer { committing = false; isBusy = false }
+        let token = session, operation = UUID()
+        isBusy = true; commitOperation = operation; pendingCommitPlanID = id; conflictRequest = UUID()
+        // This reservation includes the workspace refresh. Dismissal invalidates
+        // publication, but cannot give a newer operation this busy reservation.
+        defer {
+            if commitOperation == operation { commitOperation = nil; isBusy = false }
+        }
         commitWillBegin?()
         let committed: Bool
         do {
             try await store.commit(.init(planID:id,digest:digest))
-            plan = nil; message = "操作已提交。API Key 与外部备份文件未变。"
-            conflicts = []
-            let request = UUID(); conflictRequest = request
-            do {
-                let entries = try await store.conflicts()
-                if conflictRequest == request { conflicts = entries }
-            } catch {
-                if conflictRequest == request { message = "操作已提交，但冲突列表读取失败。请重新读取；不要重复提交。" }
+            pendingCommitPlanID = nil
+            if token == session {
+                plan = nil; message = "操作已提交。API Key 与外部备份文件未变。"
+                conflicts = []
+                let request = UUID(); conflictRequest = request
+                do {
+                    let entries = try await store.conflicts()
+                    if token == session, conflictRequest == request { conflicts = entries }
+                } catch {
+                    if token == session, conflictRequest == request { message = "操作已提交，但冲突列表读取失败。请重新读取；不要重复提交。" }
+                }
             }
             committed = true
         } catch SnapshotError.stalePlan {
-            plan = nil; message = "数据已变化，旧计划失效。请重新预检并确认。"; committed = false
+            pendingCommitPlanID = nil
+            if token == session { plan = nil }
+            // Storage already removes stale plans. This idempotent cleanup also
+            // covers other protocol implementations; it never rolls back a write.
+            await store.cancel(id)
+            if token == session { message = "数据已变化，旧计划失效。请重新预检并确认。" }
+            committed = false
         } catch {
-            if plan?.id == id {
+            pendingCommitPlanID = nil
+            if token == session, plan?.id == id {
                 message = "提交未完成，原库保持不变；可重试当前计划或取消。"
             } else {
+                // Commit has returned. Release only its abandoned in-memory
+                // approval; do not claim that cancellation undoes the transaction.
                 await store.cancel(id)
-                message = "提交未完成，原库保持不变；请重新预检。"
             }
             committed = false
         }
@@ -115,8 +133,9 @@ import Persistence
     @discardableResult public func dismiss() -> Task<Void,Never> {
         session = UUID(); conflictRequest = UUID()
         // Once confirm has begun, leaving the page cannot revoke an in-flight
-        // transaction. Its completion must still report the actual outcome.
-        let old = committing ? nil : plan?.id; plan = nil
+        // transaction. After it returns, an abandoned failed plan can be released
+        // even while the shared workspace is still refreshing.
+        let old = plan?.id == pendingCommitPlanID ? nil : plan?.id; plan = nil
         if !committing { isBusy = false }
         return Task { if let old { await store.cancel(old) } }
     }
