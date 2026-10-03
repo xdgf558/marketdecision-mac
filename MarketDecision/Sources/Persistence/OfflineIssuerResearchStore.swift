@@ -266,7 +266,10 @@ public enum OfflineIssuerResearchArchiveCodec {
     }
 
     static func decode(_ data: Data) throws -> OfflineIssuerResearchArchiveState {
-        let files = try ResearchZIP.decode(data), manifestBytes = files["manifest.json"]!, bytes = files["research-state.json"]!
+        let files = try ResearchZIP.decode(data)
+        guard let manifestBytes = files["manifest.json"], let bytes = files["research-state.json"] else {
+            throw SnapshotError.unsafeArchive
+        }
         try exactKeys(manifestBytes, ["format", "schema", "scope", "profile", "application", "file", "sha256", "size", "objects", "roots"])
         let manifest = try JSONDecoder().decode(OfflineIssuerArchiveManifest.self, from: manifestBytes)
         guard manifest.format == "offline-issuer-research-backup.v1", manifest.schema == "offline-issuer-research-state.v1",

@@ -23,7 +23,78 @@ private func offlineTemporaryDirectory() throws -> URL {
     return url
 }
 
+// A structurally valid ZIP32 with one stored entry. The production encoder correctly
+// refuses to create incomplete archives, so this fixture builds the missing-entry input.
+private func singleEntryOfflineZIP(name: String, content: Data) -> Data {
+    func put(_ data: inout Data, _ value: UInt64, _ width: Int) {
+        for i in 0..<width { data.append(UInt8(truncatingIfNeeded: value >> (8 * i))) }
+    }
+    let path = Data(name.utf8), size = UInt64(content.count), checksum = UInt64(ResearchZIP.crc(content))
+    var local = Data(), central = Data()
+    put(&local, 0x04034b50, 4); put(&local, 20, 2); put(&local, 0, 2); put(&local, 0, 2)
+    put(&local, 0, 2); put(&local, 33, 2); put(&local, checksum, 4)
+    put(&local, size, 4); put(&local, size, 4); put(&local, UInt64(path.count), 2); put(&local, 0, 2)
+    local.append(path); local.append(content)
+    put(&central, 0x02014b50, 4); put(&central, 0x0314, 2); put(&central, 20, 2)
+    put(&central, 0, 2); put(&central, 0, 2); put(&central, 0, 2); put(&central, 33, 2)
+    put(&central, checksum, 4); put(&central, size, 4); put(&central, size, 4)
+    put(&central, UInt64(path.count), 2); put(&central, 0, 2); put(&central, 0, 2)
+    put(&central, 0, 2); put(&central, 0, 2); put(&central, UInt64(0o100644) << 16, 4); put(&central, 0, 4)
+    central.append(path)
+    let offset = UInt64(local.count)
+    local.append(central)
+    put(&local, 0x06054b50, 4); put(&local, 0, 2); put(&local, 0, 2); put(&local, 1, 2); put(&local, 1, 2)
+    put(&local, UInt64(central.count), 4); put(&local, offset, 4); put(&local, 0, 2)
+    return local
+}
+
 @Suite struct OfflineIssuerArchiveTests {
+    @Test func missingArchiveEntriesDoNotChangeSavedResearch() async throws {
+        let target = try OfflineArchiveFixture()
+        try await target.store.save(offlineIssuerDocument(), expectedRevision: target.store.writeRevision())
+        let before = try await target.store.exportBackup(), revision = try await target.store.writeRevision()
+        let files = try ResearchZIP.decode(before)
+        for retainedName in ["manifest.json", "research-state.json"] {
+            let content = try #require(files[retainedName])
+            let incomplete = singleEntryOfflineZIP(name: retainedName, content: content)
+            for mode in [RestoreMode.merge, .replace] {
+                await #expect(throws: SnapshotError.unsafeArchive) {
+                    try await target.store.prepareRestore(incomplete, mode: mode, expectedRevision: revision)
+                }
+                #expect(try await target.store.writeRevision() == revision)
+                #expect(try await target.store.exportBackup() == before)
+            }
+        }
+    }
+
+    @Test func missingRequiredJSONFieldsDoNotChangeSavedResearch() async throws {
+        let target = try OfflineArchiveFixture()
+        try await target.store.save(offlineIssuerDocument(), expectedRevision: target.store.writeRevision())
+        let before = try await target.store.exportBackup(), revision = try await target.store.writeRevision()
+        for name in ["manifest.json", "research-state.json"] {
+            var files = try ResearchZIP.decode(before)
+            let original = try #require(files[name])
+            var object = try #require(JSONSerialization.jsonObject(with: original) as? [String: Any])
+            object.removeValue(forKey: name == "manifest.json" ? "sha256" : "objects")
+            let changed = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            files[name] = changed
+            if name == "research-state.json" {
+                let manifestBytes = try #require(files["manifest.json"])
+                var manifest = try #require(JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any])
+                manifest["sha256"] = digest(changed); manifest["size"] = changed.count
+                files["manifest.json"] = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+            }
+            let incomplete = try ResearchZIP.encode(files)
+            for mode in [RestoreMode.merge, .replace] {
+                await #expect(throws: SnapshotError.unsupportedFormat) {
+                    try await target.store.prepareRestore(incomplete, mode: mode, expectedRevision: revision)
+                }
+                #expect(try await target.store.writeRevision() == revision)
+                #expect(try await target.store.exportBackup() == before)
+            }
+        }
+    }
+
     @Test(arguments: ["AAPL", "MSFT", "META", "AMZN", "NVDA", "COST", "WMT", "KO", "JPM", "BRK.B"])
     func tenIssuerArchivesReopenAndExplicitlyRecompute(ticker: String) async throws {
         let directory = try offlineTemporaryDirectory()

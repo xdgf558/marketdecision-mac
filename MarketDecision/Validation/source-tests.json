@@ -88,6 +88,8 @@
     {"path": "Sources/AppComposition/ResearchSelectedFile.swift", "kind": "tested", "suites": ["FoundationTests.ResearchSelectedFileTests"], "reason": "Bounded local selected-file copies, cancellation, descriptor and temporary access cleanup with real temporary files. Actual sandbox panel grants are verified separately."}
   ],
   "tests": [
+    {"selector": "FoundationTests.OfflineIssuerArchiveTests/missingArchiveEntriesDoNotChangeSavedResearch()", "source": "Tests/FoundationTests/OfflineIssuerArchiveTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerArchiveTests/missingRequiredJSONFieldsDoNotChangeSavedResearch()", "source": "Tests/FoundationTests/OfflineIssuerArchiveTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OfflineIssuerArchiveTests/tenIssuerArchivesReopenAndExplicitlyRecompute(ticker:)", "source": "Tests/FoundationTests/OfflineIssuerArchiveTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OfflineIssuerArchiveTests/repeatedMergeAndRebackupPreserveDistinctNamespaces()", "source": "Tests/FoundationTests/OfflineIssuerArchiveTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OfflineIssuerArchiveTests/conflictingImmutableIdentityRetainsBothVersionsAfterRebackup()", "source": "Tests/FoundationTests/OfflineIssuerArchiveTests.swift", "execution": "required"},
