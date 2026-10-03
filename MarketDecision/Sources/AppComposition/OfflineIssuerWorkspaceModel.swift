@@ -25,6 +25,9 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
     public private(set) var saved: [SavedOfflineIssuerResearch] = []
     public private(set) var savedID: String?
     public private(set) var selectedTicker: String?
+    /// The picker and generation action share this authority. selectedTicker describes the
+    /// current document/request; choosing a different input invalidates that document.
+    public private(set) var selectionTicker: String
     public private(set) var isBusy = false
     public private(set) var isSaved = false
     public private(set) var message: String?
@@ -32,6 +35,12 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
     public private(set) var hasError = false
     public private(set) var recomputationState: OfflineIssuerRecomputationState = .notVerified
     public var canSave: Bool { !isBusy && document != nil && !isSaved }
+    public var canDisplayReports: Bool { document != nil && recomputationState == .matched }
+
+    /// Namespace, immutable identity and version all participate; a ticker is not a row identity.
+    nonisolated public static func savedRowIdentifier(_ item: SavedOfflineIssuerResearch) -> String {
+        "openOfflineIssuer-" + item.id
+    }
 
     private let storage: any OfflineIssuerWorkspaceStorage
     private let catalog: OfflineIssuerCatalog
@@ -51,7 +60,18 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
                     try await $0.recompute()
                 }) {
         self.storage = storage; self.catalog = catalog; issuers = catalog.entries
+        selectionTicker = "MSFT"
         self.now = now; self.generate = generate; self.replay = replay
+    }
+
+    /// Selection alone never calculates. Busy operations retain their original input, and
+    /// changing an idle selection removes the old report instead of relabelling its output.
+    @discardableResult public func choose(_ ticker: String) -> Bool {
+        guard !isBusy, issuers.contains(where: { $0.ticker == ticker }) else { return false }
+        guard selectionTicker != ticker else { return true }
+        generation = UUID(); clearDocument()
+        selectionTicker = ticker; message = nil; hasError = false
+        return true
     }
 
     /// Listing validates stored bytes but does not execute financial formulas.
@@ -68,6 +88,7 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
         do {
             try Task.checkCancellation()
             let bytes = try catalog.excerpt(for: ticker)
+            selectionTicker = ticker
             let result = try await generate(bytes, now())
             guard generation == token else { return }
             try Task.checkCancellation()
@@ -76,7 +97,7 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
                 throw OfflineIssuerResearchError.inconsistentEvidence
             }
             let evidence = try result.context()
-            document = result; context = evidence
+            document = result; context = evidence; selectionTicker = result.ticker
             message = "已按本地摘录计算；尚未执行独立重算核对，缺项仍保留。"
         } catch {
             guard generation == token else { return }
@@ -101,6 +122,7 @@ public enum OfflineIssuerRecomputationState: Sendable, Equatable {
             let evidence = try item.document.context()
             saved = list; savedReadError = nil
             document = item.document; context = evidence; selectedTicker = item.document.ticker
+            selectionTicker = item.document.ticker
             savedID = item.id; isSaved = true
             message = "已打开冻结摘录；结构校验通过，缓存数值仍待显式重算。"
         } catch {

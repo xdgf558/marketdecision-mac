@@ -56,7 +56,6 @@ struct OfflineIssuerResearchPage: View {
 
 struct OfflineIssuerResearchContent: View {
     @Bindable var model: OfflineIssuerWorkspaceModel
-    @State private var ticker = "MSFT"
     @State private var section = "基础财务"
     @State private var query = ""
     var body: some View {
@@ -70,10 +69,13 @@ struct OfflineIssuerResearchContent: View {
                 .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 .accessibilityIdentifier("offlineResearchLimitations")
             HStack {
-                Picker("公司摘录", selection: $ticker) {
+                Picker("公司摘录", selection: Binding(get: { model.selectionTicker }, set: { _ = model.choose($0) })) {
                     ForEach(model.issuers) { item in Text(item.ticker).tag(item.ticker) }
-                }.frame(maxWidth: 280).accessibilityIdentifier("offlineIssuerPicker")
-                Button("生成离线研究") { Task { await model.select(ticker) } }
+                }.frame(maxWidth: 280).disabled(model.isBusy).accessibilityIdentifier("offlineIssuerPicker")
+                Button("生成离线研究") {
+                    let ticker = model.selectionTicker
+                    Task { await model.select(ticker) }
+                }
                     .disabled(model.isBusy).accessibilityIdentifier("offlineGenerate")
                 Spacer(minLength: 0)
             }
@@ -91,7 +93,12 @@ struct OfflineIssuerResearchContent: View {
                     else if let document = model.document {
                         documentHeader(document)
                         if section == "来源与缺项" { sources(document) }
-                        else { reports(document) }
+                        else if model.canDisplayReports { reports(document) }
+                        else {
+                            ContentUnavailableView("报告数值尚未通过核对", systemImage: "checkmark.shield",
+                                description: Text("点击上方“按冻结输入重算并核对”。一致后才展示三组报告数值；未核对、不一致或失败时均隐藏缓存指标。来源与缺项仍可查看。"))
+                                .accessibilityIdentifier("offlineReportsUnverified")
+                        }
                     } else {
                         ContentUnavailableView("选择一家公司开始", systemImage: "doc.text.magnifyingglass",
                             description: Text("从已审摘录生成离线研究，或在“已保存”中打开冻结版本。"))
@@ -221,7 +228,7 @@ struct OfflineIssuerResearchContent: View {
                 Text("独立离线研究库").font(.title2.bold()); Spacer()
                 Button("重新载入") { Task { await model.load() } }.disabled(model.isBusy).accessibilityIdentifier("offlineSavedReload")
             }
-            Text("打开只验证冻结输入与结构；数值核对须再次点击“按冻结输入重算并核对”。").font(.callout).foregroundStyle(.secondary)
+            Text("打开只验证冻结输入与结构，并同步公司选择。报告数值须显式重算一致后才显示。").font(.callout).foregroundStyle(.secondary)
             if let message = model.savedReadError { Text(message).foregroundStyle(.red) }
             else if model.saved.isEmpty { Text("尚无已保存研究。生成后可在本机保存。").foregroundStyle(.secondary) }
             ForEach(model.saved) { item in
@@ -234,7 +241,7 @@ struct OfflineIssuerResearchContent: View {
                     Spacer()
                     Button("打开冻结版本") {
                         Task { await model.open(item.id); if model.savedID == item.id { section = "基础财务" } }
-                    }.disabled(model.isBusy).accessibilityIdentifier("offlineOpen-" + item.document.ticker)
+                    }.disabled(model.isBusy).accessibilityIdentifier(OfflineIssuerWorkspaceModel.savedRowIdentifier(item))
                 }.padding(12).background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
             }
         }

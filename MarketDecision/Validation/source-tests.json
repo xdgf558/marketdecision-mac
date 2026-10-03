@@ -514,6 +514,11 @@
     {"selector": "FoundationTests.ResearchSelectedFileTests/preCancelledReadNeverAcquiresSecurityScope()", "source": "Tests/FoundationTests/ResearchSelectedFileTests.swift", "execution": "required"},
     {"selector": "FoundationTests.ResearchSelectedFileTests/parentCancellationClosesDescriptorAndReleasesScopeBeforeReturning()", "source": "Tests/FoundationTests/ResearchSelectedFileTests.swift", "execution": "required"},
     {"selector": "FoundationTests.ResearchSelectedFileTests/unscopedLocalAccessAndOriginalFailureArePreserved()", "source": "Tests/FoundationTests/ResearchSelectedFileTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.ResearchSelectedFileTests/deniedFilePreservesAccessErrorAndReleasesScope()", "source": "Tests/FoundationTests/ResearchSelectedFileTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.ResearchSelectedFileTests/deniedFilePreservesAccessErrorAndReleasesScope()", "source": "Tests/FoundationTests/ResearchSelectedFileTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerWorkspaceTests/pickerSelectionAndOpenedRecordShareOneAuthority()", "source": "Tests/FoundationTests/OfflineIssuerWorkspaceTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerWorkspaceTests/pickerChangesAreRejectedWhileBusy(operation:)", "source": "Tests/FoundationTests/OfflineIssuerWorkspaceTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerWorkspaceTests/lateOpenCannotResetPickerAfterANewerGeneration()", "source": "Tests/FoundationTests/OfflineIssuerWorkspaceTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerWorkspaceTests/savedRowIdentifiersIncludeImmutableVersionAndConflictNamespace()", "source": "Tests/FoundationTests/OfflineIssuerWorkspaceTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OfflineIssuerWorkspaceTests/repeatingReplayWithdrawsPreviousDisplayPermissionBeforeWaitingAndOnFailure()", "source": "Tests/FoundationTests/OfflineIssuerWorkspaceTests.swift", "execution": "required"}
   ]
 }
