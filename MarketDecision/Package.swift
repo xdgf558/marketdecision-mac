@@ -24,7 +24,8 @@ let package = Package(
         .target(name: "SecuritySupport", dependencies: [], path: "Sources/Security"),
         .target(name: "AIInsights", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AIInsights"),
         .target(name: "UIComponents", dependencies: [], path: "Sources/UIComponents"),
-        .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine"], path: "Sources/AppComposition"),
+        .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine"], path: "Sources/AppComposition",
+                resources: [.process("Resources")]),
         .executableTarget(name: "FoundationCodecProbe", dependencies: ["CoreDomain"], path: "Tools/FoundationCodecProbe"),
         .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "MarketDataProviders", "FundamentalsEngine", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
     ],

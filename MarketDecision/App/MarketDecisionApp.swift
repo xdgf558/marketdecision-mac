@@ -5,11 +5,12 @@ import CoreDomain
 import DataContracts
 
 enum AppPage: String, CaseIterable, Identifiable {
-    case workspace = "工作台", research = "公司研究", settings = "设置"
+    case workspace = "工作台", research = "公司研究", offlineResearch = "离线摘录", settings = "设置"
     var id: Self { self }
-    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .settings: "gearshape" } }
-    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .settings: "2" } }
-    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .settings: "pageSettings" } }
+    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .offlineResearch: "doc.text.magnifyingglass"; case .settings: "gearshape" } }
+    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .offlineResearch: "4"; case .settings: "2" } }
+    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .offlineResearch: "pageOfflineResearch"; case .settings: "pageSettings" } }
+    var help: String { switch self { case .workspace: "工作台（⌘1）"; case .research: "公司研究（⌘3）"; case .offlineResearch: "离线摘录（⌘4）"; case .settings: "设置（⌘2）" } }
 }
 
 @main enum MarketDecisionEntry {
@@ -68,7 +69,7 @@ struct RootView: View {
                     .background(page == item ? Color.blue : Color.clear, in: RoundedRectangle(cornerRadius: 8))
                     .accessibilityAddTraits(page == item ? .isSelected : [])
                     .keyboardShortcut(item.shortcut, modifiers: .command)
-                    .help(item == .workspace ? "工作台（⌘1）" : item == .research ? "公司研究（⌘3）" : "设置（⌘2）")
+                    .help(item.help)
                     .accessibilityIdentifier(item.accessibilityID)
                 }
                 Spacer()
@@ -82,7 +83,8 @@ struct RootView: View {
                 else if page == .research {
                     if let research = model.research { ResearchContent(model:research) }
                     else { VStack { Text(model.initializationError ?? "正在准备本地研究…"); Button("重试初始化") { Task { await model.refresh() } } } }
-                } else { SettingsContent(model: model) }
+                } else if page == .offlineResearch { OfflineIssuerResearchPage(workspace: model) }
+                else { SettingsContent(model: model) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .windowBackgroundColor))

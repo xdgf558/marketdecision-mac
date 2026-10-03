@@ -11,10 +11,12 @@ public struct AppEnvironment: Sendable {
     public let businessData: BusinessDataStore
     public let log: SafeLog
     public let credentials: any CredentialStorage
+    public let offlineResearchDatabasePath: String
     public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
-                log: SafeLog = SafeLog()) throws {
+                log: SafeLog = SafeLog(), offlineResearchDatabasePath: String = ":memory:") throws {
         self.quotes = quotes; self.database = database; self.businessData = try BusinessDataStore(database: database)
         self.credentials = credentials; self.models = ModelRegistry(); self.log = log
+        self.offlineResearchDatabasePath = offlineResearchDatabasePath
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {
         ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData), transfer: ResearchTransferModel(store: ResearchTransferStore(database: database)))
@@ -22,8 +24,31 @@ public struct AppEnvironment: Sendable {
     @MainActor public func makeCredentialSettings() -> CredentialSettingsModel {
         CredentialSettingsModel(store: credentials, log: log)
     }
+    /// Each page owns its interaction state. The separate SQLite file is opened only
+    /// on explicit navigation; a broken offline archive cannot disable the DEMO workspace.
+    @MainActor public func makeOfflineIssuerWorkspace() async throws -> OfflineIssuerWorkspaceModel {
+        try Task.checkCancellation()
+        let path = offlineResearchDatabasePath
+        let preparation = Task.detached {
+            try Task.checkCancellation()
+            let catalog = try OfflineIssuerCatalog.bundled()
+            let store = try OfflineIssuerResearchStore(path: path)
+            try Task.checkCancellation()
+            return (store, catalog)
+        }
+        return try await withTaskCancellationHandler {
+            let (store, catalog) = try await preparation.value
+            try Task.checkCancellation()
+            return OfflineIssuerWorkspaceModel(storage: store, catalog: catalog)
+        } onCancel: {
+            preparation.cancel()
+        }
+    }
     public static func mock(databasePath: String, log: SafeLog = SafeLog()) throws -> AppEnvironment {
-        try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: databasePath), credentials: CredentialStore(), log: log)
+        let offlinePath = databasePath == ":memory:" ? ":memory:" : URL(fileURLWithPath: databasePath)
+            .deletingLastPathComponent().appendingPathComponent("offline-issuer.sqlite").path
+        return try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: databasePath),
+            credentials: CredentialStore(), log: log, offlineResearchDatabasePath: offlinePath)
     }
     /// Directory override is for isolated integration fixtures. The app uses its own Application Support.
     /// Cancellation prevents publication; it cannot undo a filesystem operation already in progress.
