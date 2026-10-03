@@ -16,6 +16,7 @@ import SecuritySupport
     private var environment: AppEnvironment?
     private let log: SafeLog
     private let prepareEnvironment: @Sendable (SafeLog) async throws -> AppEnvironment
+    public var isPrepared: Bool { environment != nil }
 
     public init(log: SafeLog = SafeLog(),
                 prepareEnvironment: @escaping @Sendable (SafeLog) async throws -> AppEnvironment = {
@@ -23,6 +24,12 @@ import SecuritySupport
                 }) {
         self.log = log
         self.prepareEnvironment = prepareEnvironment
+    }
+
+    /// Creates page-local state, not a shared multi-window selection or replay status.
+    public func makeOfflineIssuerWorkspace() async throws -> OfflineIssuerWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try await environment.makeOfflineIssuerWorkspace()
     }
 
     /// False means this invocation did not complete a refresh, including busy/cancelled calls.
@@ -72,3 +79,5 @@ import SecuritySupport
         }
     }
 }
+
+private enum WorkspacePreparationError: Error { case notReady }
