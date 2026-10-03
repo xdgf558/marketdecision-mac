@@ -15,6 +15,7 @@ case "${1:-all}" in tests|builds|all) ;; *) echo 'Expected tests, builds or all'
 if [[ "${1:-all}" != builds ]]; then
   python3 "$project_root/Scripts/test_profile_time.py"
   python3 "$project_root/Scripts/test_demo_entitlements.py"
+  python3 "$project_root/Scripts/test_file_panel_result.py"
   python3 "$project_root/Scripts/check-boundaries.py"
   python3 "$project_root/Scripts/test_foundation_traceability.py"
   python3 "$project_root/Scripts/run-foundation-tests.py"
