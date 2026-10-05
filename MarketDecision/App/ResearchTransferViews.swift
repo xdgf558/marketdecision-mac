@@ -69,9 +69,9 @@ struct ResearchTransferContent: View {
                 }.frame(maxWidth:.infinity,alignment:.leading).padding(8)
             }
             Divider()
-            Button("预览清空全部业务数据…",role:.destructive) { runVisible { await transfer.prepareClear() } }
+            Button("预览清空合成研究工作区…",role:.destructive) { runVisible { await transfer.prepareClear() } }
                 .disabled(transfer.isBusy || fileBusy).accessibilityIdentifier("researchClearPreview")
-            Text("清空包括研究、自选、冲突和源缓存。外部备份文件和 Keychain 不变；不承诺磁盘物理擦除。").font(.caption).foregroundStyle(.secondary)
+            Text("仅清空合成研究工作区的研究、自选、冲突和源缓存。SEC 财报库、离线摘录库、外部备份文件和 Keychain 不变；不承诺磁盘物理擦除。").font(.caption).foregroundStyle(.secondary)
         }
         .fileExporter(isPresented:$exporting,document:exportFile,contentTypes:[exportType],defaultFilename:exportName) { result in
             switch result {
@@ -100,7 +100,7 @@ struct ResearchTransferContent: View {
         }
         .sheet(item:Binding(get:{transfer.plan},set:{if $0 == nil, let displayedPlanID, transfer.plan?.id == displayedPlanID { transfer.dismiss() }})) { plan in
             VStack(alignment:.leading,spacing:14) {
-                Text(plan.operation == .clearBusiness ? "确认清空全部业务数据":"确认恢复计划").font(.title2.bold())
+                Text(plan.operation == .clearBusiness ? "确认清空合成研究工作区":"确认恢复计划").font(.title2.bold())
                 ScrollView { VStack(alignment:.leading,spacing:6) { ForEach(Array(plan.details.enumerated()),id:\.offset) { Text($0.element).font(.callout) } }.frame(maxWidth:.infinity,alignment:.leading) }.frame(height:240)
                 Text("此计划仅本次进程有效；确认前数据变化会拒绝提交。").font(.caption).foregroundStyle(.secondary)
                 TextField("输入 确认 后提交",text:$confirmation).onSubmit { }.textFieldStyle(.roundedBorder).accessibilityIdentifier("researchTransferConfirmText")

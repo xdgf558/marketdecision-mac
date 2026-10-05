@@ -5,6 +5,7 @@ public struct ProviderRawPayload: Sendable {
     public let reference: String
     public let mediaType: String
     public let bytes: Data
+    public let contentHash: String
     public let storageAvailableAt: Date
     public let evidenceRef: String
     public let licenseRef: String
@@ -18,10 +19,16 @@ public struct ProviderRawPayload: Sendable {
               !evidenceRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !licenseRef.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { throw ContractError.invalidIdentity }
-        self.reference = reference; self.mediaType = mediaType; self.bytes = bytes
+        // Own a byte-for-byte copy, including when the caller supplied a no-copy Data view
+        // over externally mutable memory. A stored hash is valid only for this frozen buffer.
+        let snapshot = try bytes.withUnsafeBytes { buffer -> Data in
+            guard let base = buffer.baseAddress else { throw ContractError.invalidIdentity }
+            return Data(bytes: base, count: buffer.count)
+        }
+        self.reference = reference; self.mediaType = mediaType; self.bytes = snapshot
+        self.contentHash = digest(snapshot)
         self.storageAvailableAt = storageAvailableAt; self.evidenceRef = evidenceRef; self.licenseRef = licenseRef
     }
-    public var contentHash: String { digest(bytes) }
 }
 
 public struct ProviderPayloadResponse<Item: ProviderRecord>: Sendable {

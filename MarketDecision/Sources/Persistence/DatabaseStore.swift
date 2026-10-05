@@ -3,10 +3,16 @@ import GRDB
 
 public enum MigrationError: Error, Equatable { case invalidCatalog, unsupportedHistory, incompatiblePurpose }
 public enum DatabasePurpose: Sendable, Equatable {
-    case business, offlineIssuerResearch
-    // Stable SQLite file markers: MDB1 and MDO1. These are independent of the
+    case business, offlineIssuerResearch, secResearch
+    // Stable SQLite file markers: MDB1, MDO1 and MDS1. These are independent of the
     // migration history and survive clearing the business rows.
-    var applicationID: Int { self == .business ? 0x4d444231 : 0x4d444f31 }
+    var applicationID: Int {
+        switch self {
+        case .business: 0x4d444231
+        case .offlineIssuerResearch: 0x4d444f31
+        case .secResearch: 0x4d445331
+        }
+    }
 }
 public struct DatabaseMigration: Sendable {
     public let identifier: String
@@ -22,7 +28,7 @@ public struct DatabaseStore: Sendable {
     private let queue: DatabaseQueue
     public let purpose: DatabasePurpose
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
-        guard purpose != .offlineIssuerResearch || migrations.isEmpty else { throw MigrationError.invalidCatalog }
+        guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
         let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
@@ -36,7 +42,7 @@ public struct DatabaseStore: Sendable {
         try queue.write { db in
             let marker = try Int.fetchOne(db, sql: "PRAGMA application_id") ?? 0
             guard marker == 0 || marker == purpose.applicationID else { throw MigrationError.incompatiblePurpose }
-            if marker == 0, purpose == .offlineIssuerResearch {
+            if marker == 0, purpose != .business {
                 let count = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sqlite_master WHERE name NOT GLOB 'sqlite_*'") ?? 0
                 guard count == 0 else { throw MigrationError.incompatiblePurpose }
             }

@@ -148,8 +148,9 @@ public enum FinancialNormalizer {
         guard cutoff.timeIntervalSince1970.isFinite else { throw ContractError.invalidTime }
         _ = try MillisecondInstant(rounding: cutoff) // Validate range while retaining the exact PIT boundary.
         var selected: [SECCompanyFactRecord] = [], issues: [FinancialNormalizationIssue] = []
-        for factID in Set(facts.map(\.factID)).sorted() {
-            let versions = facts.filter { $0.factID == factID }
+        let versionsByFact = Dictionary(grouping: facts, by: \.factID)
+        for factID in versionsByFact.keys.sorted() {
+            guard let versions = versionsByFact[factID] else { continue }
             try versions.forEach { try $0.provenance.validate() }
             let eligible = versions.compactMap { fact -> (SECCompanyFactRecord, Date)? in
                 guard fact.provenance.isAvailable(asOf: cutoff), let date = try? fact.provenance.availability.upperBound() else { return nil }
@@ -229,11 +230,41 @@ public enum FinancialNormalizer {
             selectedSourceFacts: reported.selectedSourceFacts, unmappedSourceFacts: reported.unmappedSourceFacts)
     }
 
+    /// Explicit SEC research policy: a source fiscal-year label does not prove that cumulative
+    /// periods share a fiscal start. Retain reported values and record an incompatible bridge
+    /// as a gap; never guess the period, output its subtraction, or suppress numeric failures.
+    /// The default normalizeComplete/discreteQuarters APIs remain strict.
+    public static func normalizeSECResearchV1(_ facts: [SECCompanyFactRecord], dictionary: FinancialFieldDictionary,
+                                              asOf cutoff: Date) throws -> FinancialNormalizationResult {
+        let reported = try normalize(facts, dictionary: dictionary, asOf: cutoff)
+        let quarters = try discreteQuarters(from: reported.values, incompatibleBridgesAsIssues: true)
+        let ttm = try trailingTwelveMonths(from: quarters.values)
+        return FinancialNormalizationResult(asOf: reported.asOf, dictionaryVersion: reported.dictionaryVersion,
+            values: (reported.values + quarters.values.filter { $0.derivation != .reported } + ttm.values).sorted(by: financialOrder),
+            issues: reported.issues + quarters.issues + ttm.issues,
+            selectedSourceFacts: reported.selectedSourceFacts, unmappedSourceFacts: reported.unmappedSourceFacts)
+    }
+
     /// Builds only the explicitly supported Q2/Q3/Q4 bridges from same-basis additive facts.
     public static func discreteQuarters(from values: [NormalizedFinancialFact]) throws
         -> (values: [NormalizedFinancialFact], issues: [FinancialNormalizationIssue]) {
+        try discreteQuarters(from: values, incompatibleBridgesAsIssues: false)
+    }
+
+    private static func discreteQuarters(from values: [NormalizedFinancialFact], incompatibleBridgesAsIssues: Bool) throws
+        -> (values: [NormalizedFinancialFact], issues: [FinancialNormalizationIssue]) {
         var output = values.filter { $0.periodType == .quarter && $0.nature == .additiveFlow }
         var issues: [FinancialNormalizationIssue] = []
+        func bridge(_ total: NormalizedFinancialFact, minus prior: NormalizedFinancialFact,
+                    derivation: FinancialDerivation, quarter: String) throws {
+            do { output.append(try difference(total, minus: prior, derivation: derivation)) }
+            catch FinancialNormalizationError.incompatiblePeriod {
+                guard incompatibleBridgesAsIssues else { throw FinancialNormalizationError.incompatiblePeriod }
+                issues.append(.init(code: "incompatible-quarter-bridge", severity: .high,
+                    factIDs: Array(Set(total.sourceFactIDs + prior.sourceFactIDs)).sorted(),
+                    message: quarter + " was not derived: cumulative source periods do not share a compatible start/end. Source fiscal-year labels are not sufficient evidence; no period was inferred."))
+            }
+        }
         let missingYear = values.filter {
             $0.nature == .additiveFlow && $0.fiscalYear == nil && [.yearToDate, .annual].contains($0.periodType)
         }
@@ -255,15 +286,15 @@ public enum FinancialNormalizer {
             let q3 = unique(group, fiscalPeriod: "Q3", type: .quarter)
             let q4 = unique(group, fiscalPeriod: "Q4", type: .quarter)
             if q2 == nil {
-                if let q1, let q2YTD { output.append(try difference(q2YTD, minus: q1, derivation: .ytdDifference)) }
+                if let q1, let q2YTD { try bridge(q2YTD, minus: q1, derivation: .ytdDifference, quarter: "Q2") }
                 else if has(group, fiscalPeriod: "Q2", type: .yearToDate) { issues.append(missingBridge("Q2", group: group)) }
             }
             if q3 == nil {
-                if let q2YTD, let q3YTD { output.append(try difference(q3YTD, minus: q2YTD, derivation: .ytdDifference)) }
+                if let q2YTD, let q3YTD { try bridge(q3YTD, minus: q2YTD, derivation: .ytdDifference, quarter: "Q3") }
                 else if has(group, fiscalPeriod: "Q3", type: .yearToDate) { issues.append(missingBridge("Q3", group: group)) }
             }
             if q4 == nil {
-                if let q3YTD, let annual { output.append(try difference(annual, minus: q3YTD, derivation: .annualLessYTD)) }
+                if let q3YTD, let annual { try bridge(annual, minus: q3YTD, derivation: .annualLessYTD, quarter: "Q4") }
                 else if has(group, fiscalPeriod: "FY", type: .annual) { issues.append(missingBridge("Q4", group: group)) }
             }
         }
@@ -308,8 +339,15 @@ public enum FinancialNormalizer {
 
     private static func classify(_ fact: SECCompanyFactRecord, nature: FinancialMetricNature) -> FinancialPeriodType {
         if fact.periodKind == .instant { return nature == .instant ? .instant : .unclassified }
-        guard nature != .instant, let start = fact.startDate,
-              let days = try? start.days(through: fact.endDate).count else { return .unclassified }
+        let zone = TimeZone(secondsFromGMT: 0)!
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        guard nature != .instant, let start = fact.startDate, start <= fact.endDate,
+              let startInstant = try? start.start(in: zone), let endInstant = try? fact.endDate.start(in: zone),
+              let elapsedDays = calendar.dateComponents([.day], from: startInstant, to: endInstant).day,
+              (0..<100_000).contains(elapsedDays) else { return .unclassified }
+        // Preserve MarketDate.days' inclusive endpoints and 100,000-day bound without
+        // allocating one MarketDate for every day in every reported context.
+        let days = elapsedDays + 1
         let fp = fact.fiscalPeriod?.uppercased()
         if fact.form.hasPrefix("10-K"), fp == "FY", (300...400).contains(days) { return .annual }
         if fp == "Q1", (70...120).contains(days) { return .quarter }

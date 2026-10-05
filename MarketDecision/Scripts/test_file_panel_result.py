@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,6 +27,11 @@ class FilePanelEvidenceTests(unittest.TestCase):
     def test_exact_evidence_accepted(self):
         self.assertEqual(set(result.validate_results(self.summary, self.tree)), result.EXPECTED)
         result.validate_permissions(result.APP_ID, self.permissions)
+        source = Path(__file__).resolve().parents[1] / 'App/MarketDecision-FileAcceptance.entitlements'
+        actual = plistlib.loads(source.read_bytes())
+        self.assertEqual(actual, self.permissions)
+        result.validate_permissions(result.APP_ID, actual)
+        self.assertIn('App/MarketDecision-FileAcceptance.entitlements', result.fingerprints())
 
     def test_skip_failure_empty_or_unknown_summary_rejected(self):
         for key in self.summary:
@@ -51,7 +57,7 @@ class FilePanelEvidenceTests(unittest.TestCase):
                 result.validate_permissions(identity, self.permissions)
 
     def test_extra_or_missing_permissions_rejected(self):
-        for key in ['com.apple.security.network.client', 'com.apple.security.get-task-allow',
+        for key in ['com.apple.security.network.client', 'com.apple.security.network.server', 'com.apple.security.get-task-allow',
                     'com.apple.security.temporary-exception.files.absolute-path.read-only',
                     'com.apple.security.temporary-exception.mach-lookup.global-name']:
             with self.assertRaises(ValueError):
@@ -71,7 +77,7 @@ class FilePanelEvidenceTests(unittest.TestCase):
         project_path = Path(__file__).resolve().parents[1] / 'App/MarketDecision.xcodeproj/project.pbxproj'
         original = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(project_path)]))
         result.validate_project(original)
-        for mutation in ['source', 'package', 'permissions', 'conditions']:
+        for mutation in ['source', 'package', 'permissions', 'network_permissions', 'debug_permissions', 'conditions']:
             project = copy.deepcopy(original)
             objects = project['objects']
             target = next(v for v in objects.values() if v.get('name') == 'MarketDecisionFileAcceptance' and v.get('isa') == 'PBXNativeTarget')
@@ -80,9 +86,11 @@ class FilePanelEvidenceTests(unittest.TestCase):
                 phase['files'].pop()
             elif mutation == 'package': target['packageProductDependencies'] = []
             else:
-                release = next(objects[c]['buildSettings'] for c in objects[target['buildConfigurationList']]['buildConfigurations'] if objects[c]['name'] == 'Release')
-                if mutation == 'permissions': release['CODE_SIGN_ENTITLEMENTS'] = 'MarketDecision-UIHost.entitlements'
-                else: release['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] = 'UI_TEST_HOST'
+                configuration = 'Debug' if mutation == 'debug_permissions' else 'Release'
+                settings = next(objects[c]['buildSettings'] for c in objects[target['buildConfigurationList']]['buildConfigurations'] if objects[c]['name'] == configuration)
+                if mutation == 'permissions': settings['CODE_SIGN_ENTITLEMENTS'] = 'MarketDecision-UIHost.entitlements'
+                elif mutation in ['network_permissions', 'debug_permissions']: settings['CODE_SIGN_ENTITLEMENTS'] = 'MarketDecision.entitlements'
+                else: settings['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] = 'UI_TEST_HOST'
             with self.assertRaises(ValueError):
                 result.validate_project(project)
 

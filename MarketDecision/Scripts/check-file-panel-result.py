@@ -19,7 +19,7 @@ def validate_permissions(identity, entitlements):
     required = {'com.apple.security.app-sandbox',
                 'com.apple.security.files.user-selected.read-write'}
     if identity != APP_ID or set(entitlements) != required or any(entitlements[k] is not True for k in required):
-        raise ValueError('FAIL: file acceptance app must use the exact production Release permission set and isolated identity')
+        raise ValueError('FAIL: file acceptance app must use the exact file-only permission set, no network, and isolated identity')
 
 
 def check_app(path):
@@ -49,14 +49,18 @@ def validate_project(project):
         return {objects[reference]['productName'] for reference in target.get('packageProductDependencies', [])}
     if products(production) != products(acceptance):
         raise ValueError('FAIL: acceptance app package dependencies differ')
-    for target in [production, acceptance]:
-        settings = next(objects[c]['buildSettings'] for c in objects[target['buildConfigurationList']]['buildConfigurations']
-                        if objects[c]['name'] == 'Release')
-        if (settings.get('CODE_SIGN_ENTITLEMENTS') != 'MarketDecision.entitlements'
-                or settings.get('CODE_SIGN_INJECT_BASE_ENTITLEMENTS') != 'NO'
+    # The file-panel app shares production code, dependencies and Release conditions, but
+    # deliberately excludes the newly authorized production outbound-network entitlement.
+    for target, entitlement_file in [(production, 'MarketDecision.entitlements'),
+                                     (acceptance, 'MarketDecision-FileAcceptance.entitlements')]:
+        configurations = [objects[c] for c in objects[target['buildConfigurationList']]['buildConfigurations']]
+        if any(c['buildSettings'].get('CODE_SIGN_ENTITLEMENTS') != entitlement_file for c in configurations):
+            raise ValueError('FAIL: target must keep its own production/file-only entitlement file in every configuration')
+        settings = next(c['buildSettings'] for c in configurations if c['name'] == 'Release')
+        if (settings.get('CODE_SIGN_INJECT_BASE_ENTITLEMENTS') != 'NO'
                 or settings.get('SWIFT_ACTIVE_COMPILATION_CONDITIONS', '')
                 or settings.get('ENABLE_HARDENED_RUNTIME') != 'YES'):
-            raise ValueError('FAIL: acceptance must preserve the production Release permissions and compilation conditions')
+            raise ValueError('FAIL: acceptance must preserve production Release compilation conditions and its narrower file-only permissions')
 
 
 def check_project():
@@ -112,7 +116,7 @@ def main():
         return
     if len(sys.argv) == 3 and sys.argv[1] == '--app-only':
         check_app(sys.argv[2])
-        print('PASS: isolated app has exact production Release permissions and no diagnostic markers')
+        print('PASS: isolated app has exact file-only Release permissions, no network and no diagnostic markers')
         return
     bundle, report, app = sys.argv[1:]
     def get(kind):
@@ -123,10 +127,11 @@ def main():
                'architecture': subprocess.check_output(['uname', '-m'], text=True).strip(),
                'xcode': subprocess.check_output(['xcodebuild', '-version'], text=True).strip(),
                'scope': 'PRODUCTION_SOURCE_RELEASE_ISOLATED_CONTAINER_SYNTHETIC_RESEARCH_ACTUAL_FILE_PANELS',
+               'network': 'DISABLED_BY_ENTITLEMENT',
                'keychain': 'NOT_EXECUTED', 'real_data_backup': 'NOT_ADMITTED',
                'voiceover': 'NOT_EXECUTED', 'ime_composition': 'NOT_EXECUTED'}
     Path(report).write_text(json.dumps(payload, indent=2) + '\n')
-    print('PASS: three actual file-panel cases executed with isolated persisted data and production Release permissions')
+    print('PASS: three actual file-panel cases executed with isolated persisted data and file-only Release permissions; no network qualification')
 
 
 if __name__ == '__main__':

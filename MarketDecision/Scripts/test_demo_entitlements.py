@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKER = ROOT / 'Scripts/check-demo-entitlements.py'
 SANDBOX = 'com.apple.security.app-sandbox'
 SELECTED = 'com.apple.security.files.user-selected.read-write'
-BASE = {SANDBOX: True, SELECTED: True}
+CLIENT = 'com.apple.security.network.client'
+BASE = {SANDBOX: True, SELECTED: True, CLIENT: True}
 
 
 class DemoPermissionTests(unittest.TestCase):
@@ -91,11 +92,17 @@ class DemoPermissionTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.check(dict(BASE, **{SANDBOX: value}), reject=True)
 
-    def test_network_permissions_are_rejected_even_when_provisioned(self):
-        for key in ['com.apple.security.network.client', 'com.apple.security.network.server']:
+    def test_network_server_is_rejected_even_when_provisioned(self):
+        for key in ['com.apple.security.network.server']:
             with self.subTest(key=key):
                 self.check(dict(BASE, **{key: True}), reject=True)
                 self.check(dict(self.signed, **{key: True}), provisioned=True, reject=True)
+
+    def test_network_client_is_required_and_boolean_true(self):
+        self.check({SANDBOX: True, SELECTED: True}, reject=True)
+        for value in [False, 0, 1, 'true']:
+            with self.subTest(value=value):
+                self.check(dict(BASE, **{CLIENT: value}), reject=True)
 
     def test_broad_file_and_persistent_access_are_rejected(self):
         extras = {
@@ -153,6 +160,7 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                 'keychain-access-groups': ['$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)'],
             }),
             'MarketDecision-UIHost.entitlements': {SANDBOX: True},
+            'MarketDecision-FileAcceptance.entitlements': {SANDBOX: True, SELECTED: True},
         }
         for filename, keys in expected.items():
             with self.subTest(filename=filename):
@@ -161,6 +169,8 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                 self.assertIs(actual[SANDBOX], True)
                 if SELECTED in keys:
                     self.assertIs(actual[SELECTED], True)
+                if CLIENT in keys:
+                    self.assertIs(actual[CLIENT], True)
 
     def test_host_debug_release_use_the_isolated_entitlement_file(self):
         project = (ROOT / 'App/MarketDecision.xcodeproj/project.pbxproj').read_text()
@@ -169,6 +179,7 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
             project, re.DOTALL)
         for bundle, expected in [
             ('local.marketdecision.ui-test-host', 'MarketDecision-UIHost.entitlements'),
+            ('local.marketdecision.file-acceptance', 'MarketDecision-FileAcceptance.entitlements'),
             ('local.marketdecision.development', 'MarketDecision.entitlements'),
         ]:
             with self.subTest(bundle=bundle):

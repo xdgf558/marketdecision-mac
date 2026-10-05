@@ -99,8 +99,14 @@ class SourceAccountingTests(unittest.TestCase):
         (self.root/'App/KeychainDiagnostic.swift').write_text('print(secret)')
         with self.assertRaises(TraceError): validate_log_boundary(self.root)
     def test_real_input_fingerprints_change_when_source_changes(self):
-        for name in ['Package.swift','Package.resolved','App/MarketDecision.xcodeproj/project.pbxproj','App/MarketDecision.entitlements']:
+        for name in ['Package.swift','Package.resolved','App/MarketDecision.xcodeproj/project.pbxproj','App/MarketDecision.entitlements',
+                     'App/MarketDecision-Signed.entitlements','App/MarketDecision-UIHost.entitlements','App/MarketDecision-FileAcceptance.entitlements']:
             path=self.root/name; path.parent.mkdir(parents=True,exist_ok=True); path.write_text('fixture')
+        before=input_hashes(self.root)
+        for name in ['MarketDecision-Signed.entitlements', 'MarketDecision-UIHost.entitlements', 'MarketDecision-FileAcceptance.entitlements']:
+            self.assertIn('App/' + name, before)
+        (self.root/'App/MarketDecision-FileAcceptance.entitlements').write_text('changed permission fixture')
+        self.assertNotEqual(before,input_hashes(self.root))
         before=input_hashes(self.root)
         (self.root/self.catalog['sources'][0]['path']).write_text('// changed')
         self.assertNotEqual(before,input_hashes(self.root))

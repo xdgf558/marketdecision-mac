@@ -55,6 +55,8 @@ public struct SECSubmissionRecord: ProviderRecord, Sendable, Codable, Equatable 
     public let filingDate: MarketDate
     public let reportDate: MarketDate?
     public let acceptedAt: Date?
+    /// An empty source field means the primary document is unavailable. Preserve it as
+    /// missing metadata; it is never a valid path or authorization to download a file.
     public let primaryDocument: String
     public let isAmendment: Bool
     public let provenance: Provenance
@@ -63,8 +65,11 @@ public struct SECSubmissionRecord: ProviderRecord, Sendable, Codable, Equatable 
                 filingDate: MarketDate, reportDate: MarketDate?, acceptedAt: Date?,
                 primaryDocument: String, isAmendment: Bool, provenance: Provenance) throws {
         guard SECCompanyIdentityRecord.validCIK(cik), Self.validAccession(accessionNumber),
-              nonblank(recordID), form.range(of: #"^[A-Za-z0-9][A-Za-z0-9\-]{0,15}(/A)?\z"#, options: .regularExpression) != nil,
-              Self.validFileName(primaryDocument), acceptedAt.map(finite) ?? true else {
+              nonblank(recordID), form.utf8.count <= 64,
+              form.range(of: #"^[A-Za-z0-9][A-Za-z0-9\-]*(?: [A-Za-z0-9][A-Za-z0-9\-]*)*(/A)?\z"#,
+                         options: .regularExpression) != nil,
+              primaryDocument.isEmpty || Self.validPrimaryDocumentPath(primaryDocument),
+              acceptedAt.map(finite) ?? true else {
             throw SECContractError.invalidFiling
         }
         _ = try filingDate.start(in: TimeZone(secondsFromGMT: 0)!)
@@ -85,14 +90,23 @@ public struct SECSubmissionRecord: ProviderRecord, Sendable, Codable, Equatable 
         value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._\-]{0,255}\z"#, options: .regularExpression) != nil
             && !value.contains("..")
     }
+    /// Submissions may identify a rendering wrapper through a relative path. Preserve
+    /// that metadata exactly; it does not authorize a filename-only download endpoint.
+    public static func validPrimaryDocumentPath(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.count <= 1_024 else { return false }
+        return value.split(separator: "/", omittingEmptySubsequences: false)
+            .allSatisfy { validFileName(String($0)) }
+    }
 }
 
 public struct SECFilingFile: Sendable, Codable, Equatable, Hashable {
     public let name: String
     public let type: String
-    public let size: Int
-    public init(name: String, type: String, size: Int) throws {
-        guard SECSubmissionRecord.validFileName(name), nonblank(type), size >= 0 else {
+    /// A missing SEC size is unknown, not an empty file. Existing numeric sizes retain
+    /// the same representation; this metadata is never a substitute for download limits.
+    public let size: Int?
+    public init(name: String, type: String, size: Int?) throws {
+        guard SECSubmissionRecord.validFileName(name), nonblank(type), size.map({ $0 >= 0 }) ?? true else {
             throw SECContractError.invalidFiling
         }
         self.name = name; self.type = type; self.size = size
@@ -152,6 +166,8 @@ public struct SECCompanyFactRecord: ProviderRecord, Sendable, Codable, Equatable
     public let cik: String
     public let taxonomy: String
     public let concept: String
+    /// Empty means the source supplied no display label. The taxonomy/concept remain
+    /// the field identity; they must not be substituted as an invented source label.
     public let label: String
     public let description: String
     public let unit: String
@@ -176,7 +192,7 @@ public struct SECCompanyFactRecord: ProviderRecord, Sendable, Codable, Equatable
                 fiscalPeriod: String?, frame: String?, dimensions: [String: String] = [:],
                 provenance: Provenance) throws {
         guard SECCompanyIdentityRecord.validCIK(cik), SECSubmissionRecord.validAccession(accessionNumber),
-              nonblank(recordID), nonblank(factID), Self.validName(taxonomy), Self.validName(concept), nonblank(label),
+              nonblank(recordID), nonblank(factID), Self.validName(taxonomy), Self.validName(concept),
               nonblank(unit), try Money(sourceValue) == value, nonblank(form),
               fiscalYear.map({ (1900...3000).contains($0) }) ?? true,
               dimensions.allSatisfy({ nonblank($0.key) && nonblank($0.value) }) else {

@@ -380,7 +380,9 @@ public extension BusinessDataStore {
             if documentInserted || records > 0 { try Self.secWriteRevision(nextRevision, db: db) }
             return (documentInserted ? 1 : 0, records)
         }
-        if changes.0 + changes.1 > 0 { currentRevision = nextRevision }
+        // A second store handle may predate another window's completed import. On a
+        // no-op use the baseline verified inside this transaction, never its actor cache.
+        currentRevision = changes.0 + changes.1 > 0 ? nextRevision : expectedRevision
         return SECIngestReceipt(insertedDocuments: changes.0, insertedRecords: changes.1, revision: currentRevision)
     }
 

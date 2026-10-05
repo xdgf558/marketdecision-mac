@@ -242,7 +242,7 @@ public actor ResearchTransferStore: ResearchTransferStorage {
             }
             return (try Self.revision(db), counts)
         }
-        return try retain(state:nil,revision:revision,operation:.clearBusiness,details:["清空本机全部业务记录与源缓存；不删除 Keychain 或外部备份文件。不承诺 SSD 物理擦除。"]+details)
+        return try retain(state:nil,revision:revision,operation:.clearBusiness,details:["仅清空合成研究工作区的业务记录与源缓存；不删除 SEC 财报库、离线摘录库、Keychain 或外部备份文件。不承诺 SSD 物理擦除。"]+details)
     }
     private func retain(state: ResearchArchiveState?, revision: UUID, operation: ResearchTransferOperation, details: [String]) throws -> ResearchTransferPlan {
         guard plans.count < 16 else { throw SnapshotError.resourceLimit }

@@ -32,6 +32,11 @@ import SecuritySupport
         return try await environment.makeOfflineIssuerWorkspace()
     }
 
+    public func makeSECResearchWorkspace(networkAvailable: Bool) async throws -> SECResearchWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try await environment.makeSECResearchWorkspace(networkAvailable: networkAvailable)
+    }
+
     /// False means this invocation did not complete a refresh, including busy/cancelled calls.
     /// A prior quote never makes a failed invocation successful.
     @discardableResult public func refresh() async -> Bool {
