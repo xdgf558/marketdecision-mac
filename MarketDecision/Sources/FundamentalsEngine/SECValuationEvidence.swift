@@ -176,8 +176,18 @@ public struct SECValuationInputEvidence: Sendable, Codable {
         self.splitBasis = splitBasis; self.prices = prices
     }
     var anchors: [SECValuationSourceAnchor] {
-        (industryReview?.anchors ?? []) + (shareClasses?.completenessAnchors ?? [])
-            + (shareClasses?.classes.flatMap { [$0.countAnchor] + $0.identityAnchors } ?? []) + (splitBasis?.anchors ?? [])
+        // Explicit accumulation also type-checks on the supported Swift 6.1 toolchain.
+        var result: [SECValuationSourceAnchor] = []
+        result.append(contentsOf: industryReview?.anchors ?? [])
+        if let shareClasses {
+            result.append(contentsOf: shareClasses.completenessAnchors)
+            for share in shareClasses.classes {
+                result.append(share.countAnchor)
+                result.append(contentsOf: share.identityAnchors)
+            }
+        }
+        result.append(contentsOf: splitBasis?.anchors ?? [])
+        return result
     }
     func validate(accounting: SECFinancialReport, executionDate: Date) throws {
         try industryReview?.validate(); try shareClasses?.validate(); try splitBasis?.validate()

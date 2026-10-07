@@ -804,9 +804,16 @@ struct SECResearchContent: View {
     }
     private func valuationEvidence(_ document: SECValuationSupplementDocument) -> some View {
         let evidence = document.valuation.evidence
-        let anchors = (evidence.industryReview?.anchors ?? []) + (evidence.shareClasses?.completenessAnchors ?? [])
-            + (evidence.shareClasses?.classes.flatMap { [$0.countAnchor] + $0.identityAnchors } ?? [])
-            + (evidence.splitBasis?.anchors ?? [])
+        var anchors: [SECValuationSourceAnchor] = []
+        anchors.append(contentsOf: evidence.industryReview?.anchors ?? [])
+        if let shares = evidence.shareClasses {
+            anchors.append(contentsOf: shares.completenessAnchors)
+            for share in shares.classes {
+                anchors.append(share.countAnchor)
+                anchors.append(contentsOf: share.identityAnchors)
+            }
+        }
+        anchors.append(contentsOf: evidence.splitBasis?.anchors ?? [])
         return DisclosureGroup("冻结证据与报告绑定") {
             VStack(alignment: .leading, spacing: 8) {
                 Text("财务报告 SHA-256：" + document.parentFinancialReportHash)
