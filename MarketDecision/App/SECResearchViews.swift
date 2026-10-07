@@ -205,14 +205,19 @@ struct SECResearchContent: View {
         }
     }
     private var saved: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        LazyVStack(alignment: .leading, spacing: 12) {
+            Text("列表仅载入版本摘要；打开后检查冻结内容，显式重算核对后才显示标准化数值。")
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("secSavedSummaryNotice")
             Button("重新载入列表") { Task { await model.load() } }.disabled(model.isBusy)
             if let error = model.listError { Text(error).foregroundStyle(.red) }
             ForEach(model.saved, id: \.id) { item in
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(item.ticker + " · " + item.identity.name)
+                        Text(item.ticker + " · " + item.companyName)
                         Text(item.cutoff.formatted(date: .numeric, time: .standard)).font(.caption).foregroundStyle(.secondary)
+                        Text("\(item.sourceCount) 份来源 · \(item.factCount) 条事实")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("打开") { Task { await model.open(item.id) } }.disabled(model.isBusy)

@@ -52,27 +52,33 @@ private struct SECWorkspaceSensitiveFailure: LocalizedError {
 
 private actor SECWorkspaceStorage: SECResearchWorkspaceStorage {
     var records: [SECResearchDocument]
+    var summaries: [SECResearchSummary]
     var listReads = 0, openReads = 0
+    var openedIDs: [UUID] = []
     private var listFails = false
     private var listGate: SECWorkspaceGate?
     private var openGate: SECWorkspaceGate?
-    init(records: [SECResearchDocument] = []) { self.records = records }
-    func savedResearch() async throws -> [SECResearchDocument] {
+    init(records: [SECResearchDocument] = [], summaries: [SECResearchSummary]? = nil) {
+        self.records = records
+        self.summaries = summaries ?? records.map(SECResearchSummary.init(document:))
+    }
+    func savedResearch() async throws -> [SECResearchSummary] {
         listReads += 1
-        let result = records, failing = listFails, gate = listGate
+        let result = summaries, failing = listFails, gate = listGate
         listGate = nil
         if let gate { await gate.hold() }
         if failing { throw SECWorkspaceFailure.injected }
         return result
     }
     func open(id: UUID) async throws -> SECResearchDocument {
-        openReads += 1
+        openReads += 1; openedIDs.append(id)
         let result = records.first { $0.id == id }, gate = openGate
         openGate = nil
         if let gate { await gate.hold() }
         guard let result else { throw SnapshotError.missingReference }
         return result
     }
+    func replaceSummaries(_ rows: [SECResearchSummary]) { summaries = rows }
     func configure(listFails: Bool = false, listGate: SECWorkspaceGate? = nil,
                    openGate: SECWorkspaceGate? = nil) {
         self.listFails = listFails; self.listGate = listGate; self.openGate = openGate
@@ -80,7 +86,7 @@ private actor SECWorkspaceStorage: SECResearchWorkspaceStorage {
 }
 
 private enum SECWorkspaceImportOutcome: Sendable {
-    case document(SECResearchDocument), sensitiveFailure, rateLimited
+    case document(SECResearchDocument), sensitiveFailure, rateLimited, importInProgress
 }
 
 private struct SECWorkspaceImportAction: Sendable {
@@ -110,8 +116,19 @@ private actor SECWorkspaceImporter {
         case let .document(document): return document
         case .sensitiveFailure: throw SECWorkspaceSensitiveFailure(probe: descriptionProbe)
         case .rateLimited: throw ProviderFailure.rateLimited
+        case .importInProgress: throw SECResearchError.importInProgress
         }
     }
+}
+
+private func secWorkspaceCopy(_ document: SECResearchDocument) throws -> SECResearchDocument {
+    // A distinct frozen version with the same valid source content, without another provider run.
+    var json = try #require(JSONSerialization.jsonObject(with: ResearchDocument.encoded(document)) as? [String: Any])
+    json["id"] = UUID().uuidString
+    let copy = try JSONDecoder().decode(SECResearchDocument.self,
+        from: JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]))
+    try copy.validate()
+    return copy
 }
 
 @MainActor private func secWorkspace(_ storage: any SECResearchWorkspaceStorage,
@@ -140,6 +157,81 @@ private actor SECWorkspaceImporter {
         #expect(model.document == nil && model.progress == nil && !model.canDisplayValues)
         #expect(await importer.calls == 0)
         #expect(await storage.openReads == 0)
+    }
+
+    @Test func summaryOnlyStorageListsWithoutOpeningOrRetainingDocuments() async throws {
+        let document = try await SECWorkspaceDocumentCache.shared.document()
+        let summary = SECResearchSummary(document: document)
+        // The store exposes metadata but has no document available to open. Listing must not
+        // ask for its source bytes or use the row as a verified financial document.
+        let storage = SECWorkspaceStorage(summaries: [summary]), importer = SECWorkspaceImporter()
+        let model = secWorkspace(storage, importer: importer)
+        await model.load()
+        #expect(model.saved == [summary])
+        #expect(model.saved.first?.companyName == document.identity.name)
+        #expect(model.saved.first?.sourceCount == document.sources.count)
+        #expect(model.saved.first?.factCount == document.facts.count)
+        #expect(model.document == nil && !model.canDisplayValues)
+        #expect(await storage.listReads == 1)
+        #expect(await storage.openedIDs.isEmpty)
+        #expect(await importer.calls == 0)
+    }
+
+    @Test func openingOneSummaryRequestsOnlySelectedDocument() async throws {
+        let first = try await SECWorkspaceDocumentCache.shared.document()
+        let second = try secWorkspaceCopy(first)
+        let storage = SECWorkspaceStorage(records: [first, second]), importer = SECWorkspaceImporter()
+        let model = secWorkspace(storage, importer: importer)
+        await model.load()
+        #expect(await storage.openedIDs.isEmpty)
+        await model.open(second.id)
+        #expect(await storage.openedIDs == [second.id])
+        #expect(await storage.listReads == 1)
+        #expect(model.document?.id == second.id && model.saved.count == 2)
+        #expect(!model.canDisplayValues && model.recomputationState == .notVerified)
+        #expect(await importer.calls == 0)
+    }
+
+    @Test func cancelledOpenCannotPublishOrReleaseNewSelectedOpen() async throws {
+        let first = try await SECWorkspaceDocumentCache.shared.document()
+        let second = try secWorkspaceCopy(first)
+        let oldGate = SECWorkspaceGate(), newGate = SECWorkspaceGate()
+        let storage = SECWorkspaceStorage(records: [first, second]), model = secWorkspace(storage)
+        await model.load()
+        await storage.configure(openGate: oldGate)
+        let old = Task { await model.open(first.id) }
+        await oldGate.waitUntilEntered()
+        model.cancel()
+        await storage.configure(openGate: newGate)
+        let current = Task { await model.open(second.id) }
+        await newGate.waitUntilEntered()
+        await oldGate.release(); await old.value
+        #expect(model.isBusy && model.document == nil && !model.canDisplayValues)
+        #expect(model.message == nil && !model.hasError)
+        await newGate.release(); await current.value
+        #expect(model.document?.id == second.id && !model.isBusy)
+        #expect(!model.canDisplayValues && model.recomputationState == .notVerified)
+        #expect(await storage.openedIDs == [first.id, second.id])
+    }
+
+    @Test func cancelledSummaryReadCannotReplaceRefreshedList() async throws {
+        let first = try await SECWorkspaceDocumentCache.shared.document()
+        let second = try secWorkspaceCopy(first)
+        let gate = SECWorkspaceGate()
+        let storage = SECWorkspaceStorage(summaries: [SECResearchSummary(document: first)])
+        let model = secWorkspace(storage)
+        await storage.configure(listGate: gate)
+        let old = Task { await model.load() }
+        await gate.waitUntilEntered()
+        model.cancel()
+        let current = SECResearchSummary(document: second)
+        await storage.replaceSummaries([current])
+        await model.load()
+        await gate.release(); await old.value
+        #expect(model.saved == [current] && model.listError == nil)
+        #expect(model.document == nil && !model.canDisplayValues && !model.isBusy)
+        #expect(model.message == nil && !model.hasError)
+        #expect(await storage.openedIDs.isEmpty)
     }
 
     @Test func disabledNetworkAndInvalidContactNeverCallImporter() async throws {
@@ -237,6 +329,27 @@ private actor SECWorkspaceImporter {
         #expect(model.hasError && !model.isBusy && model.document == nil)
         #expect(model.message == "导入未完成；请检查访问配置或稍后重试。已接收的源页可能保留，不代表整次导入成功。")
         #expect(importer.descriptionProbe.count() == 0)
+    }
+
+    @Test func concurrentImportRejectionExplainsBusyWindowAndKeepsListReadable() async throws {
+        let document = try await SECWorkspaceDocumentCache.shared.document()
+        let storage = SECWorkspaceStorage(records: [document])
+        let importer = SECWorkspaceImporter([.init(.importInProgress)])
+        let model = secWorkspace(storage, importer: importer)
+        await model.load()
+        await model.open(document.id)
+        await model.recompute()
+        #expect(model.canDisplayValues)
+        let pending = try #require(model.startImport(email: "researcher@example.invalid"))
+        await pending.value
+        #expect(model.hasError && !model.isBusy && model.document == nil && !model.canDisplayValues)
+        #expect(model.message == "另一个窗口正在导入 SEC 财报；请等待导入完成或取消结束后重试。已保存列表仍可查看。")
+        #expect(model.saved.map(\.id) == [document.id] && model.listError == nil)
+        #expect(await importer.calls == 1)
+        await model.load()
+        #expect(model.saved.map(\.id) == [document.id] && model.listError == nil && !model.isBusy)
+        await model.open(document.id)
+        #expect(model.document?.id == document.id && !model.canDisplayValues)
     }
 
     @Test func rateLimitIsVisibleAsFailureWithoutAutomaticRetry() async throws {

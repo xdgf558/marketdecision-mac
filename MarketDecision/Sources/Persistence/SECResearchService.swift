@@ -251,43 +251,32 @@ public actor SECResearchStore {
         }
     }
     func save(_ document: SECResearchDocument, expectedRevision: UUID) async throws {
+        try Task.checkCancellation()
         try document.validate()
         let bytes = try ResearchDocument.encoded(document)
-        let object = FrozenObject(identity: .init(id: document.id.uuidString.lowercased(), version: "sec-research.v1"),
-            kind: .result, payload: .string(bytes.base64EncodedString()), references: [], capturedAt: try MillisecondInstant(rounding: document.cutoff),
-            permission: .init(mayStore: true, mayBackup: false, evidenceReference: "sec-research.local-only.v1"), synthetic: false)
-        let root = SnapshotRoot(identity: object.identity, kind: .analysisRun,
-            references: [.init(role: "sec-research", target: object.identity, contentHash: try object.contentHash())])
         try Task.checkCancellation()
-        try await business.freeze(.init(sourceNamespace: document.id, objects: [object], roots: [root]), expectedRevision: expectedRevision)
-    }
-    public func savedResearch() throws -> [SECResearchDocument] {
-        _ = try writeRevision()
-        let graph = try database.read(BusinessDataStore.loadGraph)
-        guard graph.objects.count == graph.roots.count else { throw BusinessStoreError.corruptedStorage }
-        var documents: [SECResearchDocument] = []
-        for (rootAddress, stored) in graph.roots {
-            guard stored.root.kind == .analysisRun, stored.root.references.count == 1, let address = stored.targets["sec-research"],
-                  let object = graph.objects[address]?.object,
-                  object.identity.version == "sec-research.v1", object.kind == .result, object.references.isEmpty, !object.synthetic,
-                  object.permission.mayStore, !object.permission.mayBackup,
-                  object.permission.evidenceReference == "sec-research.local-only.v1",
-                  case let .string(encoded) = object.payload, let bytes = Data(base64Encoded: encoded) else {
-                throw BusinessStoreError.corruptedStorage
-            }
-            let document = try JSONDecoder().decode(SECResearchDocument.self, from: bytes)
-            try document.validate()
-            guard document.id == address.namespace, document.id == rootAddress.namespace,
-                  rootAddress.identity == object.identity,
-                  object.identity.id == document.id.uuidString.lowercased() else { throw BusinessStoreError.corruptedStorage }
-            documents.append(document)
+        try database.transaction { db in
+            try Task.checkCancellation()
+            try BusinessDataStore.checkRevision(expectedRevision, db: db)
+            try SECResearchStorage.insert(document, bytes: bytes, db: db)
+            try Task.checkCancellation()
+            try BusinessDataStore.writeRevision(UUID(), db: db)
         }
-        guard Set(documents.map(\.id)).count == documents.count else { throw BusinessStoreError.corruptedStorage }
-        return documents.sorted { $0.cutoff == $1.cutoff ? $0.id.uuidString < $1.id.uuidString : $0.cutoff > $1.cutoff }
     }
+
+    /// Catalog summaries only; this is not a full-database integrity check. Previously
+    /// unindexed PR42 records are validated individually before their summaries appear.
+    public func savedResearch() throws -> [SECResearchSummary] {
+        _ = try writeRevision()
+        try SECResearchStorage.indexLegacyDocuments(database)
+        return try database.read { db in try SECResearchStorage.summaries(db) }
+    }
+
+    /// Only the selected immutable version and its retained source bytes are decoded.
     public func open(id: UUID) throws -> SECResearchDocument {
-        guard let document = try savedResearch().first(where: { $0.id == id }) else { throw SnapshotError.missingReference }
-        return document
+        _ = try writeRevision()
+        try Task.checkCancellation()
+        return try database.read { db in try SECResearchStorage.open(id: id, db: db) }
     }
 
     /// No-op acquisitions keep the original row/reference. Check every requested record by
@@ -339,7 +328,7 @@ public actor SECResearchStore {
 
 public protocol SECResearchServicing: Sendable {
     func importCompany(ticker: String, progress: @escaping @Sendable (SECResearchProgress) async -> Void) async throws -> SECResearchDocument
-    func savedResearch() async throws -> [SECResearchDocument]
+    func savedResearch() async throws -> [SECResearchSummary]
     func open(id: UUID) async throws -> SECResearchDocument
 }
 
@@ -354,13 +343,22 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
     private let client: FundamentalsDataClient<Provider>
     private let store: SECResearchStore
     private let now: @Sendable () -> Date
+    private let sourceByteLimit: Int
     private var importing = false
 
     public init(client: FundamentalsDataClient<Provider>, store: SECResearchStore,
                 now: @escaping @Sendable () -> Date = Date.init) {
         self.client = client; self.store = store; self.now = now
+        self.sourceByteLimit = 128 * 1_024 * 1_024
     }
-    public func savedResearch() async throws -> [SECResearchDocument] { try await store.savedResearch() }
+    /// Tests can lower the existing acquisition budget without allocating hundreds of MiB.
+    /// This is not a public configuration and cannot raise the production limit.
+    init(client: FundamentalsDataClient<Provider>, store: SECResearchStore,
+         now: @escaping @Sendable () -> Date, sourceByteLimit: Int) throws {
+        guard (1...(128 * 1_024 * 1_024)).contains(sourceByteLimit) else { throw SECResearchError.limitExceeded }
+        self.client = client; self.store = store; self.now = now; self.sourceByteLimit = sourceByteLimit
+    }
+    public func savedResearch() async throws -> [SECResearchSummary] { try await store.savedResearch() }
     public func open(id: UUID) async throws -> SECResearchDocument { try await store.open(id: id) }
 
     public func importCompany(ticker: String, progress: @escaping @Sendable (SECResearchProgress) async -> Void) async throws -> SECResearchDocument {
@@ -373,17 +371,24 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
         try Task.checkCancellation()
         var revision = try await store.writeRevision()
         let business = store.business
-        var pages = 0, records = 0
+        var pages = 0, records = 0, acceptedSourceBytes = 0
         var sources: [SECResearchSource] = []
         var newlyRetainedSources = Set<String>()
         func snapshot(_ stage: SECResearchStage) -> SECResearchProgress {
             .init(stage: stage, acceptedPages: pages, acceptedRecords: records)
         }
+        // Check before ingest: a rejected page must not become an extra retained source.
+        // Earlier committed pages remain. This is a per-acquisition source budget, not
+        // a process-memory or lifetime database-size bound.
+        func reserveSource<Item>(_ accepted: AcceptedProviderPayload<Item>) throws {
+            let count = accepted.rawPayload.bytes.count
+            guard pages < 40, count <= sourceByteLimit - acceptedSourceBytes else { throw SECResearchError.limitExceeded }
+            acceptedSourceBytes += count
+        }
         func received<Item>(_ accepted: AcceptedProviderPayload<Item>, receipt: SECIngestReceipt) throws {
             pages += 1; records += accepted.exchange.result.items.count; revision = receipt.revision
             sources.append(.init(accepted))
             if receipt.insertedDocuments > 0 { newlyRetainedSources.insert(accepted.rawPayload.reference) }
-            guard sources.reduce(0, { $0 + $1.bytes.count }) <= 128 * 1_024 * 1_024 else { throw SECResearchError.limitExceeded }
         }
         await progress(snapshot(.identity))
         let identityPage = try await client.companyIdentity(request(.companyIdentity, resource: ticker))
@@ -391,6 +396,7 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
         guard identityPage.exchange.result.items.count == 1, let identity = identityPage.exchange.result.items.first,
               identity.listings.contains(where: { $0.ticker == ticker }) else { throw SECResearchError.identityUnavailable }
         try Task.checkCancellation()
+        try reserveSource(identityPage)
         try received(identityPage, receipt: await business.ingestSECIdentities(identityPage, expectedRevision: revision))
 
         var submissions: [SECSubmissionRecord] = [], submissionVersions: [String: String] = [:]
@@ -420,6 +426,7 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
                 }
             }
             try Task.checkCancellation()
+            try reserveSource(accepted)
             try received(accepted, receipt: await business.ingestSECSubmissions(accepted, expectedRevision: revision))
         }
         await progress(snapshot(.companyFacts))
@@ -427,6 +434,7 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
         try validatePage(factPage, permitsContinuations: false)
         guard factPage.exchange.result.items.allSatisfy({ $0.cik == identity.cik }) else { throw SECResearchError.mismatchedIssuer }
         try Task.checkCancellation()
+        try reserveSource(factPage)
         try received(factPage, receipt: await business.ingestSECCompanyFacts(factPage, expectedRevision: revision))
         var indexes: [SECFilingIndexRecord] = [], documents: [SECFilingDocumentRecord] = []
         // These are the most recently filed annual and quarterly reports, not every historical
@@ -450,6 +458,7 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
                   index.cik == identity.cik, index.accessionNumber == submission.accessionNumber,
                   index.files.contains(where: { $0.name == submission.primaryDocument }) else { throw SECResearchError.missingPrimaryDocument }
             try Task.checkCancellation()
+            try reserveSource(indexPage)
             try received(indexPage, receipt: await business.ingestSECFilingIndex(indexPage, expectedRevision: revision))
             indexes.append(index)
             await progress(snapshot(.filingDocument))
@@ -459,6 +468,7 @@ where Provider.Identity == SECCompanyIdentityRecord, Provider.Submission == SECS
                   document.cik == identity.cik, document.accessionNumber == submission.accessionNumber,
                   document.fileName == submission.primaryDocument else { throw SECResearchError.missingPrimaryDocument }
             try Task.checkCancellation()
+            try reserveSource(documentPage)
             try received(documentPage, receipt: await business.ingestSECFilingDocument(documentPage, expectedRevision: revision))
             documents.append(document)
         }
