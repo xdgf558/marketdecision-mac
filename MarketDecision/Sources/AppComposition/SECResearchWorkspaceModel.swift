@@ -22,7 +22,7 @@ public struct SECContactIdentity: Sendable {
 }
 
 public protocol SECResearchWorkspaceStorage: Sendable {
-    func savedResearch() async throws -> [SECResearchDocument]
+    func savedResearch() async throws -> [SECResearchSummary]
     func open(id: UUID) async throws -> SECResearchDocument
 }
 extension SECResearchStore: SECResearchWorkspaceStorage {}
@@ -36,7 +36,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public private(set) var ticker = "MSFT"
     public let networkAvailable: Bool
     public private(set) var document: SECResearchDocument?
-    public private(set) var saved: [SECResearchDocument] = []
+    public private(set) var saved: [SECResearchSummary] = []
     public private(set) var progress: SECResearchProgress?
     public private(set) var isBusy = false
     public private(set) var message: String?
@@ -180,6 +180,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     private static func failureMessage(_ error: any Error) -> String {
         // Only closed typed categories; never render provider descriptions, request headers or URLs.
         switch error {
+        case SECResearchError.importInProgress: "另一个窗口正在导入 SEC 财报；请等待导入完成或取消结束后重试。已保存列表仍可查看。"
         case ProviderFailure.rateLimited: "SEC 暂时限流，导入未完成；请稍后手动重试，已接收的源页可能保留。"
         case ProviderFailure.symbolUnavailable: "未找到所选代码或申报文件；导入未完成。"
         default: "导入未完成；请检查访问配置或稍后重试。已接收的源页可能保留，不代表整次导入成功。"

@@ -30,6 +30,7 @@ public struct DatabaseStore: Sendable {
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
         guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
         let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
+            + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration] : [])
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -63,6 +64,39 @@ public struct DatabaseStore: Sendable {
     /// One database transaction; throws rolls back all statements in the closure.
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
+
+    // WITHOUT ROWID stores a large BLOB in the primary-key B-tree record. Even a
+    // metadata-only key lookup can copy that complete record for key comparison.
+    // Dedicated covering indexes let list/presence checks avoid those body pages.
+    // This additive upgrade changes no saved document, hash or business revision.
+    private static let secResearchMetadataIndexMigration = DatabaseMigration(identifier: "sec-research.storage.v2") { db in
+        try db.execute(sql: "CREATE INDEX sec_research_document_ids ON sec_research_documents(document_id)")
+        try db.execute(sql: """
+            CREATE INDEX sec_research_legacy_object_metadata ON p1_snapshot_objects
+            (namespace, object_id, object_version, source_namespace, source_object_id, source_object_version)
+            """)
+    }
+
+    // A SEC-only additive index/storage format. Legacy FrozenObject rows are retained
+    // byte-for-byte and indexed lazily, one document at a time, by SECResearchStorage.
+    private static let secResearchCatalogMigration = DatabaseMigration(identifier: "sec-research.storage.v1") { db in
+        try db.execute(sql: """
+            CREATE TABLE sec_research_catalog (
+                document_id TEXT PRIMARY KEY NOT NULL,
+                storage_kind TEXT NOT NULL CHECK(storage_kind IN ('legacy', 'blob')),
+                document_hash TEXT NOT NULL CHECK(length(document_hash) = 64),
+                summary_hash TEXT NOT NULL CHECK(length(summary_hash) = 64),
+                summary_json BLOB NOT NULL
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: """
+            CREATE TABLE sec_research_documents (
+                document_id TEXT PRIMARY KEY NOT NULL,
+                document_json BLOB NOT NULL,
+                FOREIGN KEY(document_id) REFERENCES sec_research_catalog(document_id) ON DELETE RESTRICT
+            ) WITHOUT ROWID
+            """)
+    }
 
     private static let phase1ResearchTransferMigration = DatabaseMigration(identifier:"business.p1.v6") { db in
         try db.execute(sql:"CREATE TABLE p1_watchlist_conflicts (content_hash TEXT PRIMARY KEY NOT NULL, entry_json BLOB NOT NULL)")

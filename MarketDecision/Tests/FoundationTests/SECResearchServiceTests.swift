@@ -93,7 +93,7 @@ private func classificationFixture(_ original: SECCompanyFactRecord, start: Mark
         from: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))
 }
 
-private func researchService(database: DatabaseStore, responses: [HTTPPayload], pauseAt: Int? = nil) throws
+private func researchService(database: DatabaseStore, responses: [HTTPPayload], pauseAt: Int? = nil, sourceByteLimit: Int? = nil) throws
     -> (SECResearchService<SECEdgarProvider<ResearchSECTransport, ResearchSECGate>>, SECResearchStore, ResearchSECTransport) {
     let transport = ResearchSECTransport(responses, pauseAt: pauseAt)
     let provider = try SECEdgarProvider(userAgent: "MarketDecisionTests/1.0 synthetic@example.invalid",
@@ -103,7 +103,14 @@ private func researchService(database: DatabaseStore, responses: [HTTPPayload], 
         capabilities: provider.capabilitySnapshot.capabilities, usages: [.replay],
         validFrom: secResearchNow.addingTimeInterval(-100), validThrough: secResearchNow.addingTimeInterval(100))
     let store = try SECResearchStore(database: database)
-    return (SECResearchService(client: .init(provider: provider, entitlement: entitlement), store: store, now: { secResearchNow }), store, transport)
+    let client = FundamentalsDataClient(provider: provider, entitlement: entitlement)
+    let service: SECResearchService<SECEdgarProvider<ResearchSECTransport, ResearchSECGate>>
+    if let sourceByteLimit {
+        service = try SECResearchService(client: client, store: store, now: { secResearchNow }, sourceByteLimit: sourceByteLimit)
+    } else {
+        service = SECResearchService(client: client, store: store, now: { secResearchNow })
+    }
+    return (service, store, transport)
 }
 
 /// Shared synthetic builder for the model suite: no network, no expected-answer resources.
@@ -114,6 +121,55 @@ func secResearchFixtureDocument() async throws -> SECResearchDocument {
 }
 
 @Suite struct SECResearchServiceTests {
+
+    @Test func sourceBudgetRejectsNextPageBeforeItsSourceOrRecordsAreWritten() async throws {
+        let db = try DatabaseStore(path: ":memory:", purpose: .secResearch)
+        let responses = minimalSECResponses()
+        let limit = responses[0].body.count + responses[1].body.count - 1
+        let (service, store, transport) = try researchService(database: db, responses: responses, sourceByteLimit: limit)
+        await #expect(throws: SECResearchError.limitExceeded) {
+            try await service.importCompany(ticker: "AAPL", progress: { _ in })
+        }
+        #expect(await transport.count() == 2)
+        #expect(try await store.business.counts().sourceDocuments == 1)
+        #expect(try await store.savedResearch().isEmpty)
+        let retainedBytes = try db.read { try Int.fetchOne($0, sql: "SELECT SUM(length(payload)) FROM p1_source_documents") }
+        #expect(retainedBytes == responses[0].body.count)
+        #expect(try db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM p1_sec_facts") } == 0)
+    }
+
+    @Test func sourceBudgetAllowsExactBoundaryAndCannotBeRaisedByFixture() async throws {
+        let db = try DatabaseStore(path: ":memory:", purpose: .secResearch)
+        let responses = minimalSECResponses()
+        let limit = responses.reduce(0) { $0 + $1.body.count }
+        let (service, store, _) = try researchService(database: db, responses: responses, sourceByteLimit: limit)
+        let document = try await service.importCompany(ticker: "AAPL", progress: { _ in })
+        #expect(document.sources.reduce(0) { $0 + $1.bytes.count } == limit)
+        #expect(try await store.savedResearch().map(\.id) == [document.id])
+        #expect(throws: SECResearchError.limitExceeded) {
+            _ = try researchService(database: db, responses: responses, sourceByteLimit: 128 * 1_024 * 1_024 + 1)
+        }
+        #expect(throws: SECResearchError.limitExceeded) {
+            _ = try researchService(database: db, responses: responses, sourceByteLimit: 0)
+        }
+    }
+
+    @Test func cancellationRetainsOnlyCommittedPagesAndAnExplicitRetryCanFinish() async throws {
+        let db = try DatabaseStore(path: ":memory:", purpose: .secResearch)
+        let (service, store, transport) = try researchService(database: db, responses: minimalSECResponses(), pauseAt: 2)
+        let task = Task { try await service.importCompany(ticker: "AAPL", progress: { _ in }) }
+        await transport.waitUntilPaused()
+        #expect(try await store.business.counts().sourceDocuments == 1)
+        task.cancel()
+        await transport.release()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(try await store.business.counts().sourceDocuments == 1)
+        #expect(try await store.savedResearch().isEmpty)
+        let (retry, _, _) = try researchService(database: db, responses: minimalSECResponses())
+        let document = try await retry.importCompany(ticker: "AAPL", progress: { _ in })
+        #expect(try await store.savedResearch().map(\.id) == [document.id])
+    }
+
     @Test func periodClassificationPreservesInclusiveThresholdsLeapDaysAndYearCrossings() async throws {
         let document = try await secResearchFixtureDocument()
         let original = try #require(document.facts.first)
