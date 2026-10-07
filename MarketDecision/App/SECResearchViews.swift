@@ -640,21 +640,8 @@ struct SECResearchContent: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("本次捕获的价格参考").font(.headline)
             if let price = capturedPrice, let selectedPrice = price.selectedPrice {
-                Text(price.record.symbol + " · 股类 " + price.classID + " · "
-                    + (price.selectedSide == .bid ? "买方报价 Bid " : "卖方报价 Ask ")
-                    + selectedPrice.decimalString + " USD").textSelection(.enabled)
-                Text("接收 " + price.capturedAt.formatted(date: .numeric, time: .standard)
-                     + " · Alpaca / IEX · 历史可用时刻未知")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("将这份捕获报价加入本次补充报告", isOn: $includeCapturedPrice)
-                    .disabled(model.isBusy || !canSelectCapturedPrice)
-                    .accessibilityIdentifier("secIncludeCapturedPrice")
-                if !canSelectCapturedPrice {
-                    Text("须与当前财务报告的股票代码一致，并在上方提交相同股类标识与代码；不会自动匹配或代填股类。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Text("选择只冻结这一份报价及来源证据。单份报价不替代完整股类价格，也不加入历史估值、评分历史或账本。")
-                    .font(.caption).foregroundStyle(.secondary)
+                capturedPriceDetails(price, selectedPrice: selectedPrice)
+                capturedPriceControls
             } else {
                 Text("尚无满足当前参考条件的捕获报价。可以先生成保留价格缺项的报告。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -662,6 +649,31 @@ struct SECResearchContent: View {
             Button("前往行情参考") { section = "行情参考" }.disabled(model.isBusy)
         }.padding(.vertical, 4)
     }
+
+    private func capturedPriceDetails(_ price: SECValuationPriceEvidence, selectedPrice: Money) -> some View {
+        let side: String = price.selectedSide == .bid ? "买方报价 Bid " : "卖方报价 Ask "
+        let priceText: String = "\(price.record.symbol) · 股类 \(price.classID) · \(side)\(selectedPrice.decimalString) USD"
+        let receivedText: String = "接收 \(price.capturedAt.formatted(date: .numeric, time: .standard)) · Alpaca / IEX · 历史可用时刻未知"
+        return Group {
+            Text(priceText).textSelection(.enabled)
+            Text(receivedText).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var capturedPriceControls: some View {
+        Group {
+            Toggle("将这份捕获报价加入本次补充报告", isOn: $includeCapturedPrice)
+                .disabled(model.isBusy || !canSelectCapturedPrice)
+                .accessibilityIdentifier("secIncludeCapturedPrice")
+            if !canSelectCapturedPrice {
+                Text("须与当前财务报告的股票代码一致，并在上方提交相同股类标识与代码；不会自动匹配或代填股类。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("选择只冻结这一份报价及来源证据。单份报价不替代完整股类价格，也不加入历史估值、评分历史或账本。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var industryEvidenceForm: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("行业适用性").font(.headline)

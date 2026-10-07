@@ -172,42 +172,54 @@ struct EquityResearchContent: View {
     private func capture(_ result: EquityResearchCapture) -> some View {
         GroupBox("本次捕获 · " + result.symbol) {
             VStack(alignment: .leading, spacing: 12) {
-                if let price = result.quoteEvidence, let selectedPrice = price.selectedPrice {
-                    Text((price.selectedSide == .bid ? "选定买方报价 Bid：" : "选定卖方报价 Ask：")
-                        + selectedPrice.decimalString + " USD").font(.headline).monospacedDigit()
-                    Text("股类 " + price.classID + " · 源时刻 " + price.record.sourceTimestamp)
-                        .font(.caption).textSelection(.enabled)
-                    Text("接收 " + price.capturedAt.formatted(date: .numeric, time: .standard)
-                        + " · 历史公开可用时刻未知")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("只有在“估值与评分”中再次勾选才会加入补充报告；切换父报告或来源会清除勾选。")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("本次报价未满足当前参考条件，不能选入补充报告。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
+                capturedQuoteSummary(result.quoteEvidence)
                 Text("Alpaca / IEX · 单交易所、非合并 NBBO · 原始未复权口径 · 不用于成交、实时分析或历史 PIT")
                     .font(.caption).foregroundStyle(.secondary)
-                if let record = result.pages.first(where: { $0.request.capability == .quote })?.records.first,
-                   let quote = record.quote {
-                    Text("原报价 Bid " + quote.bid.decimalString + " / Ask " + quote.ask.decimalString
-                        + " USD；数量 " + quote.bidSize.decimalString + " / " + quote.askSize.decimalString + " round lots")
-                        .font(.callout).monospacedDigit().textSelection(.enabled)
-                }
-                let dailyPages = result.pages.filter { $0.request.capability == .bars }
-                if !dailyPages.isEmpty {
-                    Text("原始日线：\(result.dailyBarCount) 条、\(dailyPages.count) 页 · "
-                        + (result.dailyBarsComplete ? "本次分页读取完毕" : "部分数据：达到分页上限，仍有后续页"))
-                        .font(.callout).foregroundStyle(result.dailyBarsComplete ? Color.secondary : Color.orange)
-                    Text("分页完毕只表示此次请求没有后续页，不证明每个交易日齐全或历史数据合格。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                capturedRawQuote(result)
+                capturedDailyStatus(result)
                 ForEach(Array(result.pages.enumerated()), id: \.element.request.id) { index, page in
                     capturedPage(page, number: index + 1)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
         }.accessibilityIdentifier("equityCaptureResult")
     }
+
+    @ViewBuilder private func capturedQuoteSummary(_ evidence: SECValuationPriceEvidence?) -> some View {
+        if let price = evidence, let selectedPrice = price.selectedPrice {
+            let side: String = price.selectedSide == .bid ? "选定买方报价 Bid：" : "选定卖方报价 Ask："
+            let priceText: String = "\(side)\(selectedPrice.decimalString) USD"
+            let identityText: String = "股类 \(price.classID) · 源时刻 \(price.record.sourceTimestamp)"
+            let receivedText: String = "接收 \(price.capturedAt.formatted(date: .numeric, time: .standard)) · 历史公开可用时刻未知"
+            Text(priceText).font(.headline).monospacedDigit()
+            Text(identityText).font(.caption).textSelection(.enabled)
+            Text(receivedText).font(.caption).foregroundStyle(.secondary)
+            Text("只有在“估值与评分”中再次勾选才会加入补充报告；切换父报告或来源会清除勾选。")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Text("本次报价未满足当前参考条件，不能选入补充报告。")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private func capturedRawQuote(_ result: EquityResearchCapture) -> some View {
+        if let record = result.pages.first(where: { $0.request.capability == .quote })?.records.first,
+           let quote = record.quote {
+            let quoteText: String = "原报价 Bid \(quote.bid.decimalString) / Ask \(quote.ask.decimalString) USD；数量 \(quote.bidSize.decimalString) / \(quote.askSize.decimalString) round lots"
+            Text(quoteText).font(.callout).monospacedDigit().textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder private func capturedDailyStatus(_ result: EquityResearchCapture) -> some View {
+        let dailyPages = result.pages.filter { $0.request.capability == .bars }
+        if !dailyPages.isEmpty {
+            let status: String = result.dailyBarsComplete ? "本次分页读取完毕" : "部分数据：达到分页上限，仍有后续页"
+            let summary: String = "原始日线：\(result.dailyBarCount) 条、\(dailyPages.count) 页 · \(status)"
+            Text(summary).font(.callout).foregroundStyle(result.dailyBarsComplete ? Color.secondary : Color.orange)
+            Text("分页完毕只表示此次请求没有后续页，不证明每个交易日齐全或历史数据合格。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private func capturedPage(_ page: EquityResearchPage, number: Int) -> some View {
         DisclosureGroup("第 \(number) 页 · " + (page.request.capability == .quote ? "报价" : "原始日线")
             + " · \(page.records.count) 条") {
