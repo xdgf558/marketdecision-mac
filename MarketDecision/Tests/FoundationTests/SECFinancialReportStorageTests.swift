@@ -192,6 +192,9 @@ private func financialStorageFixture(path: String = ":memory:") async throws
         let before = try await store.reportWriteRevision()
         let bytes = try #require(database.read { try Data.fetchOne($0, sql: "SELECT document_json FROM sec_research_documents") })
         try database.transaction { db in
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_documents")
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_catalog")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v4'")
             try db.execute(sql: "DROP TABLE sec_financial_report_documents")
             try db.execute(sql: "DROP TABLE sec_financial_report_catalog")
             try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v3'")

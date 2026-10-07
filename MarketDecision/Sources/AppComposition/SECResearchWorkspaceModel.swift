@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import CoreDomain
 import DataContracts
 import FundamentalsEngine
 import Persistence
@@ -35,8 +36,36 @@ public protocol SECFinancialReportWorkspaceStorage: Sendable {
 }
 extension SECResearchStore: SECFinancialReportWorkspaceStorage {}
 
+public protocol SECValuationWorkspaceStorage: Sendable {
+    func valuationSourceDocument(parentReportID: UUID) async throws -> SECResearchDocument
+    func prepareValuationSupplement(parentReportID: UUID, evidence: SECValuationInputEvidence,
+        executionDate: Date) async throws -> SECValuationSupplementDraft
+    func saveValuationSupplement(_ document: SECValuationSupplementDocument, expectedRevision: UUID) async throws
+    func savedValuationSupplements(parentReportID: UUID?) async throws -> [SECValuationSupplementSummary]
+    func openValuationSupplement(id: UUID) async throws -> SECValuationSupplementDocument
+}
+extension SECResearchStore: SECValuationWorkspaceStorage {}
+
 public enum SECFinancialReportDisplayState: Sendable, Equatable {
     case notVerified, generated, matched, mismatched, failed
+}
+
+/// Native form values retain explicit source excerpts. No share count, class universe or
+/// split basis is inferred from ticker metadata or a weighted-average EPS denominator.
+public struct SECValuationShareClassDraft: Sendable, Identifiable {
+    public var id = UUID()
+    public var classID = "", symbol = "", countExcerpt = "", countContextExcerpt = "", identityExcerpt = ""
+    public init() {}
+}
+public struct SECValuationShareEvidenceDraft: Sendable {
+    public var sourceReference = "", coverDate = "", accessionNumber = ""
+    public var completenessExcerpt = "", rationale = ""
+    public var classes: [SECValuationShareClassDraft] = [.init()]
+    public init() {}
+}
+public struct SECValuationSplitEvidenceDraft: Sendable {
+    public var sourceReference = "", excerpt = "", basisDate = "", rationale = ""
+    public init() {}
 }
 
 public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
@@ -71,8 +100,29 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public var canDisplayFinancialReport: Bool {
         financialReport != nil && (financialReportState == .generated || financialReportState == .matched)
     }
+    public private(set) var valuationSupplement: SECValuationSupplementDocument?
+    public private(set) var savedValuationSupplements: [SECValuationSupplementSummary] = []
+    public private(set) var valuationState: SECFinancialReportDisplayState = .notVerified
+    public private(set) var valuationIsSaved = false
+    public private(set) var valuationMessage: String?
+    public private(set) var valuationListError: String?
+    public private(set) var valuationHasError = false
+    public private(set) var valuationSourceDocument: SECResearchDocument?
+    public var canGenerateValuationSupplement: Bool {
+        !isBusy && financialReport != nil && financialReportIsSaved && valuationStorage != nil
+    }
+    public var canSaveValuationSupplement: Bool {
+        !isBusy && valuationSupplement != nil && valuationDraftRevision != nil && !valuationIsSaved
+            && canDisplayValuationSupplement
+    }
+    public var canDisplayValuationSupplement: Bool {
+        valuationSupplement != nil && (valuationState == .generated || valuationState == .matched)
+    }
     private let storage: any SECResearchWorkspaceStorage
     private let financialStorage: (any SECFinancialReportWorkspaceStorage)?
+    private let valuationStorage: (any SECValuationWorkspaceStorage)?
+    private let valuationReplay: @Sendable (SECValuationSupplementDocument) async throws -> Bool
+    private var valuationDraftRevision: UUID?
     private let importer: SECResearchImport
     private let replay: @Sendable (SECResearchDocument) async throws -> FinancialNormalizationResult
     private let financialReplay: @Sendable (SECFinancialReportDocument) async throws -> Bool
@@ -88,7 +138,12 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
                     try $0.recompute()
                 },
                 financialStorage: (any SECFinancialReportWorkspaceStorage)? = nil,
+                valuationStorage: (any SECValuationWorkspaceStorage)? = nil,
                 now: @escaping @Sendable () -> Date = { Date() },
+                valuationReplay: @escaping @Sendable (SECValuationSupplementDocument) async throws -> Bool = { document in
+                    let replay = try await document.valuation.recompute()
+                    return try document.valuation.cachedReportMatches(replay)
+                },
                 financialReplay: @escaping @Sendable (SECFinancialReportDocument) async throws -> Bool = { document in
                     let result = try await document.financials.recompute()
                     return try document.financials.cachedReportsMatch(result)
@@ -96,6 +151,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         self.storage = storage; self.networkAvailable = networkAvailable
         self.importer = importer; self.replay = replay
         self.financialStorage = financialStorage; self.now = now; self.financialReplay = financialReplay
+        self.valuationStorage = valuationStorage; self.valuationReplay = valuationReplay
     }
 
     public func chooseTicker(_ value: String) {
@@ -111,7 +167,8 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         defer { finish(token) }
         async let research: Void = reloadList(token)
         async let reports: Void = reloadFinancialList(token)
-        _ = await (research, reports)
+        async let supplements: Void = reloadValuationList(token)
+        _ = await (research, reports, supplements)
     }
 
     /// Called only by the explicit import action. A busy page does not start a second task.
@@ -290,6 +347,201 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         await reloadFinancialList(token)
     }
 
+    /// Source selection is explicit and bound to the selected saved financial report.
+    /// Opening source evidence neither verifies cached numbers nor starts a request.
+    public func loadValuationSources() async {
+        guard canGenerateValuationSupplement, let report = financialReport, let valuationStorage else { return }
+        let token = beginValuation()
+        valuationSourceDocument = nil
+        defer { finish(token) }
+        do {
+            let source = try await financialOperation {
+                try await valuationStorage.valuationSourceDocument(parentReportID: report.id)
+            }
+            guard generation == token else { return }
+            try Task.checkCancellation(); try source.validate()
+            guard source.id == report.parentDocumentID, source.ticker == report.ticker,
+                  source.cutoff == report.cutoff else { throw ContractError.mismatchedSource }
+            valuationSourceDocument = source
+            valuationMessage = "已载入报告绑定的原始来源。仅按可核对原文补充证据；缺项可以保留。"
+        } catch {
+            guard generation == token else { return }
+            valuationHasError = true
+            valuationMessage = "绑定来源未能通过检查；证据输入保持关闭，已有报告未修改。"
+        }
+    }
+
+    /// The citation is found as one exact UTF-8 byte range in the selected retained source.
+    /// An ambiguous phrase must be made more specific rather than choosing an arbitrary match.
+    public func generateValuationSupplement(applicability: SECIndustryApplicability,
+        sourceReference: String, excerpt: String, rationale: String,
+        shareEvidence: SECValuationShareEvidenceDraft? = nil,
+        splitEvidence: SECValuationSplitEvidenceDraft? = nil) async {
+        guard canGenerateValuationSupplement, let parent = financialReport else { return }
+        do {
+            let reviewedAt = now()
+            func anchor(reference: String, text: String, context: String? = nil) throws -> SECValuationSourceAnchor {
+                guard let sourceDocument = valuationSourceDocument, sourceDocument.id == parent.parentDocumentID,
+                      let source = sourceDocument.sources.first(where: { $0.reference == reference })
+                else { throw ContractError.mismatchedSource }
+                func uniqueRange(_ bytes: Data, in source: Data) throws -> Range<Int> {
+                    guard !bytes.isEmpty, let range = source.range(of: bytes),
+                          source.range(of: bytes, in: (range.lowerBound + 1)..<source.endIndex) == nil
+                    else { throw ContractError.mismatchedSource }
+                    return range
+                }
+                let bytes = Data(text.utf8), offset: Int
+                if let context, !context.isEmpty {
+                    let contextBytes = Data(context.utf8)
+                    let outer = try uniqueRange(contextBytes, in: source.bytes)
+                    let inner = try uniqueRange(bytes, in: contextBytes)
+                    offset = outer.lowerBound + inner.lowerBound
+                } else { offset = try uniqueRange(bytes, in: source.bytes).lowerBound }
+                return try SECValuationSourceAnchor(sourceReference: source.reference,
+                    sourceHash: source.contentHash, byteOffset: offset, excerpt: bytes)
+            }
+            let industry: SECIndustryReview? = applicability == .unknown ? nil : try .init(
+                applicability: applicability, reviewedAt: reviewedAt,
+                rationale: rationale.trimmingCharacters(in: .whitespacesAndNewlines),
+                anchors: [anchor(reference: sourceReference, text: excerpt)])
+            let shares: SECShareClassReview?
+            if let form = shareEvidence {
+                let classes = try form.classes.map { item in
+                    let identity = try anchor(reference: form.sourceReference, text: item.identityExcerpt)
+                    let context = item.countContextExcerpt.isEmpty ? nil : try anchor(reference: form.sourceReference, text: item.countContextExcerpt)
+                    return try SECReviewedShareClass(classID: item.classID.trimmingCharacters(in: .whitespacesAndNewlines),
+                        symbol: item.symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+                        outstandingShares: Money(item.countExcerpt),
+                        countAnchor: anchor(reference: form.sourceReference, text: item.countExcerpt, context: item.countContextExcerpt),
+                        identityAnchors: [identity] + (context.map { [$0] } ?? []))
+                }
+                shares = try .init(cik: parent.financials.evidence.cik,
+                    coverDate: MarketDate(iso8601: form.coverDate), accessionNumber: form.accessionNumber,
+                    classes: classes, completenessAnchors: [anchor(reference: form.sourceReference, text: form.completenessExcerpt)],
+                    reviewedAt: reviewedAt, rationale: form.rationale)
+            } else { shares = nil }
+            let split: SECSplitBasisReview?
+            if let form = splitEvidence {
+                guard let shares, let start = parent.financials.evidence.quarters.first?.start else {
+                    throw SECValuationError.invalidEvidence
+                }
+                let facts = parent.financials.inputSnapshot.financials.input.normalization.values
+                let ids = Set(facts.filter { $0.unit == "USD/shares" || $0.unit == "shares" }.flatMap(\.sourceFactIDs)).sorted()
+                split = try .init(classIDs: shares.classes.map(\.classID), windowStart: start,
+                    basisDate: MarketDate(iso8601: form.basisDate), coveredFactIDs: ids,
+                    anchors: [anchor(reference: form.sourceReference, text: form.excerpt)],
+                    reviewedAt: reviewedAt, rationale: form.rationale)
+            } else { split = nil }
+            await generateValuationSupplement(evidence: .init(industryReview: industry, shareClasses: shares, splitBasis: split))
+        } catch {
+            valuationHasError = true
+            valuationMessage = "证据未提交。请核对日期、申报、完整股类与判断理由；每段引文须在选定来源唯一出现，股数须引用原文未缩放的完整整数。"
+        }
+    }
+
+    public func generateValuationSupplement(evidence: SECValuationInputEvidence) async {
+        guard canGenerateValuationSupplement, let parent = financialReport, let valuationStorage else { return }
+        let token = beginValuation(clearReport: true)
+        defer { finish(token) }
+        do {
+            let executionDate = now()
+            let draft = try await financialOperation {
+                try await valuationStorage.prepareValuationSupplement(parentReportID: parent.id,
+                    evidence: evidence, executionDate: executionDate)
+            }
+            guard generation == token else { return }
+            try Task.checkCancellation(); try draft.document.validate()
+            try draft.document.valuation.validateAccounting(parent.financials)
+            guard draft.document.parentFinancialReportID == parent.id,
+                  draft.document.parentResearchID == parent.parentDocumentID,
+                  draft.document.parentResearchHash == parent.parentDocumentHash,
+                  draft.document.ticker == parent.ticker, draft.document.cutoff == parent.cutoff
+            else { throw ContractError.mismatchedSource }
+            valuationSupplement = draft.document; valuationDraftRevision = draft.expectedRevision
+            valuationState = .generated
+            valuationMessage = "已从保存的财务报告及补充证据生成研究结果；尚未保存。未满足资格的估值与总分保持缺项。"
+        } catch {
+            guard generation == token else { return }
+            valuationHasError = true
+            valuationMessage = "补充报告未能生成。请核对证据、原报告和来源绑定；不会猜测缺失输入或请求行情。"
+        }
+    }
+
+    public func saveValuationSupplement() async {
+        guard canSaveValuationSupplement, let valuationSupplement, let valuationDraftRevision, let valuationStorage else { return }
+        let token = beginValuation()
+        defer { finish(token) }
+        do {
+            try Task.checkCancellation()
+            try await financialOperation {
+                try await valuationStorage.saveValuationSupplement(valuationSupplement, expectedRevision: valuationDraftRevision)
+            }
+        } catch {
+            guard generation == token else { return }
+            valuationHasError = true
+            if error as? SnapshotError == .stalePlan {
+                self.valuationDraftRevision = nil
+                valuationMessage = "研究库已变化，补充报告未保存。请重新生成；不会替换原保存基线。"
+            } else {
+                valuationMessage = "补充报告保存未完成；草稿和原基线保留，可重试。"
+            }
+            return
+        }
+        guard generation == token else { return }
+        valuationIsSaved = true; self.valuationDraftRevision = nil
+        valuationMessage = "补充报告已保存，绑定原财务报告及 SEC 研究；重开后仍需显式重算核对。"
+        await reloadValuationList(token, committed: true)
+    }
+
+    public func openValuationSupplement(_ id: UUID) async {
+        guard !isBusy, let valuationStorage else { return }
+        let token = beginValuation(clearReport: true)
+        valuationSourceDocument = nil
+        defer { finish(token) }
+        do {
+            let result = try await financialOperation { try await valuationStorage.openValuationSupplement(id: id) }
+            guard generation == token else { return }
+            try Task.checkCancellation(); try result.validate()
+            guard result.id == id else { throw ContractError.mismatchedSource }
+            if financialReport?.id != result.parentFinancialReportID { clearFinancialReport() }
+            if document?.id != result.parentResearchID { document = nil; recomputationState = .notVerified }
+            valuationSupplement = result; valuationIsSaved = true; ticker = result.ticker
+            valuationMessage = "已打开补充报告；缓存结果在本次显式重算核对前保持隐藏。"
+        } catch {
+            guard generation == token else { return }
+            valuationHasError = true
+            valuationMessage = "补充报告或绑定原件未通过检查；未显示旧结果，其他研究列表仍可使用。"
+        }
+    }
+
+    public func recomputeValuationSupplement() async {
+        guard !isBusy, let valuationSupplement else { return }
+        let token = beginValuation()
+        valuationState = .notVerified
+        defer { finish(token) }
+        do {
+            let replay = valuationReplay
+            let matches = try await financialOperation { try await replay(valuationSupplement) }
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            valuationState = matches ? .matched : .mismatched
+            valuationHasError = !matches
+            valuationMessage = matches ? "冻结证据重算一致；研究用途及资格缺口保留，不授予行情、历史 PIT 或交易资格。"
+                : "重算与补充报告缓存不一致，结果保持隐藏；原保存内容未修改。"
+        } catch {
+            guard generation == token else { return }
+            valuationState = .failed; valuationHasError = true
+            valuationMessage = "补充报告重算未完成，结果保持隐藏；原保存内容未修改。"
+        }
+    }
+
+    public func loadValuationSupplements() async {
+        guard !isBusy else { return }
+        let token = begin(clear: false)
+        defer { finish(token) }
+        await reloadValuationList(token)
+    }
+
     public func cancel() {
         generation = UUID(); task?.cancel(); task = nil
         cancelFinancialWork?(); cancelFinancialWork = nil; isBusy = false; progress = nil
@@ -299,6 +551,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public func disappear() {
         cancel(); message = nil; saved = []; listError = nil
         savedFinancialReports = []; financialListError = nil
+        savedValuationSupplements = []; valuationListError = nil
     }
     private func receive(_ value: SECResearchProgress, token: UUID) {
         guard generation == token else { return }; progress = value
@@ -314,10 +567,21 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         financialMessage = nil; financialHasError = false
         return token
     }
+    private func beginValuation(clearReport: Bool = false) -> UUID {
+        let token = begin(clear: false)
+        if clearReport { clearValuationSupplement() }
+        valuationMessage = nil; valuationHasError = false
+        return token
+    }
+    private func clearValuationSupplement() {
+        valuationSupplement = nil; valuationDraftRevision = nil; valuationIsSaved = false
+        valuationState = .notVerified; valuationMessage = nil; valuationHasError = false
+    }
     private func clearDocument() {
         document = nil; recomputationState = .notVerified; clearFinancialReport()
     }
     private func clearFinancialReport() {
+        clearValuationSupplement(); valuationSourceDocument = nil
         financialReport = nil; financialDraftRevision = nil; financialReportIsSaved = false
         financialReportState = .notVerified; financialMessage = nil; financialHasError = false
     }
@@ -352,6 +616,18 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
             guard generation == token else { return }
             savedFinancialReports = []; financialListError = "财务报告列表无法读取，请单独重新载入。源研究列表仍可使用。"
             if committed { financialMessage = "财务报告已保存，但报告列表刷新失败；请重新载入，避免重复保存。" }
+        }
+    }
+    private func reloadValuationList(_ token: UUID, committed: Bool = false) async {
+        guard let valuationStorage else { return }
+        do {
+            let rows = try await valuationStorage.savedValuationSupplements(parentReportID: nil)
+            guard generation == token else { return }
+            try Task.checkCancellation(); savedValuationSupplements = rows; valuationListError = nil
+        } catch {
+            guard generation == token else { return }
+            savedValuationSupplements = []; valuationListError = "补充报告列表无法读取，可单独重试；源研究及财务报告列表仍可使用。"
+            if committed { valuationMessage = "补充报告已保存，但列表刷新失败；请重新载入，避免重复保存。" }
         }
     }
     private static func financialFailureMessage(_ error: any Error) -> String {

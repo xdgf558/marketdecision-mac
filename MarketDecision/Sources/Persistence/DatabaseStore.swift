@@ -30,7 +30,7 @@ public struct DatabaseStore: Sendable {
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
         guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
         let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
-            + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration] : [])
+            + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration, Self.secValuationSupplementMigration] : [])
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -64,6 +64,33 @@ public struct DatabaseStore: Sendable {
     /// One database transaction; throws rolls back all statements in the closure.
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
+
+    // Independent append-only supplements reference both immutable accounting and
+    // research records. Listing reads only catalogs and narrow body ID indexes.
+    private static let secValuationSupplementMigration = DatabaseMigration(identifier: "sec-research.storage.v4") { db in
+        try db.execute(sql: """
+            CREATE TABLE sec_valuation_supplement_catalog (
+                supplement_id TEXT PRIMARY KEY NOT NULL,
+                parent_report_id TEXT NOT NULL,
+                parent_report_hash TEXT NOT NULL CHECK(length(parent_report_hash) = 64),
+                parent_research_id TEXT NOT NULL,
+                parent_research_hash TEXT NOT NULL CHECK(length(parent_research_hash) = 64),
+                supplement_hash TEXT NOT NULL CHECK(length(supplement_hash) = 64),
+                summary_hash TEXT NOT NULL CHECK(length(summary_hash) = 64),
+                summary_json BLOB NOT NULL,
+                FOREIGN KEY(parent_report_id) REFERENCES sec_financial_report_catalog(report_id) ON DELETE RESTRICT,
+                FOREIGN KEY(parent_research_id) REFERENCES sec_research_catalog(document_id) ON DELETE RESTRICT
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: "CREATE INDEX sec_valuation_supplements_by_parent ON sec_valuation_supplement_catalog(parent_report_id, supplement_id)")
+        try db.execute(sql: """
+            CREATE TABLE sec_valuation_supplement_documents (
+                supplement_id TEXT PRIMARY KEY NOT NULL,
+                supplement_json BLOB NOT NULL,
+                FOREIGN KEY(supplement_id) REFERENCES sec_valuation_supplement_catalog(supplement_id) ON DELETE RESTRICT
+            )
+            """)
+    }
 
     // Report sidecars reference the retained SEC parent; exact raw responses remain
     // solely in that parent. The body table uses rowid + a narrow primary-key index
