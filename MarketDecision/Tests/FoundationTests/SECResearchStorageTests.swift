@@ -195,6 +195,9 @@ private func legacyBytes(_ database: DatabaseStore) throws -> [Data] {
         // Produce precisely the old migration history and old graph layout before reopen.
         try database.transaction { db in
             try db.execute(sql: "DROP INDEX sec_research_legacy_object_metadata")
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_documents")
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_catalog")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v4'")
             try db.execute(sql: "DROP TABLE sec_financial_report_documents")
             try db.execute(sql: "DROP TABLE sec_financial_report_catalog")
             try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v3'")
@@ -231,6 +234,9 @@ private func legacyBytes(_ database: DatabaseStore) throws -> [Data] {
         let catalog = try database.read { try Data.fetchAll($0, sql: "SELECT summary_json FROM sec_research_catalog ORDER BY document_id") }
         try database.transaction { db in
             // Reproduce an already populated candidate storage.v1 database.
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_documents")
+            try db.execute(sql: "DROP TABLE sec_valuation_supplement_catalog")
+            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v4'")
             try db.execute(sql: "DROP TABLE sec_financial_report_documents")
             try db.execute(sql: "DROP TABLE sec_financial_report_catalog")
             try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'sec-research.storage.v3'")

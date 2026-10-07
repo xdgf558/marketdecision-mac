@@ -47,6 +47,6 @@ extension AppEnvironment {
                     throw error
                 }
             }
-        }, financialStorage: store)
+        }, financialStorage: store, valuationStorage: store)
     }
 }

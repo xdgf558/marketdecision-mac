@@ -143,6 +143,12 @@ enum SECFinancialReportStorage {
     }
 
     static func open(id: UUID, db: Database) throws -> SECFinancialReportDocument {
+        try validatedRecord(id: id, db: db).document
+    }
+
+    /// Returns the retained report encoding, never a reconstructed JSON encoding. A
+    /// valuation supplement binds this exact body and the fully validated SEC parent.
+    static func validatedRecord(id: UUID, db: Database) throws -> (document: SECFinancialReportDocument, bytes: Data) {
         let key = id.uuidString.lowercased()
         guard let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE c.report_id = ?", arguments: [key]) else {
             guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sec_financial_report_documents WHERE report_id = ?", arguments: [key]) == 0
@@ -163,7 +169,7 @@ enum SECFinancialReportStorage {
         catch is CancellationError { throw CancellationError() }
         catch { throw BusinessStoreError.corruptedStorage }
         try Task.checkCancellation()
-        return document
+        return (document, bytes)
     }
 
     private static func decodeCatalog(_ row: Row) throws -> Catalog {
