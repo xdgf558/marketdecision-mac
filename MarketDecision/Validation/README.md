@@ -70,9 +70,9 @@ behavior. Local screenshots and the complete acceptance mapping remain private.
 The isolated UI host has its own sandbox-only source entitlement file and receives Xcode-generated read-only-root and test-service
 exceptions. Its separate exact permission/identity check runs before and after
 native execution, with five rejection tests in addition to the seven result
-checks. The production verifier separately requires App Sandbox and user-selected-file read/write and rejects unlisted permissions; XCTest automation does
+checks. The production verifier requires the main app to have App Sandbox and user-selected-file read/write with no network entitlement. Only its exact embedded SEC XPC service may have sandbox plus network-client; files, keychain, inheritance and debugging privileges are rejected for that service. The signed isolation probe separately requires OS denial of main-process sockets, an invalid-descriptor reply over app-private XPC, and rejection of an independently re-signed replacement helper. It sends no SEC request. XCTest automation does
 not establish shipping-app sandbox behavior or actual production file-panel access. Any added exception fails closed and
-requires review; do not widen the checker merely to make a changed Xcode pass.
+requires review; do not widen the checker merely to make a changed Xcode pass. The separate file-panel acceptance app uses a dedicated two-key entitlement file (sandbox and selected-file read/write), excluding network access in both configurations. Neither acceptance app embeds the SEC service, so they do not establish the production process boundary; all target entitlement files and the helper Info.plist are fingerprinted.
 
 Native sheets are always queried through their owning window. The independent
 Settings window is found by its stable credential controls and absence of the main

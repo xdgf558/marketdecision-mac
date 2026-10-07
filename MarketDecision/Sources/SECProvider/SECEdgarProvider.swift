@@ -12,24 +12,38 @@ public enum SECAdapterError: Error, Equatable {
 
 public protocol SECRequestGate: Sendable { func wait() async throws }
 
-/// SEC fair-access limit is at most ten aggregate requests per second. The actor serializes
-/// callers and defaults to ten; applications sharing an IP must choose a lower configured rate.
+/// SEC fair-access limit is at most ten aggregate requests per second. All application
+/// callers must share a gate; other applications/machines need their own coordinated budget.
 public actor SECRateLimiter: SECRequestGate {
     public let requestsPerSecond: Int
     private let minimumInterval: Duration
-    private let clock = ContinuousClock()
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var nextRequestAt: ContinuousClock.Instant?
     public init(requestsPerSecond: Int = 10) throws {
+        let clock = ContinuousClock()
+        try self.init(requestsPerSecond: requestsPerSecond, now: { clock.now },
+                      sleepUntil: { try await clock.sleep(until: $0) })
+    }
+    // Internal deterministic clock injection exercises reentrant/late wakeups without wall-time waits.
+    init(requestsPerSecond: Int, now: @escaping @Sendable () -> ContinuousClock.Instant,
+         sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void) throws {
         guard (1...10).contains(requestsPerSecond) else { throw SECAdapterError.invalidConfiguration }
         self.requestsPerSecond = requestsPerSecond
-        self.minimumInterval = .nanoseconds(1_000_000_000 / Int64(requestsPerSecond))
+        let rate = Int64(requestsPerSecond)
+        self.minimumInterval = .nanoseconds((1_000_000_000 + rate - 1) / rate)
+        self.now = now; self.sleepUntil = sleepUntil
     }
     public func wait() async throws {
-        if let nextRequestAt, clock.now < nextRequestAt {
-            try await clock.sleep(until: nextRequestAt)
+        try Task.checkCancellation()
+        // An actor is reentrant across sleep. Recheck after *every* wake: another waiter may
+        // have taken the slot, or several overdue sleepers may have resumed together.
+        while let deadline = nextRequestAt, now() < deadline {
+            try await sleepUntil(deadline)
+            try Task.checkCancellation()
         }
         try Task.checkCancellation()
-        nextRequestAt = clock.now.advanced(by: minimumInterval)
+        nextRequestAt = now().advanced(by: minimumInterval)
     }
 }
 
@@ -115,7 +129,7 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
         let raw = try ProviderRawPayload(reference: "provider/sec-edgar/" + request.id.uuidString.lowercased(),
             mediaType: actualMediaType, bytes: payload.body, storageAvailableAt: receivedAt,
             evidenceRef: evidenceRef, licenseRef: licenseRef)
-        let (parsed, continuations) = try parse(payload.body, raw, receivedAt)
+        let (parsed, continuations) = try parse(raw.bytes, raw, receivedAt)
         let items = parsed.filter { item in
             guard let window = request.range else { return true }
             return window.contains(item.provenance)
@@ -136,7 +150,7 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
             guard SECCompanyIdentityRecord.validCIK(request.resourceID) else { throw SECAdapterError.invalidResource }
             host = "data.sec.gov"
             if let page = request.pageToken {
-                guard page.range(of: #"^CIK[0-9]{10}-submissions-[0-9]{3}\.json\z"#, options: .regularExpression) != nil
+                guard Self.validContinuation(page, cik: request.resourceID)
                 else { throw SECAdapterError.invalidResource }
                 path = "/submissions/" + page
             } else { path = "/submissions/CIK" + request.resourceID + ".json" }
@@ -171,24 +185,35 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
         receivedAt: Date) throws -> ([SECCompanyIdentityRecord], [String]) {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let fields = object["fields"] as? [String], let rows = object["data"] as? [[Any]],
+              Set(fields).count == fields.count,
               let cikIndex = fields.firstIndex(of: "cik"), let nameIndex = fields.firstIndex(of: "name"),
               let tickerIndex = fields.firstIndex(of: "ticker"), let exchangeIndex = fields.firstIndex(of: "exchange")
         else { throw SECAdapterError.malformedResponse }
         var grouped: [String: (String, [SECTickerListing])] = [:]
         for row in rows {
-            guard row.indices.contains(cikIndex), row.indices.contains(nameIndex), row.indices.contains(tickerIndex),
-                  row.indices.contains(exchangeIndex), let name = row[nameIndex] as? String,
-                  let ticker = row[tickerIndex] as? String, let exchange = row[exchangeIndex] as? String else {
+            guard row.indices.contains(tickerIndex), let ticker = row[tickerIndex] as? String else {
                 throw SECAdapterError.incompleteColumns
             }
             guard ticker.uppercased() == request.resourceID else { continue }
-            let cik: String
-            if let number = row[cikIndex] as? NSNumber { cik = String(format: "%010lld", number.int64Value) }
-            else if let text = row[cikIndex] as? String, let number = Int64(text) { cik = String(format: "%010lld", number) }
-            else { throw SECAdapterError.malformedResponse }
+            // Exchange may be null on unrelated mappings. Never invent an exchange for the
+            // selected ticker or let an unrelated incomplete listing poison a valid lookup.
+            guard row.indices.contains(cikIndex), row.indices.contains(nameIndex), row.indices.contains(exchangeIndex),
+                  let name = row[nameIndex] as? String, let exchange = row[exchangeIndex] as? String,
+                  !exchange.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw SECAdapterError.incompleteColumns
+            }
+            let encodedCIK = try JSONSerialization.data(withJSONObject: [row[cikIndex]])
+            let decodedCIK = try JSONDecoder().decode([LosslessText].self, from: encodedCIK)
+            guard let sourceCIK = decodedCIK.first?.text else { throw SECAdapterError.malformedResponse }
+            let cik = try Self.strictCIK(sourceCIK)
             let listing = try SECTickerListing(ticker: ticker.uppercased(), exchange: exchange)
-            grouped[cik, default: (name, [])].1.append(listing)
+            if let prior = grouped[cik] {
+                guard prior.0 == name, prior.1 == [listing] else { throw SECAdapterError.malformedResponse }
+            } else { grouped[cik] = (name, [listing]) }
         }
+        // SEC describes this as a search association file, not an authoritative security
+        // master. An ambiguous ticker must not silently select one issuer.
+        guard grouped.count <= 1 else { throw SECAdapterError.malformedResponse }
         let availability = AvailabilityEvidence.instant(receivedAt, evidence: "SEC mapping retrieval time")
         let records = try grouped.keys.sorted().map { cik in
             let entry = grouped[cik]!
@@ -214,7 +239,9 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
         let envelope: SECSubmissionsEnvelope
         do { envelope = try decoder.decode(SECSubmissionsEnvelope.self, from: data) }
         catch { throw SECAdapterError.malformedResponse }
-        guard (envelope.cik.map(Self.paddedCIK) ?? request.resourceID) == request.resourceID else {
+        let responseCIK = try envelope.cik.map { try Self.strictCIK($0.text) }
+        guard (responseCIK ?? request.resourceID) == request.resourceID,
+              responseCIK != nil || request.pageToken != nil else {
             throw SECAdapterError.invalidResource
         }
         let columns = envelope.filings?.recent ?? envelope.recent ?? envelope.topLevelRecent
@@ -227,7 +254,6 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
             let filingDate = try MarketDate(iso8601: columns.filingDate[index])
             let reportDate = columns.reportDate[index].isEmpty ? nil : try MarketDate(iso8601: columns.reportDate[index])
             let accepted = try Self.optionalInstant(columns.acceptanceDateTime[index])
-            let acceptedInstant = try accepted.map { try MillisecondInstant(rounding: $0) }
             let sourceEvent = try accepted ?? filingDate.start(in: TimeZone(identifier: "America/New_York")!)
             let availability: AvailabilityEvidence = accepted.map { .instant($0, evidence: "SEC acceptanceDateTime") }
                 ?? .dateOnly(filingDate, timeZoneID: "America/New_York", evidence: "SEC filingDate only")
@@ -235,7 +261,9 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
                 .init("cik", .string(request.resourceID)), .init("accession", .string(accession)),
                 .init("form", .string(columns.form[index])), .init("filingDate", .string(filingDate.iso8601)),
                 .init("reportDate", reportDate.map { .string($0.iso8601) } ?? .null),
-                .init("acceptedAt", acceptedInstant.map { .string($0.iso8601) } ?? .null),
+                // Preserve the exact timestamp token, including fractions finer than Date or
+                // millisecond storage, in source identity. Never merge distinct source revisions.
+                .init("acceptedAt", accepted == nil ? .null : .string(columns.acceptanceDateTime[index])),
                 .init("primaryDocument", .string(columns.primaryDocument[index]))
             ])
             let item = try SECSubmissionRecord(recordID: "sec/submission/" + accession,
@@ -248,8 +276,7 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
             records.append(item)
         }
         let continuations = request.pageToken == nil ? (envelope.filings?.files?.map(\.name) ?? []) : []
-        guard continuations.allSatisfy({ $0.range(of: #"^CIK[0-9]{10}-submissions-[0-9]{3}\.json\z"#,
-                                                     options: .regularExpression) != nil }),
+        guard continuations.allSatisfy({ Self.validContinuation($0, cik: request.resourceID) }),
               Set(continuations).count == continuations.count else { throw SECAdapterError.malformedResponse }
         return (records, continuations)
     }
@@ -292,7 +319,7 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
                             evidence: "SEC companyfacts filed date; intraday time unavailable")
                         records.append(try SECCompanyFactRecord(recordID: recordID, factID: factID,
                             cik: request.resourceID, taxonomy: taxonomy, concept: concept,
-                            label: definition.label, description: definition.description ?? "",
+                            label: definition.label ?? "", description: definition.description ?? "",
                             unit: unit, sourceValue: source.value.text, value: value,
                             startDate: start, endDate: end, periodKind: kind,
                             accessionNumber: source.accn, form: source.form, filedDate: filed,
@@ -313,13 +340,13 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
         catch { throw SECAdapterError.malformedResponse }
         let resource = try SECArchiveResource(request.resourceID, expectsDocument: false)
         let files = try envelope.directory.item.map { try SECFilingFile(name: $0.name, type: $0.type, size: $0.size) }
-            .sorted { ($0.name, $0.type, $0.size) < ($1.name, $1.type, $1.size) }
+            .sorted { $0.name < $1.name }
         let availability = AvailabilityEvidence.instant(receivedAt, evidence: "SEC filing index retrieval time")
         let version = try Self.sourceVersion("sec.index", [
             .init("cik", .string(resource.cik)), .init("accession", .string(resource.accession)),
             .init("files", .array(files.map {
                 .object([.init("name", .string($0.name)), .init("type", .string($0.type)),
-                         .init("size", .integer(Int64($0.size)))])
+                         .init("size", $0.size.map { .integer(Int64($0)) } ?? .null)])
             }))
         ])
         return try SECFilingIndexRecord(recordID: "sec/filing-index/" + resource.accession,
@@ -351,13 +378,39 @@ public struct SECEdgarProvider<Transport: HTTPTransport, Gate: SECRequestGate>: 
         guard let number = Int64(value) else { return value }
         return String(format: "%010lld", number)
     }
+    private static func strictCIK(_ value: String) throws -> String {
+        guard value.range(of: #"^[0-9]{1,10}\z"#, options: .regularExpression) != nil,
+              let number = Int64(value), number > 0 else { throw SECAdapterError.malformedResponse }
+        return String(format: "%010lld", number)
+    }
+    private static func validContinuation(_ value: String, cik: String) -> Bool {
+        value.hasPrefix("CIK" + cik + "-submissions-")
+            && value.range(of: #"^CIK[0-9]{10}-submissions-[0-9]{3}\.json\z"#, options: .regularExpression) != nil
+    }
     private static func optionalInstant(_ value: String) throws -> Date? {
         guard !value.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
+        // ISO8601DateFormatter's fractional mode can truncate below milliseconds. Parse
+        // integral seconds independently, retaining the original token in the version hash.
+        guard value.range(of: #"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})\z"#,
+                          options: .regularExpression) != nil,
+              (try? MarketDate(iso8601: String(value.prefix(10)))) != nil else { throw SECAdapterError.malformedResponse }
+        let clock = value.dropFirst(11).prefix(8).split(separator: ":").compactMap { Int($0) }
+        guard clock.count == 3, clock[0] < 24, clock[1] < 60, clock[2] < 60 else {
+            throw SECAdapterError.malformedResponse
+        }
+        let suffix = String(value.dropFirst(19))
+        let zone = suffix.hasSuffix("Z") ? "Z" : String(suffix.suffix(6))
+        if zone != "Z" {
+            let offset = zone.dropFirst().split(separator: ":").compactMap { Int($0) }
+            guard offset.count == 2, offset[0] < 24, offset[1] < 60 else { throw SECAdapterError.malformedResponse }
+        }
+        let fractionText = String(suffix.dropLast(zone.count))
+        let fraction: Double? = fractionText.isEmpty ? 0 : Double("0" + fractionText)
+        guard let fraction, fraction >= 0, fraction < 1 else { throw SECAdapterError.malformedResponse }
+        let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        guard let date = formatter.date(from: value) else { throw SECAdapterError.malformedResponse }
-        return date
+        guard let whole = formatter.date(from: String(value.prefix(19)) + zone) else { throw SECAdapterError.malformedResponse }
+        return whole.addingTimeInterval(fraction)
     }
 
     private static func sourceVersion(_ prefix: String, _ members: [CanonicalMember]) throws -> String {
@@ -383,7 +436,7 @@ private struct SECArchiveResource {
 }
 
 private struct SECSubmissionsEnvelope: Decodable {
-    let cik: String?
+    let cik: LosslessText?
     let filings: Filings?
     let recent: Recent?
     let accessionNumber, filingDate, reportDate, acceptanceDateTime, form, primaryDocument: [String]?
@@ -408,7 +461,7 @@ private struct SECCompanyFactsEnvelope: Decodable {
     let entityName: String
     let facts: [String: [String: Definition]]
     struct Definition: Decodable {
-        let label: String
+        let label: String?
         let description: String?
         let units: [String: [Fact]]
     }
@@ -447,5 +500,20 @@ private struct DecimalText: Decodable {
 private struct SECFilingIndexEnvelope: Decodable {
     let directory: Directory
     struct Directory: Decodable { let item: [Item] }
-    struct Item: Decodable { let name, type: String; let size: Int }
+    struct Item: Decodable {
+        let name, type: String
+        let size: Int?
+        enum CodingKeys: String, CodingKey { case name, type, size }
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            type = try container.decode(String.self, forKey: .type)
+            guard let source = try container.decodeIfPresent(LosslessText.self, forKey: .size), !source.text.isEmpty else {
+                size = nil; return
+            }
+            guard source.text.range(of: #"^[0-9]+\z"#, options: .regularExpression) != nil,
+                  let value = Int(source.text), value >= 0 else { throw SECAdapterError.malformedResponse }
+            size = value
+        }
+    }
 }

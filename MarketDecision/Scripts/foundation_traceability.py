@@ -125,6 +125,9 @@ def input_hashes(root):
         paths.update(str(p.relative_to(root)) for p in (root / folder).rglob('*')
                      if p.is_file() and p.suffix in ['.swift', '.py', '.json', '.sh'])
     paths.update(['Package.swift', 'Package.resolved', 'App/MarketDecision.xcodeproj/project.pbxproj', 'App/MarketDecision.entitlements'])
+    # Bind every target's signature inputs, including the deliberately narrower test apps.
+    paths.update(str(p.relative_to(root)) for p in (root / 'App').glob('*.entitlements') if p.is_file())
+    paths.update(str(p.relative_to(root)) for p in (root / 'App').rglob('Info.plist') if p.is_file())
     return {name: hashlib.sha256(safe_file(root, name).read_bytes()).hexdigest() for name in sorted(paths)}
 
 def load_catalog(root):

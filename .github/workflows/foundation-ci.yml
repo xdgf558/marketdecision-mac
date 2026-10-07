@@ -44,7 +44,7 @@ jobs:
           {
             echo '## Foundation CI evidence'
             echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
-            echo "- Debug/Release build and artifact checks: $BUILD_OUTCOME"
+            echo "- Debug/Release, effective main/helper permissions and synthetic XPC/socket-denial probe: $BUILD_OUTCOME"
             echo "- Native interaction suite (seven cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'

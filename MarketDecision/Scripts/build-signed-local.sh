@@ -12,7 +12,7 @@ xcodebuild -project "$project_root/App/MarketDecision.xcodeproj" -scheme MarketD
   -allowProvisioningUpdates -allowProvisioningDeviceRegistration \
   CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' \
   DEVELOPMENT_TEAM="$MARKETDECISION_SIGNING_TEAM" \
-  CODE_SIGN_ENTITLEMENTS="$project_root/App/MarketDecision-Signed.entitlements" \
+  MARKETDECISION_APP_ENTITLEMENTS="$project_root/App/MarketDecision-Signed.entitlements" \
   ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
 python3 "$project_root/Scripts/check-demo-entitlements.py" \
   "$project_root/DerivedDataProvision/Build/Products/$configuration/MarketDecision.app" --provisioned

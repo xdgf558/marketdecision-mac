@@ -39,4 +39,4 @@ xcodebuild -project "$project_root/App/MarketDecision.xcodeproj" -scheme Product
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES test-without-building
 python3 "$project_root/Scripts/check-file-panel-result.py" --verify-inputs "$result_dir/inputs.json"
 python3 "$project_root/Scripts/check-file-panel-result.py" "$result_dir/Results.xcresult" "$report" "$host"
-echo 'File panels: production source and minimal Release permissions; isolated synthetic research, not real data or Keychain acceptance.'
+echo 'File panels: production source and file-only Release permissions; no network, real data or Keychain acceptance.'

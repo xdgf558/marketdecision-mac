@@ -21,7 +21,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: File panels with production Release permissions
+      - name: File panels with production source and file-only Release permissions
         id: panels
         run: bash MarketDecision/Scripts/verify-file-panels.sh
       - name: Record evidence limits
@@ -33,7 +33,7 @@ jobs:
             echo '## Manually requested file-panel evidence'
             echo "- Exact source commit: $GITHUB_SHA"
             echo "- Actual file-panel suite: $PANEL_OUTCOME"
-            echo '- PASS requires exactly three executed Passed cases, zero skips/failures, unchanged source fingerprints and exact production Release permissions.'
+            echo '- PASS requires exactly three executed Passed cases, zero skips/failures, unchanged source fingerprints and exact file-only Release permissions; network access remains disabled.'
             echo '- A failed, cancelled, timed-out or unstarted step is not a file-panel pass.'
             echo '- The app uses an isolated SQLite container and synthetic research only; no account signing, real Keychain or real-provider backup acceptance.'
             echo '- No artifact uploads. This workflow does not close Phase 1/G1 or DATA-000/G5.'

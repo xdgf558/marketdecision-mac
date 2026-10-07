@@ -3,6 +3,7 @@ import CoreDomain
 import DataProviders
 import Persistence
 import SecuritySupport
+import SECProvider
 
 public struct AppEnvironment: Sendable {
     public let quotes: any QuoteProvider
@@ -12,11 +13,17 @@ public struct AppEnvironment: Sendable {
     public let log: SafeLog
     public let credentials: any CredentialStorage
     public let offlineResearchDatabasePath: String
+    public let secResearchDatabasePath: String
+    let secRequestGate: SECRateLimiter
     public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
                 log: SafeLog = SafeLog(), offlineResearchDatabasePath: String = ":memory:") throws {
         self.quotes = quotes; self.database = database; self.businessData = try BusinessDataStore(database: database)
         self.credentials = credentials; self.models = ModelRegistry(); self.log = log
         self.offlineResearchDatabasePath = offlineResearchDatabasePath
+        self.secResearchDatabasePath = offlineResearchDatabasePath == ":memory:" ? ":memory:"
+            : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
+                .appendingPathComponent("sec-research.sqlite").path
+        self.secRequestGate = try SECRateLimiter(requestsPerSecond: 5)
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {
         ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData), transfer: ResearchTransferModel(store: ResearchTransferStore(database: database)))

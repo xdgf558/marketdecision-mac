@@ -28,7 +28,7 @@ if [[ "${1:-all}" != tests ]]; then
       -derivedDataPath "$project_root/DerivedDataCI" -jobs 4 \
       CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
       PROVISIONING_PROFILE_SPECIFIER= \
-      CODE_SIGN_ENTITLEMENTS="$project_root/App/MarketDecision.entitlements" \
+      MARKETDECISION_APP_ENTITLEMENTS="$project_root/App/MarketDecision.entitlements" \
       ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
     app="$project_root/DerivedDataCI/Build/Products/$configuration/MarketDecision.app"
     python3 "$project_root/Scripts/check-demo-entitlements.py" "$app"
@@ -36,4 +36,6 @@ if [[ "${1:-all}" != tests ]]; then
       python3 "$project_root/Scripts/check-release-isolation.py" "$app"
     fi
   done
+  # Separate signed synthetic IPC probe; no valid SEC request and no file-panel UI.
+  bash "$project_root/Scripts/verify-sec-isolation.sh" "$app"
 fi
