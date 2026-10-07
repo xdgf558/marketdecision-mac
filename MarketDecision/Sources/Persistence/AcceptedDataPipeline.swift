@@ -85,6 +85,11 @@ where Provider.Identity == SECCompanyIdentityRecord,
 
 /// Same acceptance and revision boundary for the explicitly supported Alpaca IEX stock page.
 /// Its records retain unknown historical availability and no analysis qualification.
+public struct EquityAcquisitionPage: Sendable {
+    public let accepted: AcceptedProviderPayload<EquityRecord>
+    public let receipt: AcquisitionPageReceipt
+}
+
 public struct EquityAcquisitionPipeline<Provider: EquityDataProvider>: Sendable {
     public let client: EquityDataClient<Provider>
     public let store: BusinessDataStore
@@ -96,13 +101,21 @@ public struct EquityAcquisitionPipeline<Provider: EquityDataProvider>: Sendable 
     public func ingest(_ request: ProviderRequest) async throws -> AcquisitionPageReceipt {
         try Task.checkCancellation()
         let revision = await store.revision()
+        return try await ingest(request, expectedRevision: revision).receipt
+    }
+
+    /// A multi-page owner pins its initial revision before asynchronous preparation and
+    /// advances only using the previous receipt. It cannot reacquire a post-restore baseline.
+    public func ingest(_ request: ProviderRequest, expectedRevision: UUID) async throws -> EquityAcquisitionPage {
+        try Task.checkCancellation()
         let accepted = try await client.fetch(request)
         try Task.checkCancellation()
-        let receipt = try await store.ingestEquity(accepted, expectedRevision: revision)
+        let receipt = try await store.ingestEquity(accepted, expectedRevision: expectedRevision)
         let result = accepted.exchange.result
-        return AcquisitionPageReceipt(capability: request.capability, status: result.status,
+        let page = AcquisitionPageReceipt(capability: request.capability, status: result.status,
             itemCount: result.items.count, nextPageToken: result.nextPageToken,
             insertedDocuments: receipt.insertedDocuments, insertedRecords: receipt.insertedRecords,
             revision: receipt.revision)
+        return EquityAcquisitionPage(accepted: accepted, receipt: page)
     }
 }

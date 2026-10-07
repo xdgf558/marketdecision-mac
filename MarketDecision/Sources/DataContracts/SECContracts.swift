@@ -90,12 +90,17 @@ public struct SECSubmissionRecord: ProviderRecord, Sendable, Codable, Equatable 
         value.range(of: #"^[A-Za-z0-9][A-Za-z0-9._\-]{0,255}\z"#, options: .regularExpression) != nil
             && !value.contains("..")
     }
-    /// Submissions may identify a rendering wrapper through a relative path. Preserve
-    /// that metadata exactly; it does not authorize a filename-only download endpoint.
+    /// Submissions may identify a rendering wrapper through a relative path, including
+    /// literal repeated dots inside a segment. Keep metadata separate from the stricter
+    /// filename-only download policy; dot segments and path escapes remain invalid.
     public static func validPrimaryDocumentPath(_ value: String) -> Bool {
         guard !value.isEmpty, value.utf8.count <= 1_024 else { return false }
-        return value.split(separator: "/", omittingEmptySubsequences: false)
-            .allSatisfy { validFileName(String($0)) }
+        return value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { part in
+            let segment = String(part)
+            return !segment.isEmpty && segment != "." && segment != ".."
+                && segment.range(of: #"^[A-Za-z0-9][A-Za-z0-9._\-]{0,255}\z"#,
+                                 options: .regularExpression) != nil
+        }
     }
 }
 

@@ -3,7 +3,9 @@ import Testing
 import CoreDomain
 import DataContracts
 import DataProviders
+import SECNetworkBroker
 @testable import SECProvider
+@testable import Persistence
 
 private actor SECProductionFixtureGate: SECRequestGate {
     private(set) var waits = 0
@@ -132,6 +134,78 @@ private func secBoundaryFilingIndex(sizeJSON: String?) throws -> Data {
 }
 
 @Suite struct SECProductionBoundaryTests {
+    @Test func embeddedDoubleDotsInPrimaryMetadataPreserveEverySubmissionAndReopen() async throws {
+        let paths = ["annual.htm", "apple.inc..txt", "render..v1/apple.inc..txt", "apple...txt"]
+        var columns = try #require(JSONSerialization.jsonObject(with:
+            secBoundarySubmissions(cikJSON: nil, topLevel: true)) as? [String: [String]])
+        for key in Array(columns.keys) {
+            let first = try #require(columns[key]?.first)
+            columns[key] = Array(repeating: first, count: paths.count)
+        }
+        columns["accessionNumber"] = (79..<83).map { "0001193125-25-" + String(format: "%06d", $0) }
+        columns["primaryDocument"] = paths
+        columns["form"] = ["10-Q", "DEF 14A", "SC 13G/A", "8-K"]
+        let bytes = try JSONSerialization.data(withJSONObject: columns, options: [.sortedKeys])
+        let (provider, transport, _) = try secBoundaryProvider(bytes)
+        let rights = EntitlementSnapshot(providerID: "sec-edgar", feedID: "public-edgar",
+            version: "synthetic-sec-boundary.v1", evidenceRef: "synthetic-sec-production-boundary",
+            licenseRef: "synthetic-only", capabilities: [.submissions], usages: [.pitResearch],
+            validFrom: secBoundaryNow.addingTimeInterval(-1), validThrough: secBoundaryNow.addingTimeInterval(1))
+        let accepted = try await FundamentalsDataClient(provider: provider, entitlement: rights).submissions(
+            secBoundaryRequest(.submissions, page: "CIK0000320193-submissions-001.json"))
+        #expect(accepted.exchange.result.status == .complete)
+        #expect(accepted.exchange.result.items.map(\.primaryDocument) == paths)
+        #expect(accepted.rawPayload.bytes == bytes)
+        #expect(await transport.sends == 1)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("primary-metadata-\(UUID()).sqlite")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let store = try BusinessDataStore(path: file.path)
+        let receipt = try await store.ingestSECSubmissions(accepted, expectedRevision: store.revision())
+        #expect(receipt.insertedDocuments == 1 && receipt.insertedRecords == paths.count)
+        let reopened = try BusinessDataStore(path: file.path)
+        let records = try await reopened.secSubmissions(cik: "0000320193", asOf: secBoundaryNow)
+        let ordered = records.sorted { $0.accessionNumber < $1.accessionNumber }
+        #expect(ordered == accepted.exchange.result.items)
+        #expect(ordered.map(\.primaryDocument) == paths)
+        let source = try await reopened.sourceDocument(reference: accepted.rawPayload.reference)
+        #expect(source.payload == bytes && source.contentHash == accepted.rawPayload.contentHash)
+    }
+
+    @Test func metadataDoubleDotsDoNotAuthorizeFilenameOnlyOrXPCArchiveDownloads() async throws {
+        for path in ["apple.inc..txt", "render..v1/apple.inc..txt"] {
+            #expect(SECSubmissionRecord.validPrimaryDocumentPath(path))
+            #expect(!SECSubmissionRecord.validFileName(path))
+            #expect(throws: SECContractError.invalidFiling) { try SECFilingFile(name: path, type: "text/plain", size: 1) }
+            let (provider, transport, gate) = try secBoundaryProvider(Data())
+            await #expect(throws: SECAdapterError.invalidResource) {
+                try await provider.filingDocument(request: secBoundaryRequest(.filingDocument,
+                    resource: "0000320193/0001193125-25-000079/" + path))
+            }
+            #expect(await gate.waits == 0)
+            #expect(await transport.sends == 0)
+            let url = try #require(URL(string: "https://www.sec.gov/Archives/edgar/data/320193/000119312525000079/" + path))
+            var request = URLRequest(url: url)
+            request.setValue("MarketDecision/0.1 fixture@example.invalid", forHTTPHeaderField: "User-Agent")
+            request.setValue(SECDownloadRequest.accept, forHTTPHeaderField: "Accept")
+            #expect(throws: (any Error).self) { try SECDownloadRequest(request) }
+        }
+    }
+
+    @Test func primaryMetadataSegmentsRetainASCIILeadingLengthAndTraversalBounds() throws {
+        for path in [".", "..", "../x", "x/../y", "x/./y", "/x", "x/", "x//y", "x\\y", "x/%2e%2e/y",
+                     "https://example.invalid/x", "x?query", "x#fragment", ".hidden", "_leading", "-leading",
+                     "nonascii-é.txt", String(repeating: "a", count: 257),
+                     Array(repeating: String(repeating: "a", count: 256), count: 4).joined(separator: "/")] {
+            #expect(!SECSubmissionRecord.validPrimaryDocumentPath(path))
+        }
+        #expect(!SECSubmissionRecord.validPrimaryDocumentPath(""))
+        #expect(SECSubmissionRecord.validPrimaryDocumentPath("a" + String(repeating: ".", count: 255)))
+        #expect(SECSubmissionRecord.validPrimaryDocumentPath(String(repeating: "a", count: 256)))
+        let maximumPath = (Array(repeating: String(repeating: "a", count: 256), count: 3)
+            + [String(repeating: "a", count: 253)]).joined(separator: "/")
+        #expect(maximumPath.utf8.count == 1_024 && SECSubmissionRecord.validPrimaryDocumentPath(maximumPath))
+    }
+
     @Test(arguments: ["123", "\"123\"", "0", "\"0\""])
     func filingIndexAcceptsExactNumericAndDigitStringSizes(size: String) async throws {
         let bytes = try secBoundaryFilingIndex(sizeJSON: size)

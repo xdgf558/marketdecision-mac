@@ -376,7 +376,8 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public func generateValuationSupplement(applicability: SECIndustryApplicability,
         sourceReference: String, excerpt: String, rationale: String,
         shareEvidence: SECValuationShareEvidenceDraft? = nil,
-        splitEvidence: SECValuationSplitEvidenceDraft? = nil) async {
+        splitEvidence: SECValuationSplitEvidenceDraft? = nil,
+        capturedPrices: [SECValuationPriceEvidence] = []) async {
         guard canGenerateValuationSupplement, let parent = financialReport else { return }
         do {
             let reviewedAt = now()
@@ -432,7 +433,11 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
                     anchors: [anchor(reference: form.sourceReference, text: form.excerpt)],
                     reviewedAt: reviewedAt, rationale: form.rationale)
             } else { split = nil }
-            await generateValuationSupplement(evidence: .init(industryReview: industry, shareClasses: shares, splitBasis: split))
+            guard capturedPrices.allSatisfy({ $0.record.symbol == parent.ticker }) else {
+                throw SECValuationError.invalidEvidence
+            }
+            await generateValuationSupplement(evidence: .init(industryReview: industry, shareClasses: shares,
+                splitBasis: split, prices: capturedPrices))
         } catch {
             valuationHasError = true
             valuationMessage = "证据未提交。请核对日期、申报、完整股类与判断理由；每段引文须在选定来源唯一出现，股数须引用原文未缩放的完整整数。"
