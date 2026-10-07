@@ -30,7 +30,7 @@ public struct DatabaseStore: Sendable {
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
         guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
         let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
-            + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration] : [])
+            + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration] : [])
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {
             throw MigrationError.invalidCatalog
@@ -64,6 +64,31 @@ public struct DatabaseStore: Sendable {
     /// One database transaction; throws rolls back all statements in the closure.
     public func transaction<T>(_ body: (Database) throws -> T) throws -> T { try queue.write(body) }
     public func read<T>(_ body: (Database) throws -> T) throws -> T { try queue.read(body) }
+
+    // Report sidecars reference the retained SEC parent; exact raw responses remain
+    // solely in that parent. The body table uses rowid + a narrow primary-key index
+    // so catalog existence checks never fetch a large BLOB to compare a B-tree key.
+    private static let secFinancialReportMigration = DatabaseMigration(identifier: "sec-research.storage.v3") { db in
+        try db.execute(sql: """
+            CREATE TABLE sec_financial_report_catalog (
+                report_id TEXT PRIMARY KEY NOT NULL,
+                parent_document_id TEXT NOT NULL,
+                parent_document_hash TEXT NOT NULL CHECK(length(parent_document_hash) = 64),
+                report_hash TEXT NOT NULL CHECK(length(report_hash) = 64),
+                summary_hash TEXT NOT NULL CHECK(length(summary_hash) = 64),
+                summary_json BLOB NOT NULL,
+                FOREIGN KEY(parent_document_id) REFERENCES sec_research_catalog(document_id) ON DELETE RESTRICT
+            ) WITHOUT ROWID
+            """)
+        try db.execute(sql: "CREATE INDEX sec_financial_reports_by_parent ON sec_financial_report_catalog(parent_document_id, report_id)")
+        try db.execute(sql: """
+            CREATE TABLE sec_financial_report_documents (
+                report_id TEXT PRIMARY KEY NOT NULL,
+                report_json BLOB NOT NULL,
+                FOREIGN KEY(report_id) REFERENCES sec_financial_report_catalog(report_id) ON DELETE RESTRICT
+            )
+            """)
+    }
 
     // WITHOUT ROWID stores a large BLOB in the primary-key B-tree record. Even a
     // metadata-only key lookup can copy that complete record for key comparison.

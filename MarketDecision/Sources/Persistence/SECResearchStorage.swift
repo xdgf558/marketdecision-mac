@@ -96,10 +96,16 @@ enum SECResearchStorage {
     }
 
     static func open(id: UUID, db: Database) throws -> SECResearchDocument {
+        try validatedRecord(id: id, db: db).document
+    }
+
+    /// Returns the exact retained encoding as well as the validated document. A financial
+    /// report binds these original bytes, never a potentially different re-encoding.
+    static func validatedRecord(id: UUID, db: Database) throws -> (document: SECResearchDocument, bytes: Data) {
         let text = id.uuidString.lowercased()
         guard let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE document_id = ?", arguments: [text]) else {
             // Opening one pre-catalog record does not force unrelated legacy migration.
-            return try legacyDocument(id: id, db: db).0
+            return try legacyDocument(id: id, db: db)
         }
         let catalog = try decodeCatalog(row)
         let document: SECResearchDocument, bytes: Data
@@ -121,7 +127,22 @@ enum SECResearchStorage {
         try Task.checkCancellation()
         guard document.id == id, digest(bytes) == catalog.documentHash,
               SECResearchSummary(document: document) == catalog.summary else { throw BusinessStoreError.corruptedStorage }
-        return document
+        return (document, bytes)
+    }
+
+    /// Index only the selected legacy parent, inside the caller's transaction. Frozen
+    /// document bytes and business revision are unchanged by this derived metadata.
+    static func ensureCatalog(document: SECResearchDocument, bytes: Data, db: Database) throws {
+        let text = document.id.uuidString.lowercased()
+        if let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE document_id = ?", arguments: [text]) {
+            let catalog = try decodeCatalog(row)
+            guard catalog.documentHash == digest(bytes), catalog.summary == SECResearchSummary(document: document)
+            else { throw BusinessStoreError.corruptedStorage }
+        } else {
+            let original = try legacyDocument(id: document.id, db: db)
+            guard original.1 == bytes else { throw BusinessStoreError.corruptedStorage }
+            try insertCatalog(document, hash: digest(bytes), kind: "legacy", db: db)
+        }
     }
 
     private static func decodeCatalog(_ row: Row) throws -> Catalog {
