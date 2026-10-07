@@ -2,6 +2,12 @@
   "version": 1,
   "scope": "Public source, synthetic tests and fixed issuer-excerpt accounting only; private requirements and full source evidence remain local.",
   "sources": [
+    {"path": "Sources/SECNetworkBroker/SECDownloadPolicy.swift", "kind": "tested", "suites": ["FoundationTests.SECNetworkBrokerTests"], "reason": "Closed SEC wire descriptors and bounded replies are exercised synthetically; no live endpoint or process memory qualification."},
+    {"path": "Sources/SECNetworkBroker/SECNetworkBrokerSession.swift", "kind": "tested", "suites": ["FoundationTests.SECNetworkBrokerTests"], "reason": "Lazy transport, per-connection request limit, invalidation and late replies are exercised with injected transports; no external request."},
+    {"path": "Sources/SECNetworkBroker/SECXPCTransport.swift", "kind": "tested", "suites": ["FoundationTests.SECXPCTransportTests"], "reason": "Client refusal/cancellation/late replies use injected channels. The separate signed isolation probe covers OS socket denial and embedded XPC refusal; it is not a live SEC request."},
+    {"path": "App/SECNetworkService/main.swift", "kind": "build_only", "suites": [], "reason": "Embedded private XPC listener built by Debug/Release; actual service IPC refusal is checked by the synthetic signed isolation probe, outside Swift Testing."},
+    {"path": "Tools/SECNetworkIsolationProbe/main.swift", "kind": "build_only", "suites": [], "reason": "Separate synthetic probe signs a temporary app with the actual built helper, requires OS socket denial and an invalid-descriptor XPC reply; no SEC request or file panel."},
+
     {"path": "Sources/AppComposition/OfflineIssuerCatalog.swift", "kind": "tested", "suites": ["FoundationTests.OfflineIssuerCatalogTests"], "reason": "Reviewed runtime facts are separate from test oracles; fixed catalogue inputs and refusal paths are exercised without networking."},
     {"path": "Sources/AppComposition/Resources/offline-issuer-excerpts.json", "kind": "tested", "suites": ["FoundationTests.OfflineIssuerCatalogTests"], "reason": "All ten issuer facts and context match the reviewed test inputs with oracle answers removed. Original full source documents and provider qualification are not included."},
     {"path": "Sources/AppComposition/OfflineIssuerWorkspaceModel.swift", "kind": "tested", "suites": ["FoundationTests.OfflineIssuerWorkspaceTests", "FoundationTests.OfflineIssuerCompositionTests"], "reason": "Page-local generation, saved revision, explicit replay and persisted reopen are exercised with controlled dependencies and isolated databases; not native visual acceptance."},
@@ -95,6 +101,19 @@
     {"path": "App/SECResearchViews.swift", "kind": "build_only", "suites": [], "reason": "Native SEC research rendering and effective network-permission gate compiled in Debug/Release; visual/runtime evidence recorded separately. No file-panel automation."}
   ],
   "tests": [
+    {"selector": "FoundationTests.SECNetworkBrokerTests/closedDescriptorsRoundTripOnlyExistingSECRoutes()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/arbitraryOriginsCredentialsPathsAndHeadersAreRejected()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/decodedDescriptorCannotBypassRouteOrContactValidation()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/repliesDiscardHeadersAndEnforceBodyAndMetadataLimits()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/invalidAndClosedCallsCreateNoTransport()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/connectionLimitsSequentialPagesAndReusesOnlyItsOwnTransport()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECNetworkBrokerTests/busyAndConnectionInvalidationCannotPublishLateTransportSuccess()", "source": "Tests/FoundationTests/SECNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECXPCTransportTests/forbiddenDestinationNeverReachesConnection()", "source": "Tests/FoundationTests/SECXPCTransportTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECXPCTransportTests/closedDescriptorAndResponseCrossTheChannel()", "source": "Tests/FoundationTests/SECXPCTransportTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECXPCTransportTests/cancellationClosesConnectionAndRejectsLateReply()", "source": "Tests/FoundationTests/SECXPCTransportTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECXPCTransportTests/explicitClosePreventsNewRequestsAndLatePublication()", "source": "Tests/FoundationTests/SECXPCTransportTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECXPCTransportTests/testRunnerCannotEnableProductionBroker()", "source": "Tests/FoundationTests/SECXPCTransportTests.swift", "execution": "required"},
+
     {"selector": "FoundationTests.OfflineIssuerCatalogTests/runtimeExcerptsPreserveEveryReviewedInputAndContainNoTestAnswers()", "source": "Tests/FoundationTests/OfflineIssuerCatalogTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OfflineIssuerCatalogTests/unknownAndNonexactSymbolsNeverFallBackToAnotherIssuer()", "source": "Tests/FoundationTests/OfflineIssuerCatalogTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OfflineIssuerCatalogTests/catalogueRequiresEveryUniqueReviewedIssuerAndValidFacts()", "source": "Tests/FoundationTests/OfflineIssuerCatalogTests.swift", "execution": "required"},

@@ -5,6 +5,7 @@ validate a provisioning profile, or establish native file-panel/Keychain behavio
 """
 import contextlib
 import io
+import json
 from pathlib import Path
 import plistlib
 import re
@@ -20,7 +21,8 @@ CHECKER = ROOT / 'Scripts/check-demo-entitlements.py'
 SANDBOX = 'com.apple.security.app-sandbox'
 SELECTED = 'com.apple.security.files.user-selected.read-write'
 CLIENT = 'com.apple.security.network.client'
-BASE = {SANDBOX: True, SELECTED: True, CLIENT: True}
+BASE = {SANDBOX: True, SELECTED: True}
+SERVICE = {SANDBOX: True, CLIENT: True}
 
 
 class DemoPermissionTests(unittest.TestCase):
@@ -31,6 +33,13 @@ class DemoPermissionTests(unittest.TestCase):
         contents = self.app / 'Contents'
         contents.mkdir(parents=True)
         (contents / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'local.marketdecision.development'}))
+        self.service = contents / 'XPCServices/SECNetworkService.xpc'
+        service_contents = self.service / 'Contents'
+        service_contents.mkdir(parents=True)
+        (service_contents / 'Info.plist').write_bytes(plistlib.dumps({
+            'CFBundleIdentifier': 'local.marketdecision.sec-network',
+            'CFBundlePackageType': 'XPC!', 'XPCService': {'ServiceType': 'Application'},
+        }))
         self.profile = contents / 'embedded.provisionprofile'
         self.profile.write_bytes(b'synthetic existence fixture; not a provisioned profile')
         self.signed = dict(BASE, **{
@@ -39,18 +48,29 @@ class DemoPermissionTests(unittest.TestCase):
             'keychain-access-groups': ['SYNTHETICTEAM.local.marketdecision.development'],
         })
 
-    def check(self, entitlements, provisioned=False, reject=False, failure=None):
+    def check(self, entitlements, provisioned=False, reject=False, failure=None,
+              service_entitlements=None, service_team=None):
         read = ['codesign', '-d', '--entitlements', ':-', str(self.app)]
         verify = ['codesign', '--verify', '--strict', str(self.app)]
+        service_read = ['codesign', '-d', '--entitlements', ':-', str(self.service)]
+        service_verify = ['codesign', '--verify', '--strict', str(self.service)]
+        app_details = ['codesign', '-d', '--verbose=4', str(self.app)]
+        service_details = ['codesign', '-d', '--verbose=4', str(self.service)]
         calls = []
 
         def codesign(args, **kwargs):
-            self.assertIn(args, [read, verify])
+            self.assertIn(args, [read, verify, service_read, service_verify, app_details, service_details])
             self.assertTrue(kwargs.get('check'))
             calls.append(args)
-            if args == (read if failure == 'read' else verify if failure == 'verify' else None):
+            if args == (read if failure == 'read' else verify if failure == 'verify' else
+                        service_verify if failure == 'service_verify' else None):
                 raise subprocess.CalledProcessError(1, args)
-            return subprocess.CompletedProcess(args, 0, stdout=plistlib.dumps(entitlements))
+            if args in [app_details, service_details]:
+                team = 'SYNTHETICTEAM' if provisioned else 'not set'
+                if args == service_details and service_team is not None: team = service_team
+                return subprocess.CompletedProcess(args, 0, stdout='', stderr='TeamIdentifier=' + team + '\n')
+            value = entitlements if args == read else SERVICE if service_entitlements is None else service_entitlements
+            return subprocess.CompletedProcess(args, 0, stdout=plistlib.dumps(value))
 
         arguments = [str(CHECKER), str(self.app)] + (['--provisioned'] if provisioned else [])
         output = io.StringIO()
@@ -63,10 +83,10 @@ class DemoPermissionTests(unittest.TestCase):
                     runpy.run_path(str(CHECKER), run_name='__main__')
             else:
                 runpy.run_path(str(CHECKER), run_name='__main__')
-        self.assertEqual(calls, [read] if reject or failure == 'read' else [read, verify])
         if reject or failure:
             self.assertNotIn('PASS:', output.getvalue())
         else:
+            self.assertEqual(calls, [read, service_read, app_details, service_details, service_verify, verify])
             self.assertIn('PASS:', output.getvalue())
 
     def test_ordinary_production_permissions_pass(self):
@@ -98,11 +118,45 @@ class DemoPermissionTests(unittest.TestCase):
                 self.check(dict(BASE, **{key: True}), reject=True)
                 self.check(dict(self.signed, **{key: True}), provisioned=True, reject=True)
 
-    def test_network_client_is_required_and_boolean_true(self):
-        self.check({SANDBOX: True, SELECTED: True}, reject=True)
-        for value in [False, 0, 1, 'true']:
+    def test_production_network_client_is_rejected_even_false(self):
+        for value in [True, False, 0, 1, 'true']:
             with self.subTest(value=value):
                 self.check(dict(BASE, **{CLIENT: value}), reject=True)
+                self.check(dict(self.signed, **{CLIENT: value}), provisioned=True, reject=True)
+
+    def test_service_requires_exact_permissions(self):
+        for key in [SANDBOX, CLIENT]:
+            for value in [False, 0, 1, 'true', None]:
+                with self.subTest(key=key, value=value):
+                    permissions = dict(SERVICE)
+                    if value is None: del permissions[key]
+                    else: permissions[key] = value
+                    self.check(BASE, service_entitlements=permissions, reject=True)
+        for key, value in {
+            SELECTED: True, 'keychain-access-groups': ['other.group'],
+            'com.apple.security.inherit': True, 'com.apple.security.get-task-allow': True,
+            'com.apple.security.network.server': True,
+        }.items():
+            with self.subTest(key=key):
+                self.check(BASE, service_entitlements=dict(SERVICE, **{key: value}), reject=True)
+
+    def test_service_presence_identity_and_team_are_required(self):
+        self.check(BASE, service_team='OTHERTEAM', reject=True)
+        self.check(self.signed, provisioned=True, service_team='OTHERTEAM', reject=True)
+        info = self.service / 'Contents/Info.plist'
+        original = info.read_bytes()
+        for key, value in [('CFBundleIdentifier', 'other.service'), ('CFBundlePackageType', 'APPL'),
+                           ('XPCService', {'ServiceType': 'System'})]:
+            altered = plistlib.loads(original); altered[key] = value; info.write_bytes(plistlib.dumps(altered))
+            self.check(BASE, reject=True)
+        info.write_bytes(original)
+        unexpected = self.service.parent / 'Unexpected.xpc'; unexpected.mkdir()
+        self.check(BASE, reject=True); unexpected.rmdir()
+        self.service.rename(self.service.with_suffix('.absent'))
+        self.check(BASE, reject=True)
+
+    def test_service_signature_failure_cannot_pass(self):
+        self.check(BASE, failure='service_verify')
 
     def test_broad_file_and_persistent_access_are_rejected(self):
         extras = {
@@ -160,6 +214,7 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                 'keychain-access-groups': ['$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)'],
             }),
             'MarketDecision-UIHost.entitlements': {SANDBOX: True},
+            'SECNetworkService.entitlements': SERVICE,
             'MarketDecision-FileAcceptance.entitlements': {SANDBOX: True, SELECTED: True},
         }
         for filename, keys in expected.items():
@@ -180,7 +235,8 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
         for bundle, expected in [
             ('local.marketdecision.ui-test-host', 'MarketDecision-UIHost.entitlements'),
             ('local.marketdecision.file-acceptance', 'MarketDecision-FileAcceptance.entitlements'),
-            ('local.marketdecision.development', 'MarketDecision.entitlements'),
+            ('local.marketdecision.development', '"$(MARKETDECISION_APP_ENTITLEMENTS)"'),
+            ('local.marketdecision.sec-network', 'SECNetworkService.entitlements'),
         ]:
             with self.subTest(bundle=bundle):
                 selected = [(settings, name) for settings, name in configurations
@@ -188,6 +244,41 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                 self.assertEqual(sorted(name for _, name in selected), ['Debug', 'Release'])
                 for settings, _ in selected:
                     self.assertEqual(re.findall(r'CODE_SIGN_ENTITLEMENTS\s*=\s*([^;]+);', settings), [expected])
+                    if bundle == 'local.marketdecision.development':
+                        self.assertIn('MARKETDECISION_APP_ENTITLEMENTS = MarketDecision.entitlements;', settings)
+                    if bundle == 'local.marketdecision.sec-network':
+                        self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;', settings)
+
+    def test_only_production_embeds_and_depends_on_network_service(self):
+        project = ROOT / 'App/MarketDecision.xcodeproj/project.pbxproj'
+        objects = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(project)]))['objects']
+        targets = {value['name']: value for value in objects.values() if value.get('isa') == 'PBXNativeTarget'}
+        service = targets['SECNetworkService']
+        product = service['productReference']
+        self.assertEqual(service['productType'], 'com.apple.product-type.xpc-service')
+        for name in ['MarketDecision', 'MarketDecisionUITestHost', 'MarketDecisionFileAcceptance']:
+            target = targets[name]
+            copies = [objects[p] for p in target['buildPhases'] if objects[p]['isa'] == 'PBXCopyFilesBuildPhase']
+            dependencies = [objects[d]['target'] for d in target['dependencies']]
+            if name == 'MarketDecision':
+                self.assertEqual(len(copies), 1)
+                self.assertEqual(copies[0]['dstPath'], '$(CONTENTS_FOLDER_PATH)/XPCServices')
+                self.assertEqual(str(copies[0]['dstSubfolderSpec']), '16')
+                self.assertEqual([objects[f]['fileRef'] for f in copies[0]['files']], [product])
+                self.assertIn('CodeSignOnCopy', objects[copies[0]['files'][0]]['settings']['ATTRIBUTES'])
+                self.assertEqual(len(dependencies), 1)
+                self.assertIs(objects[dependencies[0]], service)
+            else:
+                self.assertEqual(copies, [])
+                self.assertEqual(dependencies, [])
+        helper_products = [objects[d]['productName'] for d in service['packageProductDependencies']]
+        self.assertEqual(helper_products, ['SECNetworkBroker'])
+
+    def test_build_scripts_do_not_override_helper_entitlements(self):
+        for name in ['verify-ci.sh', 'build-signed-local.sh', 'verify-local.sh']:
+            text = (ROOT / 'Scripts' / name).read_text()
+            self.assertNotRegex(text, r'(?m)\sCODE_SIGN_ENTITLEMENTS=')
+
 
 
 if __name__ == '__main__':

@@ -83,7 +83,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
             try EquityRecord.validateSymbol(ticker)
         } catch {
             clearDocument(); hasError = true
-            message = networkAvailable ? "请输入有效的股票代码和 SEC 联系邮箱。" : "本构建尚未启用 SEC 网络权限，仍可打开本地已保存研究。"
+            message = networkAvailable ? "请输入有效的股票代码和 SEC 联系邮箱。" : "本构建的 SEC 导入服务不可用，仍可打开本地已保存研究。"
             return nil
         }
         let token = begin(clear: true), symbol = ticker

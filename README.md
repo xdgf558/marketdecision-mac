@@ -7,3 +7,5 @@ macOS 美股与卖方期权工作台，目前处于 **Phase 1 数据与基本面
 Copyright (c) 2026 xdgf558. All rights reserved.
 
 本仓库公开可见，但不授予原项目开源许可。详见 [LICENSE](LICENSE)。依赖的独立许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，不改变原项目的权利保留。
+
+SEC 联网由应用内嵌的独立沙箱服务承担，主应用没有网络权限；服务仅接受显式导入使用的 SEC 端点描述。每页上限不等于进程内存上限，多版本规模与新 SEC 页的目标系统交互仍待验收。

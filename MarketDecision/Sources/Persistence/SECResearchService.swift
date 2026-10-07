@@ -170,11 +170,16 @@ public struct SECResearchDocument: Sendable, Codable, Identifiable {
             guard indexes.contains(where: { $0.accessionNumber == document.accessionNumber &&
                 $0.files.contains(where: { $0.name == document.fileName }) }) else { throw SECResearchError.invalidDocument }
         }
-        let resources: [(Provenance, String)] = [(identity.provenance, ticker)]
-            + submissions.map { ($0.provenance, identity.cik) }
-            + facts.map { ($0.provenance, identity.cik) }
-            + indexes.map { ($0.provenance, identity.cik + "/" + $0.accessionNumber) }
-            + filingDocuments.map { ($0.provenance, identity.cik + "/" + $0.accessionNumber + "/" + $0.fileName) }
+        // Keep each tuple append simple enough for the supported Swift 6.1 compiler.
+        var resources: [(Provenance, String)] = [(identity.provenance, ticker)]
+        for submission in submissions { resources.append((submission.provenance, identity.cik)) }
+        for fact in facts { resources.append((fact.provenance, identity.cik)) }
+        for index in indexes {
+            resources.append((index.provenance, identity.cik + "/" + index.accessionNumber))
+        }
+        for document in filingDocuments {
+            resources.append((document.provenance, identity.cik + "/" + document.accessionNumber + "/" + document.fileName))
+        }
         for (provenance, resource) in resources {
             guard let reference = provenance.rawObjectRef,
                   byReference[reference]?.request.resourceID == resource else { throw SECResearchError.invalidDocument }

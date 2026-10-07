@@ -77,7 +77,7 @@ class FilePanelEvidenceTests(unittest.TestCase):
         project_path = Path(__file__).resolve().parents[1] / 'App/MarketDecision.xcodeproj/project.pbxproj'
         original = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(project_path)]))
         result.validate_project(original)
-        for mutation in ['source', 'package', 'permissions', 'network_permissions', 'debug_permissions', 'conditions']:
+        for mutation in ['source', 'package', 'permissions', 'network_permissions', 'debug_permissions', 'conditions', 'helper_dependency', 'helper_embedding']:
             project = copy.deepcopy(original)
             objects = project['objects']
             target = next(v for v in objects.values() if v.get('name') == 'MarketDecisionFileAcceptance' and v.get('isa') == 'PBXNativeTarget')
@@ -85,6 +85,8 @@ class FilePanelEvidenceTests(unittest.TestCase):
                 phase = next(objects[p] for p in target['buildPhases'] if objects[p]['isa'] == 'PBXSourcesBuildPhase')
                 phase['files'].pop()
             elif mutation == 'package': target['packageProductDependencies'] = []
+            elif mutation == 'helper_dependency': target['dependencies'] = ['E00000000000000000000011']
+            elif mutation == 'helper_embedding': target['buildPhases'].append('E00000000000000000000010')
             else:
                 configuration = 'Debug' if mutation == 'debug_permissions' else 'Release'
                 settings = next(objects[c]['buildSettings'] for c in objects[target['buildConfigurationList']]['buildConfigurations'] if objects[c]['name'] == configuration)

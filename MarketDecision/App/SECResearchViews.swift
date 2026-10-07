@@ -1,5 +1,5 @@
 import SwiftUI
-import Security
+import SECNetworkBroker
 import AppComposition
 import CoreDomain
 import DataContracts
@@ -28,7 +28,7 @@ struct SECResearchPage: View {
             do {
                 errorMessage = nil
                 if model == nil {
-                    let ready = try await workspace.makeSECResearchWorkspace(networkAvailable: SECNetworkPermission.isEnabled)
+                    let ready = try await workspace.makeSECResearchWorkspace(networkAvailable: SECNetworkServiceAvailability.isAvailable)
                     try Task.checkCancellation(); model = ready
                 }
                 await model?.load()
@@ -38,23 +38,6 @@ struct SECResearchPage: View {
             }
         }
         .onDisappear { model?.disappear() }
-    }
-}
-
-/// Read the effective signature, not an app preference. The synthetic UI host remains unable to make
-/// real SEC requests even if a contact address is entered into their settings.
-private enum SECNetworkPermission {
-    static var isEnabled: Bool {
-        var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
-        var staticCode: SecStaticCode?
-        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else { return false }
-        var info: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
-              let info = info as? [String: Any],
-              let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
-        else { return false }
-        return entitlements["com.apple.security.network.client"] as? Bool == true
     }
 }
 
@@ -89,7 +72,7 @@ struct SECResearchContent: View {
                     Text("点击后发送股票代码和联系邮箱给 SEC。邮箱仅保存在本机；不会随研究记录保存或公开。")
                         .font(.caption).foregroundStyle(.secondary)
                     if !model.networkAvailable {
-                        Text("本构建尚未启用 SEC 网络权限，可查看和重算已保存研究。")
+                        Text("本构建的 SEC 导入服务不可用，可查看和重算已保存研究。")
                             .font(.callout).foregroundStyle(.orange).accessibilityIdentifier("secNetworkDisabled")
                     }
                 }.padding(8)

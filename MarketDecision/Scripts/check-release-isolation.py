@@ -9,9 +9,10 @@ entitlements = plistlib.loads(subprocess.check_output(['codesign', '-d', '--enti
 if entitlements.get('com.apple.security.get-task-allow', False):
     raise SystemExit('FAIL: Release allows debugger attachment')
 markers = [b'--keychain-diagnostic', b'KeychainDiagnostic', b'local.marketdecision.app-diagnostic.', b'PASS app restart/',
-           b'NativeUITestEnvironment', b'SyntheticUIStore', b'SYNTHETIC-UI-', b'--synthetic-fail-first-save']
+           b'NativeUITestEnvironment', b'SyntheticUIStore', b'SYNTHETIC-UI-', b'--synthetic-fail-first-save',
+           b'SECNetworkIsolationProbe', b'SyntheticReplacementProbe', b'--expect-invalid-broker']
 images = []
-for folder in [app / 'Contents/MacOS', app / 'Contents/Frameworks']:
+for folder in [app / 'Contents/MacOS', app / 'Contents/Frameworks', app / 'Contents/XPCServices']:
     if folder.exists():
         for path in folder.rglob('*'):
             if path.is_file() and 'Mach-O' in subprocess.check_output(['file', '-b', str(path)], text=True):

@@ -2,6 +2,7 @@ import Foundation
 import DataContracts
 import DataProviders
 import SECProvider
+import SECNetworkBroker
 import Persistence
 
 extension AppEnvironment {
@@ -22,7 +23,7 @@ extension AppEnvironment {
         return SECResearchWorkspaceModel(storage: store, networkAvailable: networkAvailable) { ticker, contact, progress in
             guard networkAvailable else { throw SECResearchConfigurationError.networkDisabled }
             try Task.checkCancellation()
-            let transport = try URLSessionHTTPTransport(allowedHosts: ["www.sec.gov", "data.sec.gov"])
+            let transport = try SECXPCTransport()
             do {
                 // SEC's public-access policy permits identified automated access. This short-lived
                 // request grant is confined to local replay, never live prices/PIT/trading/redistribution.

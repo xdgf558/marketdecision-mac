@@ -25,6 +25,8 @@ def validate_permissions(identity, entitlements):
 def check_app(path):
     path = Path(path)
     info = plistlib.loads((path / 'Contents/Info.plist').read_bytes())
+    if (path / 'Contents/XPCServices').exists():
+        raise ValueError('FAIL: file acceptance app must not embed a network helper')
     signed = subprocess.run(['codesign', '-d', '--entitlements', ':-', str(path)], capture_output=True, check=True)
     entitlements = plistlib.loads(signed.stdout)
     validate_permissions(info['CFBundleIdentifier'], entitlements)
@@ -49,12 +51,21 @@ def validate_project(project):
         return {objects[reference]['productName'] for reference in target.get('packageProductDependencies', [])}
     if products(production) != products(acceptance):
         raise ValueError('FAIL: acceptance app package dependencies differ')
-    # The file-panel app shares production code, dependencies and Release conditions, but
-    # deliberately excludes the newly authorized production outbound-network entitlement.
+    # The file-panel app shares production views, dependencies and Release conditions,
+    # but does not embed the production app's separately sandboxed network service.
+    if acceptance.get('dependencies') or any(objects[p]['isa'] == 'PBXCopyFilesBuildPhase'
+                                               for p in acceptance['buildPhases']):
+        raise ValueError('FAIL: file acceptance app must not depend on or embed a helper')
     for target, entitlement_file in [(production, 'MarketDecision.entitlements'),
                                      (acceptance, 'MarketDecision-FileAcceptance.entitlements')]:
         configurations = [objects[c] for c in objects[target['buildConfigurationList']]['buildConfigurations']]
-        if any(c['buildSettings'].get('CODE_SIGN_ENTITLEMENTS') != entitlement_file for c in configurations):
+        def configured_entitlement(settings):
+            value = settings.get('CODE_SIGN_ENTITLEMENTS')
+            if target is production:
+                if value != '$(MARKETDECISION_APP_ENTITLEMENTS)': return None
+                return settings.get('MARKETDECISION_APP_ENTITLEMENTS')
+            return value
+        if any(configured_entitlement(c['buildSettings']) != entitlement_file for c in configurations):
             raise ValueError('FAIL: target must keep its own production/file-only entitlement file in every configuration')
         settings = next(c['buildSettings'] for c in configurations if c['name'] == 'Release')
         if (settings.get('CODE_SIGN_INJECT_BASE_ENTITLEMENTS') != 'NO'
