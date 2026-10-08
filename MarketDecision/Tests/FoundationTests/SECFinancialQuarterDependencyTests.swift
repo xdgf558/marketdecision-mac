@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Testing
 import CoreDomain
 import DataContracts
@@ -69,6 +70,33 @@ private func dependencyReport(_ records: DependencyRecords) async throws -> SECF
 }
 
 @Suite struct SECFinancialQuarterDependencyTests {
+    @Test func overlappingAnnualCandidatePreservesLegacyEightQuarterReport() async throws {
+        var records = try dependencySixYears()
+        let end = try MarketDate(iso8601: "2025-09-30")
+        let id = "synthetic/overlapping-annual"
+        records.facts.append(try dependencyFact(year: 2025, index: 3, end: end,
+            concept: "Revenues", value: 2400, start: MarketDate(iso8601: "2024-12-01")))
+        records.submissions.append(try .init(recordID: id, cik: dependencyCIK,
+            accessionNumber: "\(dependencyCIK)-25-000005", form: "10-K", filingDate: end.addingDays(30),
+            reportDate: end, acceptedAt: nil, primaryDocument: "synthetic-transition.htm", isAmendment: false,
+            provenance: dependencyProvenance(id, endpoint: .submissions, end: end)))
+        let prepared = try SECFinancialEvidenceAdapter.prepare(cik: dependencyCIK, facts: records.facts,
+            submissions: records.submissions, cutoff: secFinancialFixtureCutoff, classification: nil)
+        #expect(prepared.evidence.quarters.count == 8)
+        #expect(prepared.evidence.quarters.first?.start.iso8601 == "2024-01-01")
+        let report = try await dependencyReport(records)
+        #expect(report.evidence.quarters.count == 8)
+        #expect(report.evidence.quarters.first?.start.iso8601 == "2024-01-01")
+        let bytes = try SECFinancialReport.bytes(report)
+        // Captured from the original all-history adapter before either dependency-bound change.
+        // This covers the full input/evidence/model/cache serialization, not just quarter count.
+        let legacyHash = "d64ac95c53c2c02cd5bb1f2a864ff371c2614d318f228818e6d71fd336355813"
+        #expect(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() == legacyHash)
+        let reopened = try JSONDecoder().decode(SECFinancialReport.self, from: bytes)
+        try reopened.validateEvidence(facts: records.facts, submissions: records.submissions, classification: nil)
+        #expect(try reopened.cachedReportsMatch(await reopened.recompute()))
+    }
+
     @Test func unrelatedOldQuarterGeometryDoesNotPoisonCurrentReportOrAnnualInputs() async throws {
         let current = try dependencySixYears(), baseline = try await dependencyReport(current)
         let old = try dependencyYear(2003, annualRevenue: 4, ends: ["03-31", "06-30", "11-30", "12-31"])
@@ -97,13 +125,13 @@ private func dependencyReport(_ records: DependencyRecords) async throws -> SECF
         #expect(try SECFinancialReport.bytes(reopened) == bytes)
     }
 
-    @Test(arguments: [2020, 2023])
+    @Test(arguments: [2020, 2022])
     func retainedAnnualDependenciesDoNotRequireUnselectedQuarterGeometry(_ year: Int) async throws {
         let baseline = try await dependencyReport(dependencySixYears())
         let records = try dependencySixYears(malformedYear: year)
         let report = try await dependencyReport(records)
-        // The oldest CAGR input and the oldest tax input remain selected even though their
-        // unneeded quarter geometry is malformed. No annual source or metadata is rewritten.
+        // Annual growth dependencies outside the conservative quarter horizon remain selected
+        // despite malformed quarter geometry. No annual source or metadata is rewritten.
         #expect(report.evidence.revenueYears.count == 6)
         #expect(report.evidence.fiscalYears.count == 3)
         #expect(report.evidence.facts.contains { $0.endDate.iso8601 == "\(year)-11-30" })
@@ -117,8 +145,10 @@ private func dependencyReport(_ records: DependencyRecords) async throws -> SECF
         #expect(try baseline.cachedReportsMatch(replay))
     }
 
-    @Test(arguments: [2024, 2025])
+    @Test(arguments: [2023, 2024, 2025])
     func requiredAnnualQuarterGeometryStillRejects(_ year: Int) throws {
+        // 2023 is inside the conservative horizon even though these particular inputs later
+        // select only 2024–2025 quarters. Keep the original refusal throughout that horizon.
         let records = try dependencySixYears(malformedYear: year)
         #expect(throws: SECFinancialError.ambiguousPeriods) {
             try SECFinancialEvidenceAdapter.prepare(cik: dependencyCIK, facts: records.facts,

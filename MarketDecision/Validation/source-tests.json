@@ -122,6 +122,7 @@
     {"path": "Sources/Persistence/SECFinancialReportStore.swift", "kind": "tested", "suites": ["FoundationTests.SECFinancialReportStorageTests", "FoundationTests.SECValuationSupplementStorageTests"], "reason": "Exact-period accounting, immutable parent binding and explicit replay over synthetic retained SEC inputs; no industry, market-price or investment qualification."}
   ],
   "tests": [
+    {"selector": "FoundationTests.SECFinancialQuarterDependencyTests/overlappingAnnualCandidatePreservesLegacyEightQuarterReport()", "source": "Tests/FoundationTests/SECFinancialQuarterDependencyTests.swift", "execution": "required"},
     {"selector": "FoundationTests.SECFinancialQuarterDependencyTests/retainedAnnualDependenciesDoNotRequireUnselectedQuarterGeometry(_:)", "source": "Tests/FoundationTests/SECFinancialQuarterDependencyTests.swift", "execution": "required"},
     {"selector": "FoundationTests.SECFinancialQuarterDependencyTests/unrelatedOldQuarterGeometryDoesNotPoisonCurrentReportOrAnnualInputs()", "source": "Tests/FoundationTests/SECFinancialQuarterDependencyTests.swift", "execution": "required"},
     {"selector": "FoundationTests.SECFinancialQuarterDependencyTests/requiredAnnualQuarterGeometryStillRejects(_:)", "source": "Tests/FoundationTests/SECFinancialQuarterDependencyTests.swift", "execution": "required"},
