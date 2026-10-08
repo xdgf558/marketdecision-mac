@@ -153,9 +153,8 @@ public struct SECResearchDocument: Sendable, Codable, Identifiable {
               indexes.allSatisfy({ $0.provenance.endpointDescriptor == EndpointDescriptor.filingIndex.rawValue }),
               filingDocuments.allSatisfy({ $0.provenance.endpointDescriptor == EndpointDescriptor.filingDocument.rawValue })
         else { throw SECResearchError.invalidDocument }
-        let provenance = [identity.provenance] + submissions.map(\.provenance) + facts.map(\.provenance)
-            + indexes.map(\.provenance) + filingDocuments.map(\.provenance)
-        for item in provenance {
+        // Walk the original collections rather than retaining another full provenance array.
+        func validateSource(_ item: Provenance) throws {
             try item.validate()
             guard let reference = item.rawObjectRef, let source = byReference[reference],
                   item.origin == .filing, item.versionKind == .sourceVersion,
@@ -165,33 +164,41 @@ public struct SECResearchDocument: Sendable, Codable, Identifiable {
                   item.receivedAt == source.receivedAt, item.requestID == source.request.id,
                   item.requestedAt == source.request.requestedAt else { throw SECResearchError.invalidDocument }
         }
+        try validateSource(identity.provenance)
+        for item in submissions { try validateSource(item.provenance) }
+        for item in facts { try validateSource(item.provenance) }
+        for item in indexes { try validateSource(item.provenance) }
+        for item in filingDocuments { try validateSource(item.provenance) }
         // A frozen primary document must have the corresponding accepted index entry.
         for document in filingDocuments {
             guard indexes.contains(where: { $0.accessionNumber == document.accessionNumber &&
                 $0.files.contains(where: { $0.name == document.fileName }) }) else { throw SECResearchError.invalidDocument }
         }
-        // Keep each tuple append simple enough for the supported Swift 6.1 compiler.
-        var resources: [(Provenance, String)] = [(identity.provenance, ticker)]
-        for submission in submissions { resources.append((submission.provenance, identity.cik)) }
-        for fact in facts { resources.append((fact.provenance, identity.cik)) }
-        for index in indexes {
-            resources.append((index.provenance, identity.cik + "/" + index.accessionNumber))
-        }
-        for document in filingDocuments {
-            resources.append((document.provenance, identity.cik + "/" + document.accessionNumber + "/" + document.fileName))
-        }
-        for (provenance, resource) in resources {
+        func validateResource(_ provenance: Provenance, _ resource: String) throws {
             guard let reference = provenance.rawObjectRef,
                   byReference[reference]?.request.resourceID == resource else { throw SECResearchError.invalidDocument }
+        }
+        try validateResource(identity.provenance, ticker)
+        for item in submissions { try validateResource(item.provenance, identity.cik) }
+        for item in facts { try validateResource(item.provenance, identity.cik) }
+        for item in indexes { try validateResource(item.provenance, identity.cik + "/" + item.accessionNumber) }
+        for item in filingDocuments {
+            try validateResource(item.provenance, identity.cik + "/" + item.accessionNumber + "/" + item.fileName)
         }
         // Cached calculations are not accepted as fresh output, but their references cannot
         // escape the frozen source context even before the user requests explicit replay.
         let factIDs = Set(facts.map(\.factID)), recordIDs = Set(facts.map(\.recordID))
         let allowedIssueIDs = recordIDs.union(factIDs)
         let versions = Set(facts.compactMap { $0.provenance.versionID })
-        let byRecordID = Dictionary(uniqueKeysWithValues: facts.map { ($0.recordID, $0) })
-        guard normalization.selectedSourceFacts.allSatisfy({ byRecordID[$0.recordID] == $0 }),
-              normalization.unmappedSourceFacts.allSatisfy({ byRecordID[$0.recordID] == $0 }),
+        // Record IDs were checked unique above. Store only positions, not another array-sized
+        // collection of complete fact/provenance values, and still compare each full record.
+        let byRecordID = Dictionary(uniqueKeysWithValues: facts.indices.lazy.map { (facts[$0].recordID, $0) })
+        func matchesOriginal(_ record: SECCompanyFactRecord) -> Bool {
+            guard let index = byRecordID[record.recordID] else { return false }
+            return facts[index] == record
+        }
+        guard normalization.selectedSourceFacts.allSatisfy(matchesOriginal),
+              normalization.unmappedSourceFacts.allSatisfy(matchesOriginal),
               normalization.values.allSatisfy({ value in
                   value.cik == identity.cik && value.dictionaryVersion == dictionaryVersion && value.availableAt <= cutoff &&
                   !value.sourceFactIDs.isEmpty && Set(value.sourceFactIDs).isSubset(of: factIDs) &&

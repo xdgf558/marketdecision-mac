@@ -7,7 +7,7 @@ import EquityNetworkBroker
 extension AppEnvironment {
     // Construction stores a lazy factory; it opens neither Keychain nor an XPC connection.
     // All windows in this environment share the same capture and credential revision gate.
-    static func makeEquityAcquisition(database: BusinessDataStore) -> EquityResearchAcquisition {
+    static func makeEquityAcquisition(database: BusinessDataStore, workspaceLock: WorkspaceImportLock) -> EquityResearchAcquisition {
         EquityResearchAcquisition(database: database, factory: { credentials, rights in
             try credentials.validate()
             let transport = try EquityXPCTransport()
@@ -15,7 +15,7 @@ extension AppEnvironment {
                 evidenceRef: rights.evidenceReference, licenseRef: rights.licenseReference,
                 transport: transport)
             return EquityResearchProviderSession(provider: provider, close: { await transport.close() })
-        })
+        }, workspaceLock: workspaceLock)
     }
 
     @MainActor public func makeEquityResearchWorkspace() throws -> EquityResearchWorkspaceModel {

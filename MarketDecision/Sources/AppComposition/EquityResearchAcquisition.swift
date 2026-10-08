@@ -54,14 +54,25 @@ public actor EquityResearchAcquisition {
     private let factory: Factory
     private let clock: @Sendable () -> Date
     private let captureOrigin: SECReferenceCaptureOrigin
+    private let workspaceLock: WorkspaceImportLock
     private var credentialRevision = UUID()
     private var credentialUpdate: UUID?
     private var active: (id: UUID, task: Task<EquityResearchCapture, Error>)?
 
+    /// Standalone injected captures have an isolated memory permit. AppEnvironment injects
+    /// the persistent workspace permit shared with SEC imports.
     public init(database: BusinessDataStore, factory: @escaping Factory,
                 clock: @escaping @Sendable () -> Date = { Date() },
                 captureOrigin: SECReferenceCaptureOrigin = .providerCapture) {
         self.database = database; self.factory = factory; self.clock = clock; self.captureOrigin = captureOrigin
+        self.workspaceLock = WorkspaceImportLock()
+    }
+
+    init(database: BusinessDataStore, factory: @escaping Factory,
+         clock: @escaping @Sendable () -> Date = { Date() },
+         captureOrigin: SECReferenceCaptureOrigin = .providerCapture, workspaceLock: WorkspaceImportLock) {
+        self.database = database; self.factory = factory; self.clock = clock; self.captureOrigin = captureOrigin
+        self.workspaceLock = workspaceLock
     }
 
     /// nil is for a fresh explicit presence check, never for a save/delete confirmation.
@@ -86,6 +97,13 @@ public actor EquityResearchAcquisition {
         guard active == nil, credentialUpdate == nil else { throw EquityResearchError.busy }
         guard credentialRevision == expectedCredentialRevision else { throw EquityResearchError.staleCredentials }
         try Self.validate(symbol: symbol, classID: classID, rights: rights, bars: bars, now: clock())
+        try Task.checkCancellation()
+        let lease: WorkspaceImportLease
+        do { lease = try workspaceLock.tryAcquire() }
+        catch WorkspaceImportLockError.busy { throw EquityResearchError.busy }
+        // Keep the lease while the child unwinds, including its awaited session.close().
+        // Credential revisions remain per instance; this does not synchronize Keychain edits.
+        defer { lease.release() }
         try Task.checkCancellation()
         let id = UUID(), database = database, factory = factory, clock = clock, origin = captureOrigin
         let task = Task {

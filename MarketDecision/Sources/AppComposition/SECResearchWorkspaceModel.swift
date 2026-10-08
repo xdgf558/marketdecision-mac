@@ -37,7 +37,7 @@ public protocol SECFinancialReportWorkspaceStorage: Sendable {
 extension SECResearchStore: SECFinancialReportWorkspaceStorage {}
 
 public protocol SECValuationWorkspaceStorage: Sendable {
-    func valuationSourceDocument(parentReportID: UUID) async throws -> SECResearchDocument
+    func valuationSourceDocument(parentReportID: UUID) async throws -> SECValuationSourceDocument
     func prepareValuationSupplement(parentReportID: UUID, evidence: SECValuationInputEvidence,
         executionDate: Date) async throws -> SECValuationSupplementDraft
     func saveValuationSupplement(_ document: SECValuationSupplementDocument, expectedRevision: UUID) async throws
@@ -107,7 +107,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public private(set) var valuationMessage: String?
     public private(set) var valuationListError: String?
     public private(set) var valuationHasError = false
-    public private(set) var valuationSourceDocument: SECResearchDocument?
+    public private(set) var valuationSourceDocument: SECValuationSourceDocument?
     public var canGenerateValuationSupplement: Bool {
         !isBusy && financialReport != nil && financialReportIsSaved && valuationStorage != nil
     }
@@ -361,7 +361,8 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
             guard generation == token else { return }
             try Task.checkCancellation(); try source.validate()
             guard source.id == report.parentDocumentID, source.ticker == report.ticker,
-                  source.cutoff == report.cutoff else { throw ContractError.mismatchedSource }
+                  source.cutoff == report.cutoff, source.parentResearchHash == report.parentDocumentHash
+            else { throw ContractError.mismatchedSource }
             valuationSourceDocument = source
             valuationMessage = "已载入报告绑定的原始来源。仅按可核对原文补充证据；缺项可以保留。"
         } catch {
@@ -646,7 +647,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     private static func failureMessage(_ error: any Error) -> String {
         // Only closed typed categories; never render provider descriptions, request headers or URLs.
         switch error {
-        case SECResearchError.importInProgress: "另一个窗口正在导入 SEC 财报；请等待导入完成或取消结束后重试。已保存列表仍可查看。"
+        case SECResearchError.importInProgress: "当前工作区已有数据导入；请等待完成或取消收尾后重试。已保存列表仍可查看。"
         case ProviderFailure.rateLimited: "SEC 暂时限流，导入未完成；请稍后手动重试，已接收的源页可能保留。"
         case ProviderFailure.symbolUnavailable: "未找到所选代码或申报文件；导入未完成。"
         default: "导入未完成；请检查访问配置或稍后重试。已接收的源页可能保留，不代表整次导入成功。"

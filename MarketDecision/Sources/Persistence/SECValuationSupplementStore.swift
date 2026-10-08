@@ -40,17 +40,14 @@ extension SECResearchStore {
     /// Open source evidence through the selected retained accounting report. One read
     /// validates both original encodings and their binding before returning any source.
     /// Re-encoding a decoded research document is never used as proof of its saved hash.
-    public func valuationSourceDocument(parentReportID: UUID) throws -> SECResearchDocument {
+    public func valuationSourceDocument(parentReportID: UUID) throws -> SECValuationSourceDocument {
         try Task.checkCancellation()
         _ = try writeRevision()
         return try database.read { db in
-            let report = try SECFinancialReportStorage.validatedRecord(id: parentReportID, db: db)
-            let research = try SECResearchStorage.validatedRecord(id: report.document.parentDocumentID, db: db)
-            guard report.document.parentDocumentHash == digest(research.bytes) else {
-                throw BusinessStoreError.corruptedStorage
-            }
+            let chain = try SECFinancialReportStorage.validatedParentChain(id: parentReportID, db: db)
             try Task.checkCancellation()
-            return research.document
+            return try SECValuationSourceDocument(validatedResearch: chain.research.document,
+                originalHash: chain.report.document.parentDocumentHash)
         }
     }
 
@@ -60,12 +57,10 @@ extension SECResearchStore {
         let baseline = try writeRevision()
         let parents = try database.read { db in
             try BusinessDataStore.checkRevision(baseline, db: db)
-            let report = try SECFinancialReportStorage.validatedRecord(id: parentReportID, db: db)
-            let research = try SECResearchStorage.validatedRecord(id: report.document.parentDocumentID, db: db)
-            return (report, research)
+            return try SECFinancialReportStorage.validatedParentChain(id: parentReportID, db: db)
         }
-        let document = try await SECValuationSupplementDocument.make(parent: parents.0.document, parentBytes: parents.0.bytes,
-            research: parents.1.document, researchBytes: parents.1.bytes, evidence: evidence, executionDate: executionDate)
+        let document = try await SECValuationSupplementDocument.make(parent: parents.report.document, parentBytes: parents.report.bytes,
+            research: parents.research.document, researchBytes: parents.research.bytes, evidence: evidence, executionDate: executionDate)
         try Task.checkCancellation()
         try database.read { db in try BusinessDataStore.checkRevision(baseline, db: db) }
         return .init(document: document, expectedRevision: baseline)
@@ -84,10 +79,9 @@ extension SECResearchStore {
             guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sec_valuation_supplement_catalog WHERE supplement_id = ?", arguments: [id]) == 0,
                   try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sec_valuation_supplement_documents WHERE supplement_id = ?", arguments: [id]) == 0
             else { throw SnapshotError.duplicateObject }
-            let parent = try SECFinancialReportStorage.validatedRecord(id: document.parentFinancialReportID, db: db)
-            let research = try SECResearchStorage.validatedRecord(id: document.parentResearchID, db: db)
-            try document.validate(parent: parent.document, parentBytes: parent.bytes,
-                                  research: research.document, researchBytes: research.bytes)
+            let chain = try SECFinancialReportStorage.validatedParentChain(id: document.parentFinancialReportID, db: db)
+            try document.validate(parent: chain.report.document, parentBytes: chain.report.bytes,
+                                  research: chain.research.document, researchBytes: chain.research.bytes)
             try Task.checkCancellation()
             try SECValuationSupplementStorage.insert(document, bytes: bytes, db: db)
             try Task.checkCancellation()
@@ -178,11 +172,10 @@ enum SECValuationSupplementStorage {
               document.parentResearchHash == catalog.parentResearchHash,
               SECValuationSupplementSummary(document: document) == catalog.summary else { throw BusinessStoreError.corruptedStorage }
         try Task.checkCancellation()
-        let parent = try SECFinancialReportStorage.validatedRecord(id: document.parentFinancialReportID, db: db)
-        let research = try SECResearchStorage.validatedRecord(id: document.parentResearchID, db: db)
+        let chain = try SECFinancialReportStorage.validatedParentChain(id: document.parentFinancialReportID, db: db)
         do {
-            try document.validate(parent: parent.document, parentBytes: parent.bytes,
-                                  research: research.document, researchBytes: research.bytes)
+            try document.validate(parent: chain.report.document, parentBytes: chain.report.bytes,
+                                  research: chain.research.document, researchBytes: chain.research.bytes)
         } catch is CancellationError { throw CancellationError() }
         catch { throw BusinessStoreError.corruptedStorage }
         try Task.checkCancellation()

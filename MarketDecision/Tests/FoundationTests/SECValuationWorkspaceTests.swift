@@ -78,6 +78,10 @@ private actor ValuationWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
     var preparations = 0, opens = 0, commits = 0
     var attemptedRevisions: [UUID] = []
     var receivedEvidence: [SECValuationInputEvidence] = []
+    private var sourceGate: ValuationWorkspaceGate?
+    func holdSources(_ gate: ValuationWorkspaceGate) { sourceGate = gate }
+    private var sourceHashOverride: String?
+    func overrideSourceHash(_ hash: String) { sourceHashOverride = hash }
     private var sourceListFails = false, financialListFails = false, valuationListFails = false, saveFails = false
     private var prepareGate: ValuationWorkspaceGate?, saveGate: ValuationWorkspaceGate?, openGate: ValuationWorkspaceGate?, listGate: ValuationWorkspaceGate?
     init(source: SECResearchDocument, financial: SECFinancialReportDocument, valuation: SECValuationSupplementDocument, stored: Bool = true) {
@@ -113,8 +117,13 @@ private actor ValuationWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
     func openFinancialReport(id: UUID) throws -> SECFinancialReportDocument {
         guard id == financial.id else { throw SnapshotError.missingReference }; return financial
     }
-    func valuationSourceDocument(parentReportID: UUID) throws -> SECResearchDocument {
-        guard parentReportID == financial.id else { throw SnapshotError.missingReference }; return source
+    func valuationSourceDocument(parentReportID: UUID) async throws -> SECValuationSourceDocument {
+        guard parentReportID == financial.id else { throw SnapshotError.missingReference }
+        let result = try SECValuationSourceDocument(validatedResearch: source,
+            originalHash: sourceHashOverride ?? financial.parentDocumentHash)
+        let gate = sourceGate; sourceGate = nil
+        if let gate { await gate.hold() }
+        return result
     }
     func prepareValuationSupplement(parentReportID: UUID, evidence: SECValuationInputEvidence, executionDate: Date) async throws -> SECValuationSupplementDraft {
         preparations += 1; receivedEvidence.append(evidence)
@@ -615,6 +624,42 @@ private func capturedPriceWorkspaceQuote(symbol: String, cutoff: Date) throws ->
         await model.generateValuationSupplement(applicability: .unknown, sourceReference: "", excerpt: "", rationale: "", shareEvidence: form)
         #expect(await storage.preparations == 1)
         #expect(model.valuationHasError)
+    }
+
+    @Test func lateSourceProjectionCannotRepopulateAfterParentSelectionChanges() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let model = valuationWorkspace(storage, now: valuation.createdAt)
+        await model.openFinancialReport(financial.id)
+        let gate = ValuationWorkspaceGate()
+        await storage.holdSources(gate)
+        let old = Task { await model.loadValuationSources() }
+        await gate.waitUntilEntered()
+        model.cancel()
+        await model.openFinancialReport(financial.id)
+        await gate.release(); await old.value
+        #expect(model.valuationSourceDocument == nil && !model.isBusy)
+        #expect(model.financialReport?.id == financial.id && !model.valuationHasError)
+        #expect(!model.canDisplayFinancialReport)
+        #expect(await storage.preparations == 0)
+    }
+
+    @Test func sourceProjectionMustMatchExactSavedParentHashBeforeCitationsAreEnabled() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let model = valuationWorkspace(storage, now: valuation.createdAt)
+        await model.openFinancialReport(financial.id)
+        await storage.overrideSourceHash(String(repeating: "0", count: 64))
+        await model.loadValuationSources()
+        #expect(model.valuationHasError && model.valuationSourceDocument == nil)
+        #expect(model.financialReport?.id == financial.id && !model.canDisplayFinancialReport)
+        #expect(await storage.preparations == 0)
+        await storage.overrideSourceHash(financial.parentDocumentHash)
+        await model.loadValuationSources()
+        let projected = try #require(model.valuationSourceDocument)
+        #expect(projected.parentResearchHash == financial.parentDocumentHash)
+        #expect(projected.sources == source.sources)
+        #expect(!model.canDisplayFinancialReport && !model.canDisplayValuationSupplement)
     }
 
     @Test func explicitSourceCitationRejectsWrongOrAmbiguousTextAndParentChangesClearEvidence() async throws {

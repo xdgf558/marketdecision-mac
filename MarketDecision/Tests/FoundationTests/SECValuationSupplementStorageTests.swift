@@ -29,7 +29,8 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
     @Test func sourceLoadingChecksExactAccountingBindingEvenWhenSameIDResearchIsValid() async throws {
         let (database, store, research, report, draft) = try await secValuationStorageFixture()
         let loaded = try await store.valuationSourceDocument(parentReportID: report.id)
-        #expect(try ResearchDocument.encoded(loaded) == ResearchDocument.encoded(research))
+        #expect(loaded.id == research.id && loaded.ticker == research.ticker && loaded.cutoff == research.cutoff)
+        #expect(loaded.parentResearchHash == report.parentDocumentHash && loaded.sources == research.sources)
         let original = try #require(database.read { try Data.fetchOne($0, sql: "SELECT document_json FROM sec_research_documents") })
         let replacement = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: original),
             options: [.prettyPrinted, .sortedKeys])

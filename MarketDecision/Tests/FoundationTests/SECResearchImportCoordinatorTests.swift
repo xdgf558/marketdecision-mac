@@ -134,4 +134,73 @@ private enum SECImportPermitFixtureError: Error { case failed }
         #expect(try await running.value == 5)
         #expect(try await copied.secImportCoordinator.perform { 6 } == 6)
     }
+
+    @Test func separatelyOpenedEnvironmentsRejectBeforeFactoryAndDoNotLockAtStartup() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let path = directory.url.appendingPathComponent("foundation.sqlite").path
+        let first = try AppEnvironment.mock(databasePath: path), second = try AppEnvironment.mock(databasePath: path)
+        #expect(!FileManager.default.fileExists(atPath: directory.lockURL.path))
+        let gate = SECImportPermitGate(), factory = SECImportFactoryCounter()
+        let running = Task { try await first.secImportCoordinator.perform { await gate.hold(); return 1 } }
+        await gate.waitUntilEntered()
+        await #expect(throws: SECResearchError.importInProgress) {
+            try await second.secImportCoordinator.perform { await factory.invoke() }
+        }
+        #expect(await factory.calls == 0)
+        await gate.release()
+        #expect(try await running.value == 1)
+        do { #expect(try await second.secImportCoordinator.perform { 2 } == 2) }
+        catch { Issue.record("Successor import stayed blocked after the original operation returned"); throw error }
+    }
+
+    @Test func crossEnvironmentPermitSurvivesCancellationUntilCloseReturns() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let first = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let second = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let work = SECImportPermitGate(), closing = SECImportPermitGate(), factory = SECImportFactoryCounter()
+        let running = Task { try await first.perform { await work.hold(); await closing.hold(); return 1 } }
+        await work.waitUntilEntered()
+        running.cancel()
+        await #expect(throws: SECResearchError.importInProgress) { try await second.perform { await factory.invoke() } }
+        await work.release(); await closing.waitUntilEntered()
+        await #expect(throws: SECResearchError.importInProgress) { try await second.perform { await factory.invoke() } }
+        let child = try ImportLockChild(directory, mode: "try")
+        try child.expect("BUSY"); try child.waitForExit()
+        #expect(await factory.calls == 0)
+        await closing.release()
+        await #expect(throws: CancellationError.self) { try await running.value }
+        #expect(try await second.perform { 2 } == 2)
+    }
+
+    @Test func subprocessCompetitionAndUnavailableWorkspaceNeverInvokeSECFactory() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let child = try ImportLockChild(directory)
+        try child.expect("READY")
+        let coordinator = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let factory = SECImportFactoryCounter()
+        await #expect(throws: SECResearchError.importInProgress) { try await coordinator.perform { await factory.invoke() } }
+        let missing = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url.appendingPathComponent("missing")))
+        await #expect(throws: WorkspaceImportLockError.unavailable) { try await missing.perform { await factory.invoke() } }
+        #expect(await factory.calls == 0)
+        try child.release()
+        #expect(try await coordinator.perform { 3 } == 3)
+    }
+
+    @Test func preCancelledFileImportDoesNotCreateLockAndThrownOperationReleasesIt() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let coordinator = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let factory = SECImportFactoryCounter()
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await coordinator.perform { await factory.invoke() }
+        }
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(await factory.calls == 0)
+        #expect(!FileManager.default.fileExists(atPath: directory.lockURL.path))
+        await #expect(throws: SECImportPermitFixtureError.self) {
+            try await coordinator.perform { () async throws -> Int in throw SECImportPermitFixtureError.failed }
+        }
+        let child = try ImportLockChild(directory, mode: "try")
+        try child.expect("ACQUIRED"); try child.waitForExit()
+    }
 }
