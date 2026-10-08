@@ -70,24 +70,61 @@ public struct SECIndustryReview: Sendable, Codable {
     }
 }
 
-/// The literal count excerpt must contain the exact unscaled integer. Class identity and the
-/// meaning of the source count remain explicit human interpretation, disclosed in every report.
+/// The literal count excerpt must contain the exact unscaled integer. A grouped excerpt retains
+/// its original bytes and an explicit parsing policy. Class identity and the meaning of the
+/// source count remain explicit human interpretation, disclosed in every report.
 public struct SECReviewedShareClass: Sendable, Codable {
     public let classID, symbol: String
     public let outstandingShares: Money
     public let countAnchor: SECValuationSourceAnchor
     public let identityAnchors: [SECValuationSourceAnchor]
+    public let countParsingPolicy: String
     public init(classID: String, symbol: String, outstandingShares: Money,
                 countAnchor: SECValuationSourceAnchor, identityAnchors: [SECValuationSourceAnchor]) throws {
         self.classID = classID; self.symbol = symbol; self.outstandingShares = outstandingShares
-        self.countAnchor = countAnchor; self.identityAnchors = identityAnchors; try validate()
+        self.countAnchor = countAnchor; self.identityAnchors = identityAnchors
+        countParsingPolicy = SECUnscaledShareCountExcerpt.policy(for: countAnchor.text); try validate()
+    }
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case classID, symbol, outstandingShares, countAnchor, identityAnchors, countParsingPolicy
+    }
+    public init(from decoder: any Decoder) throws {
+        let all = try decoder.container(keyedBy: SECValuationEvidenceCodingKey.self)
+        let keys = Set(all.allKeys.map(\.stringValue)), current = Set(CodingKeys.allCases.map(\.rawValue))
+        let legacy = current.subtracting([CodingKeys.countParsingPolicy.rawValue])
+        guard keys == legacy || keys == current else { throw SECValuationError.unsupportedFormat }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        classID = try c.decode(String.self, forKey: .classID); symbol = try c.decode(String.self, forKey: .symbol)
+        outstandingShares = try c.decode(Money.self, forKey: .outstandingShares)
+        countAnchor = try c.decode(SECValuationSourceAnchor.self, forKey: .countAnchor)
+        identityAnchors = try c.decode([SECValuationSourceAnchor].self, forKey: .identityAnchors)
+        // An untagged old record must still satisfy the old plain-digit contract. Decoding never
+        // infers the new grouped policy, and an explicit null is not treated as a missing field.
+        countParsingPolicy = c.contains(.countParsingPolicy)
+            ? try c.decode(String.self, forKey: .countParsingPolicy) : SECUnscaledShareCountExcerpt.plainPolicy
+        guard keys == legacy || countParsingPolicy == SECUnscaledShareCountExcerpt.groupedPolicy else {
+            throw SECValuationError.unsupportedFormat
+        }
+        try validate()
+    }
+    public func encode(to encoder: any Encoder) throws {
+        try validate()
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(classID, forKey: .classID); try c.encode(symbol, forKey: .symbol)
+        try c.encode(outstandingShares, forKey: .outstandingShares); try c.encode(countAnchor, forKey: .countAnchor)
+        try c.encode(identityAnchors, forKey: .identityAnchors)
+        // Existing plain-digit records retain their original five-field encoding. Only the new
+        // grouped representation needs a tag; no frozen source or historical record is rewritten.
+        if countParsingPolicy != SECUnscaledShareCountExcerpt.plainPolicy {
+            try c.encode(countParsingPolicy, forKey: .countParsingPolicy)
+        }
     }
     func validate() throws {
         try EquityRecord.validateSymbol(symbol); try countAnchor.validate()
         guard valuationText(classID, 128), outstandingShares.amount > 0,
               !outstandingShares.decimalString.contains("."), !identityAnchors.isEmpty, identityAnchors.count <= 16,
-              countAnchor.text.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil,
-              try Money(countAnchor.text) == outstandingShares else { throw SECValuationError.invalidEvidence }
+              try SECUnscaledShareCountExcerpt.parse(countAnchor.text, policy: countParsingPolicy) == outstandingShares
+        else { throw SECValuationError.invalidEvidence }
         try identityAnchors.forEach { try $0.validate() }
     }
 }

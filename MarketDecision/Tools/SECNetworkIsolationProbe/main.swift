@@ -2,17 +2,27 @@ import Foundation
 import Darwin
 import Security
 import SECNetworkBroker
+import EquityNetworkBroker
 
-// Synthetic signing/IPC probe only, never linked into the production executable. No SEC
-// request, contact, account, file panel, user database or shared credential is used here.
+// Synthetic signing/IPC probe only, never linked into the production executable. No valid
+// SEC/equity request, contact, account, file panel, user database or credential is used here.
 @main struct SECNetworkIsolationProbe {
+    private enum Broker: CaseIterable, Sendable {
+        case sec, equity
+        var name: String { self == .sec ? "SECNetworkService" : "EquityNetworkService" }
+        var identity: String { self == .sec ? SECNetworkIdentity.serviceName : EquityNetworkIdentity.serviceName }
+        var invalidCode: Int { self == .sec ? SECNetworkReplyCode.invalidRequest.rawValue : EquityNetworkReplyCode.invalidRequest.rawValue }
+    }
+
     static func main() async {
         if CommandLine.arguments.dropFirst() == ["--expect-invalid-broker"] {
-            guard !SECNetworkServiceAvailability.isAvailable else { fail("replaced-helper-accepted") }
-            print("PASS: main sealed resources reject an independently re-signed replacement helper")
+            guard !SECNetworkServiceAvailability.isAvailable, !EquityNetworkServiceAvailability.isAvailable else {
+                fail("replaced-helper-accepted")
+            }
+            print("PASS: main sealed resources reject an independently re-signed replacement helper for both brokers")
             return
         }
-        guard SECNetworkServiceAvailability.isAvailable else { fail("broker-unavailable") }
+        guard SECNetworkServiceAvailability.isAvailable, EquityNetworkServiceAvailability.isAvailable else { fail("broker-unavailable") }
         // No listener is needed: EPERM is an OS denial, unlike ECONNREFUSED/timeout.
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { fail("socket-create") }
@@ -29,41 +39,49 @@ import SECNetworkBroker
         let failure = errno
         Darwin.close(descriptor)
         guard result == -1, failure == EPERM || failure == EACCES else { fail("main-network-not-denied") }
-        // Exercise real app-private IPC and the peer signature requirements, with an invalid
-        // descriptor that MUST be refused before any URLSession is constructed.
-        do {
-            try await rejectedDescriptorRoundTrip()
-        } catch { fail("ipc-rejection") }
-        print("PASS: sandbox denies main sockets; authenticated embedded XPC rejects malformed request; no external request")
+        // Exercise each actual app-private listener with a malformed descriptor that MUST
+        // be refused before any URLSession is constructed. There are no credentials here.
+        for broker in Broker.allCases {
+            do { try await rejectedDescriptorRoundTrip(broker) }
+            catch { fail("ipc-rejection") }
+        }
+        print("PASS: sandbox denies main sockets; authenticated SEC/Equity XPC reject malformed requests; zero external requests")
     }
-    static func rejectedDescriptorRoundTrip() async throws {
-        let serviceURL = Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/SECNetworkService.xpc")
+    private static func rejectedDescriptorRoundTrip(_ broker: Broker) async throws {
+        let serviceURL = Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/" + broker.name + ".xpc")
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(serviceURL as CFURL, [], &code) == errSecSuccess, let code else { fail("service-code") }
         var requirement: SecRequirement?
         var text: CFString?
         guard SecCodeCopyDesignatedRequirement(code, [], &requirement) == errSecSuccess, let requirement,
               SecRequirementCopyString(requirement, [], &text) == errSecSuccess, let text else { fail("service-requirement") }
-        let connection = NSXPCConnection(serviceName: SECNetworkIdentity.serviceName)
+        let connection = NSXPCConnection(serviceName: broker.identity)
         connection.setCodeSigningRequirement(text as String)
-        connection.remoteObjectInterface = NSXPCInterface(with: SECNetworkServiceProtocol.self)
+        switch broker {
+        case .sec: connection.remoteObjectInterface = NSXPCInterface(with: SECNetworkServiceProtocol.self)
+        case .equity: connection.remoteObjectInterface = NSXPCInterface(with: EquityNetworkServiceProtocol.self)
+        }
         connection.resume()
         defer { connection.invalidate() }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 15) { fail("ipc-timeout") }
+        let timeout = Task { try await Task.sleep(for: .seconds(15)); fail("ipc-timeout") }
+        defer { timeout.cancel() }
         let accepted: Bool = await withCheckedContinuation { continuation in
             let once = ProbeReply(continuation)
-            let proxy = connection.remoteObjectProxyWithErrorHandler { failure in
-                let systemError = failure as NSError
-                print("IPC failure code: " + systemError.domain + "/" + String(systemError.code))
-                once.finish(false)
+            let proxy = connection.remoteObjectProxyWithErrorHandler { _ in once.finish(false) }
+            let reply: @Sendable (Data?, Int) -> Void = { data, status in
+                once.finish(data == nil && status == broker.invalidCode)
             }
-            guard let remote = proxy as? SECNetworkServiceProtocol else { once.finish(false); return }
-            remote.fetch(Data("{}".utf8)) { data, status in
-                print("IPC reply code: " + String(status))
-                once.finish(data == nil && status == SECNetworkReplyCode.invalidRequest.rawValue)
+            switch broker {
+            case .sec:
+                guard let remote = proxy as? SECNetworkServiceProtocol else { once.finish(false); return }
+                remote.fetch(Data("{}".utf8), withReply: reply)
+            case .equity:
+                guard let remote = proxy as? EquityNetworkServiceProtocol else { once.finish(false); return }
+                remote.fetch(Data("{}".utf8), withReply: reply)
             }
         }
         guard accepted else { fail("ipc-refusal-contract") }
+        print("PASS: " + broker.name + " rejects malformed descriptor")
     }
     static func fail(_ code: String) -> Never { print("FAIL: " + code); exit(1) }
 }
