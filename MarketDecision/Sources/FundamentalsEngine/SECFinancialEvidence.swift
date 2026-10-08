@@ -86,7 +86,9 @@ enum SECFinancialEvidenceAdapter {
         guard yearCandidates.values.allSatisfy({ $0.count == 1 }) else { throw SECFinancialError.ambiguousPeriods }
         let years = try yearCandidates.keys.sorted().map { try FiscalYearWindow(start: yearCandidates[$0]!.first!, end: $0) }
         var yearQuarters: [(FiscalYearWindow, [FiscalQuarter])] = []
-        for year in years {
+        // Eight quarters need only the two latest complete years plus the partial year below.
+        // Older annual sources remain available for the unchanged tax and growth inputs.
+        for year in years.suffix(2) {
             let ends = quarterlyEnds.filter { $0 >= year.start && $0 < year.end }.sorted()
             guard ends.count <= 3 else { throw SECFinancialError.ambiguousPeriods }
             guard ends.count == 3 else { continue }
