@@ -31,7 +31,7 @@ let package = Package(
         .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine"], path: "Sources/AppComposition",
                 resources: [.process("Resources")]),
         .executableTarget(name: "FoundationCodecProbe", dependencies: ["CoreDomain"], path: "Tools/FoundationCodecProbe"),
-        .executableTarget(name: "SECNetworkIsolationProbe", dependencies: ["SECNetworkBroker"], path: "Tools/SECNetworkIsolationProbe"),
+        .executableTarget(name: "SECNetworkIsolationProbe", dependencies: ["SECNetworkBroker", "EquityNetworkBroker"], path: "Tools/SECNetworkIsolationProbe"),
         .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "FundamentalsEngine", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
     ],
     swiftLanguageModes: [.v6]

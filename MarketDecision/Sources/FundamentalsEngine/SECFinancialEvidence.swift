@@ -86,7 +86,12 @@ enum SECFinancialEvidenceAdapter {
         guard yearCandidates.values.allSatisfy({ $0.count == 1 }) else { throw SECFinancialError.ambiguousPeriods }
         let years = try yearCandidates.keys.sorted().map { try FiscalYearWindow(start: yearCandidates[$0]!.first!, end: $0) }
         var yearQuarters: [(FiscalYearWindow, [FiscalQuarter])] = []
-        for year in years {
+        // FiscalQuarter permits at most 120 inclusive days and the report takes at most eight
+        // consecutive quarters. Earlier year ends cannot contribute to that trailing window.
+        // Keep every candidate inside the horizon, including overlapping/transition years;
+        // candidate count cannot establish the quarter dependency. Annual inputs stay unchanged.
+        let quarterHorizon = try latestEnd.addingDays(-(8 * 120))
+        for year in years where year.end >= quarterHorizon {
             let ends = quarterlyEnds.filter { $0 >= year.start && $0 < year.end }.sorted()
             guard ends.count <= 3 else { throw SECFinancialError.ambiguousPeriods }
             guard ends.count == 3 else { continue }

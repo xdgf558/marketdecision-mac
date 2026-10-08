@@ -2,11 +2,48 @@ import Foundation
 import Testing
 import CoreDomain
 import DataContracts
+import DataProviders
+import MarketDataProviders
+import SecuritySupport
 import FundamentalsEngine
 @testable import Persistence
 @testable import AppComposition
 
 private enum ValuationWorkspaceFailure: Error { case injected }
+
+private actor CapturedPipelineCredentials: CredentialReadingStorage {
+    private let bytes: Data
+    private(set) var reads = 0
+    init() throws { bytes = try EquityCredentials(apiKey: "SYNTHETIC_PIPELINE_KEY", secret: "SYNTHETIC_PIPELINE_SECRET").encoded() }
+    func contains(reference: String) -> Bool { reference == EquityCredentials.reference }
+    func read(reference: String) throws -> Data? {
+        guard reference == EquityCredentials.reference else { throw ValuationWorkspaceFailure.injected }
+        reads += 1; return bytes
+    }
+    func save(_ secret: Data, reference: String) throws { throw ValuationWorkspaceFailure.injected }
+    func delete(reference: String) throws { throw ValuationWorkspaceFailure.injected }
+}
+private struct CapturedPipelineClock: EquityRequestClock {
+    let instant: Date
+    func now() -> Date { instant }
+    func uptime() -> TimeInterval { 0 }
+    func sleep(seconds: TimeInterval) async throws { try Task.checkCancellation() }
+}
+private actor CapturedPipelineTransport: HTTPTransport {
+    private(set) var sends = 0, closes = 0
+    func send(_ request: URLRequest) throws -> HTTPPayload {
+        sends += 1
+        #expect(request.httpMethod == "GET" && request.url?.host == "data.alpaca.markets")
+        #expect(request.url?.path == "/v2/stocks/AAPL/quotes/latest")
+        #expect(request.value(forHTTPHeaderField: "APCA-API-KEY-ID") == "SYNTHETIC_PIPELINE_KEY")
+        #expect(request.value(forHTTPHeaderField: "APCA-API-SECRET-KEY") == "SYNTHETIC_PIPELINE_SECRET")
+        let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(query.contains(.init(name: "feed", value: "iex")) && query.contains(.init(name: "currency", value: "USD")))
+        let body = #"{"symbol":"AAPL","quote":{"t":"2026-10-04T00:00:04Z","bp":9,"ap":10,"bs":2,"as":3,"bx":"V","ax":"V"}}"#
+        return .init(statusCode: 200, mediaType: "application/json", body: Data(body.utf8))
+    }
+    func close() { closes += 1 }
+}
 private actor ValuationWorkspaceGate {
     private var entered = false, released = false
     private var arrivals: [CheckedContinuation<Void, Never>] = []
@@ -187,6 +224,132 @@ private func capturedPriceWorkspaceQuote(symbol: String, cutoff: Date) throws ->
 }
 
 @Suite @MainActor struct SECValuationWorkspaceTests {
+    @Test func acceptedProviderCaptureReachesFrozenReferenceAndReplaysWithoutCredentials() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let researchPath = folder.appendingPathComponent("research.sqlite").path
+        let marketPath = folder.appendingPathComponent("market.sqlite").path
+        let (_, researchStore, source, financial, _) = try await secValuationStorageFixture(path: researchPath)
+        let market = try BusinessDataStore(path: marketPath), credentials = try CapturedPipelineCredentials()
+        let transport = CapturedPipelineTransport(), now = source.cutoff.addingTimeInterval(5)
+        let acquisition = EquityResearchAcquisition(database: market, factory: { credentials, rights in
+            let provider = try AlpacaIEXProvider(apiKey: credentials.apiKey, secret: credentials.secret,
+                evidenceRef: rights.evidenceReference, licenseRef: rights.licenseReference,
+                transport: transport, clock: CapturedPipelineClock(instant: now))
+            return .init(provider: provider, close: { await transport.close() })
+        }, clock: { now }, captureOrigin: .syntheticFixture)
+        let captureModel = EquityResearchWorkspaceModel(store: credentials, acquisition: acquisition,
+            networkAvailable: true, clock: { now })
+        captureModel.appear()
+        captureModel.symbolDraft = source.ticker; captureModel.classIDDraft = "common"; captureModel.selectedSide = .ask
+        captureModel.rightsAssertion = "SYNTHETIC reference pipeline permission fixture"
+        captureModel.rightsEvidence = "SYNTHETIC local retention fixture, not real supplier rights"
+        captureModel.rightsEvidenceReference = "synthetic-pipeline-rights"
+        captureModel.rightsLicenseReference = "synthetic-pipeline-license"
+        #expect(await credentials.reads == 0)
+        #expect(await transport.sends == 0)
+        #expect(await captureModel.checkCredentials())
+        #expect(await credentials.reads == 0)
+        captureModel.rightsConfirmed = true
+        await captureModel.fetch()
+        let captured = try #require(captureModel.result)
+        let price = try #require(captured.quoteEvidence)
+        #expect(await credentials.reads == 1)
+        #expect(await transport.sends == 1)
+        #expect(await transport.closes == 1)
+        let retainedMarket = try BusinessDataStore(path: marketPath)
+        let pages = try await retainedMarket.equityPages(symbol: source.ticker)
+        #expect(pages.count == 1 && pages[0].request.id == price.request.id)
+        #expect(try await retainedMarket.sourceDocument(reference: price.rawSource.reference).payload == price.rawSource.bytes)
+
+        let network = ValuationWorkspaceNetworkProbe()
+        let model = persistentValuationWorkspace(researchStore, now: source.cutoff.addingTimeInterval(10), network: network)
+        let form = try capturedPriceWorkspaceForm(source)
+        await model.openFinancialReport(financial.id); await model.loadValuationSources()
+        await model.generateValuationSupplement(applicability: .generalNonFinancial, sourceReference: form.industryReference,
+            excerpt: "Synthetic Report Company", rationale: "Synthetic local applicability review",
+            shareEvidence: form.shares, splitEvidence: form.split, capturedPrices: [price])
+        let generated = try #require(model.valuationSupplement)
+        #expect(generated.valuation.results.reference?.metrics["marketCap"]?.value == (try Money("1000")))
+        await model.saveValuationSupplement()
+        #expect(model.valuationIsSaved && !model.valuationHasError)
+        captureModel.disappear()
+        let reopenedStore = try SECResearchStore(path: researchPath)
+        let reopened = persistentValuationWorkspace(reopenedStore, now: source.cutoff.addingTimeInterval(10), network: network)
+        await reopened.openValuationSupplement(generated.id)
+        #expect(!reopened.canDisplayValuationSupplement)
+        await reopened.recomputeValuationSupplement()
+        #expect(reopened.canDisplayValuationSupplement && reopened.valuationState == .matched)
+        let report = try #require(reopened.valuationSupplement?.valuation)
+        #expect(report.results.reference?.metrics["marketCap"]?.value == (try Money("1000")))
+        #expect(report.results.base.metrics["marketCap"]?.value == nil)
+        #expect(report.results.score?.valuation.historyInputs.isEmpty == true)
+        #expect(report.assessment.researchOnly && !report.assessment.historicalPITQualified && !report.assessment.productionEligible)
+        let frozen = try #require(report.evidence.prices.first)
+        #expect(try ResearchDocument.encoded(frozen) == ResearchDocument.encoded(price))
+        let encoded = String(decoding: try ResearchDocument.encoded(generated), as: UTF8.self)
+        #expect(!encoded.contains("SYNTHETIC_PIPELINE_KEY") && !encoded.contains("SYNTHETIC_PIPELINE_SECRET"))
+        #expect(await credentials.reads == 1)
+        #expect(await transport.sends == 1)
+        #expect(await network.calls == 0)
+    }
+
+    @Test func groupedShareCountFormPreservesSourceAndReplaysFromSQLite() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: path) }
+        // Synthetic original text, not a copied issuer disclosure or supplier qualification.
+        let html = "<p>Fixture common shares outstanding: 1,234,567. Complete class universe: common only. No scaling.</p>"
+        let source = try await secFinancialReportFixtureParent(filingHTML: html)
+        let store = try SECResearchStore(path: path.path)
+        try await store.save(source, expectedRevision: store.writeRevision())
+        let draft = try await store.prepareFinancialReport(parentID: source.id, executionDate: source.cutoff.addingTimeInterval(1))
+        try await store.saveFinancialReport(draft.document, expectedRevision: draft.expectedRevision)
+        let now = source.cutoff.addingTimeInterval(10), network = ValuationWorkspaceNetworkProbe()
+        let model = persistentValuationWorkspace(store, now: now, network: network)
+        await model.openFinancialReport(draft.document.id); await model.loadValuationSources()
+        let raw = try #require(source.sources.first { $0.endpoint == .filingDocument })
+        var form = SECValuationShareEvidenceDraft()
+        form.sourceReference = raw.reference; form.coverDate = "2024-12-31"
+        form.accessionNumber = "0000320193-24-000004"
+        form.completenessExcerpt = "Complete class universe: common only."
+        form.rationale = "Synthetic unscaled common-share context; not issuer qualification"
+        form.classes[0].classID = "common"; form.classes[0].symbol = source.ticker
+        form.classes[0].countExcerpt = "1,234,567"
+        form.classes[0].countContextExcerpt = "Fixture common shares outstanding: 1,234,567."
+        form.classes[0].identityExcerpt = "Complete class universe: common only."
+        await model.generateValuationSupplement(applicability: .unknown, sourceReference: "", excerpt: "",
+            rationale: "", shareEvidence: form)
+        let generated = try #require(model.valuationSupplement)
+        let count = try #require(generated.valuation.evidence.shareClasses?.classes.first)
+        #expect(count.outstandingShares == (try Money("1234567")))
+        #expect(count.countAnchor.excerpt == Data("1,234,567".utf8))
+        #expect(count.countAnchor.sourceHash == raw.contentHash)
+        #expect(model.canSaveValuationSupplement && !model.valuationHasError)
+        await model.saveValuationSupplement()
+        #expect(model.valuationIsSaved)
+        let restoredStore = try SECResearchStore(path: path.path)
+        let reopened = persistentValuationWorkspace(restoredStore, now: now, network: network)
+        await reopened.openValuationSupplement(generated.id)
+        #expect(!reopened.canDisplayValuationSupplement && reopened.valuationState == .notVerified)
+        let retained = try #require(reopened.valuationSupplement)
+        #expect(try ResearchDocument.encoded(retained) == ResearchDocument.encoded(generated))
+        await reopened.recomputeValuationSupplement()
+        #expect(reopened.valuationState == .matched && reopened.canDisplayValuationSupplement)
+        #expect(retained.valuation.results.reference == nil)
+        #expect(!retained.valuation.assessment.productionEligible && !retained.valuation.assessment.historicalPITQualified)
+        #expect(try await restoredStore.open(id: source.id).sources.first { $0.reference == raw.reference }?.bytes == raw.bytes)
+        #expect(await network.calls == 0)
+
+        // Formatting that no longer exactly exists in the retained source cannot be substituted.
+        await model.openFinancialReport(draft.document.id); await model.loadValuationSources()
+        form.classes[0].countExcerpt = "1234567"
+        await model.generateValuationSupplement(applicability: .unknown, sourceReference: "", excerpt: "",
+            rationale: "", shareEvidence: form)
+        #expect(model.valuationHasError && model.valuationSupplement == nil)
+        #expect(try await restoredStore.savedValuationSupplements(parentReportID: draft.document.id).count == 1)
+    }
+
     @Test func explicitCapturedPriceFormRoundTripsSourceWithoutHistoricalEligibility() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
         defer { try? FileManager.default.removeItem(at: path) }

@@ -20,7 +20,7 @@ private actor FinancialFixtureTransport: HTTPTransport {
 }
 
 /// Real accept pipeline over synthetic response bytes; no network or answer-key fixture.
-func secFinancialReportFixtureParent(sic: String? = "7372") async throws -> SECResearchDocument {
+func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String = "<p>QA</p>") async throws -> SECResearchDocument {
     let now = Date(timeIntervalSince1970: 1_791_072_000)
     var accessions: [String] = [], dates: [String] = [], reportDates: [String] = []
     var forms: [String] = [], documents: [String] = [], accepted: [String] = []
@@ -66,10 +66,10 @@ func secFinancialReportFixtureParent(sic: String? = "7372") async throws -> SECR
     if let sic { submissions["sic"] = sic }
     let transport = try FinancialFixtureTransport([
         payload(identity), payload(submissions), payload(["cik": 320193, "entityName": "Synthetic Report Company", "facts": ["us-gaap": facts]]),
-        payload(["directory": ["item": [["name": "annual.htm", "type": "text/html", "size": 9]]]]),
-        HTTPPayload(statusCode: 200, mediaType: "text/html", body: Data("<p>QA</p>".utf8)),
-        payload(["directory": ["item": [["name": "quarter.htm", "type": "text/html", "size": 9]]]]),
-        HTTPPayload(statusCode: 200, mediaType: "text/html", body: Data("<p>QA</p>".utf8))])
+        payload(["directory": ["item": [["name": "annual.htm", "type": "text/html", "size": filingHTML.utf8.count]]]]),
+        HTTPPayload(statusCode: 200, mediaType: "text/html", body: Data(filingHTML.utf8)),
+        payload(["directory": ["item": [["name": "quarter.htm", "type": "text/html", "size": filingHTML.utf8.count]]]]),
+        HTTPPayload(statusCode: 200, mediaType: "text/html", body: Data(filingHTML.utf8))])
     let provider = try SECEdgarProvider(userAgent: "MarketDecisionTests/1.0 synthetic@example.invalid", transport: transport,
         gate: FinancialFixtureGate(), evidenceRef: "synthetic-sec-report", licenseRef: "synthetic-sec-report-rights", now: { now })
     let entitlement = EntitlementSnapshot(providerID: provider.id, feedID: "public-edgar", version: "synthetic.report.v1",

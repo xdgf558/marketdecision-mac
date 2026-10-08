@@ -412,7 +412,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
                     let context = item.countContextExcerpt.isEmpty ? nil : try anchor(reference: form.sourceReference, text: item.countContextExcerpt)
                     return try SECReviewedShareClass(classID: item.classID.trimmingCharacters(in: .whitespacesAndNewlines),
                         symbol: item.symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
-                        outstandingShares: Money(item.countExcerpt),
+                        outstandingShares: SECUnscaledShareCountExcerpt.parse(item.countExcerpt),
                         countAnchor: anchor(reference: form.sourceReference, text: item.countExcerpt, context: item.countContextExcerpt),
                         identityAnchors: [identity] + (context.map { [$0] } ?? []))
                 }
