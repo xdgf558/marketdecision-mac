@@ -1,6 +1,6 @@
 # Native foundation and Phase 1 data slices
 
-MarketDecision is a local-first macOS SwiftUI application. The deployment target is macOS 15.0. Phase 0 has been approved; Phase 1 and its exit gate remain open. The application retains its synthetic DEMO workspace and adds separate fixed-excerpt offline research and explicit SEC filing-import pages. No live market-price provider or qualified investment-analysis workflow is connected.
+MarketDecision is a local-first macOS SwiftUI application. The deployment target is macOS 15.0. Phase 0 has been approved; Phase 1 and its exit gate remain open. The application retains its synthetic DEMO workspace, separate fixed-excerpt research and explicit SEC import. An opt-in IEX reference-capture candidate is wired through its separately signed helper; no Alpaca account or real market request has been validated. There is no qualified investment-analysis workflow.
 
 ## Build and test
 
