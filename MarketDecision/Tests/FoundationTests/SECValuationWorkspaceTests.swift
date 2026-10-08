@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CoreDomain
 import DataContracts
 import FundamentalsEngine
 @testable import Persistence
@@ -124,7 +125,148 @@ private actor ValuationWorkspaceNetworkProbe {
         financialStorage: storage, valuationStorage: storage, now: { now })
 }
 
+@MainActor private func persistentValuationWorkspace(_ storage: SECResearchStore, now: Date,
+    network: ValuationWorkspaceNetworkProbe) -> SECResearchWorkspaceModel {
+    .init(storage: storage, networkAvailable: false, importer: { _, _, _ in try await network.importCompany() },
+        financialStorage: storage, valuationStorage: storage, now: { now })
+}
+
+private func capturedPriceWorkspaceForm(_ source: SECResearchDocument) throws
+    -> (industryReference: String, shares: SECValuationShareEvidenceDraft, split: SECValuationSplitEvidenceDraft) {
+    let identity = try #require(source.sources.first { $0.endpoint == .companyIdentity })
+    let raw = try #require(source.sources.first { $0.endpoint == .companyFacts })
+    let root = try #require(JSONSerialization.jsonObject(with: raw.bytes) as? [String: Any])
+    let facts = try #require(root["facts"] as? [String: Any])
+    let gaap = try #require(facts["us-gaap"] as? [String: Any])
+    let revenue = try #require(gaap["RevenueFromContractWithCustomerExcludingAssessedTax"] as? [String: Any])
+    let units = try #require(revenue["units"] as? [String: Any])
+    let values = try #require(units["USD"] as? [[String: Any]])
+    let context = try String(decoding: JSONSerialization.data(withJSONObject: values[0], options: [.sortedKeys]), as: UTF8.self)
+    // Reuse the retained synthetic integer/context fixture to exercise form byte binding.
+    // This deliberately artificial interpretation is not issuer capital or split evidence.
+    var shares = SECValuationShareEvidenceDraft()
+    shares.sourceReference = raw.reference; shares.coverDate = "2024-12-31"
+    shares.accessionNumber = try #require(values[0]["accn"] as? String)
+    shares.rationale = "Synthetic form binding test only, not real capital evidence"
+    shares.completenessExcerpt = context
+    shares.classes[0].classID = "common"; shares.classes[0].symbol = source.ticker
+    shares.classes[0].countExcerpt = "100"; shares.classes[0].identityExcerpt = context
+    shares.classes[0].countContextExcerpt = context
+    var split = SECValuationSplitEvidenceDraft()
+    split.sourceReference = raw.reference; split.excerpt = context; split.basisDate = "2026-10-03"
+    split.rationale = "Synthetic same-basis form test, no conversion or real split qualification"
+    return (identity.reference, shares, split)
+}
+
+private func capturedPriceWorkspaceQuote(symbol: String, cutoff: Date) throws -> SECValuationPriceEvidence {
+    let requestTime = cutoff.addingTimeInterval(4), received = cutoff.addingTimeInterval(5)
+    let timestamp = "2026-10-04T00:00:04Z"
+    let raw = Data("{\"symbol\":\"\(symbol)\",\"quote\":{\"t\":\"\(timestamp)\",\"bp\":9,\"ap\":10,\"bs\":2,\"as\":3,\"bx\":\"V\",\"ax\":\"V\"}}".utf8)
+    let source = try SECValuationSourceMaterial(reference: "synthetic/workspace-quote/" + symbol,
+        contentHash: digest(raw), bytes: raw)
+    let quote = try EquityQuoteValues(bid: Money("9"), ask: Money("10"), bidSize: Money("2"),
+        askSize: Money("3"), bidExchange: "V", askExchange: "V")
+    let rights = try SECCapturedPriceRights(entitlementVersion: "synthetic-rights.v1",
+        evidenceReference: "synthetic-workspace-scope", licenseReference: "synthetic-only",
+        recordedAt: cutoff, validFrom: cutoff, validThrough: cutoff.addingTimeInterval(3_600),
+        assertion: "SYNTHETIC rights fixture, no live entitlement",
+        evidenceBytes: Data("SYNTHETIC local reference retention test".utf8))
+    let request = ProviderRequest(providerID: "alpaca", feedID: "iex", resourceID: symbol,
+        capability: .quote, mode: .latest, usage: .replay, configurationVersion: "alpaca-iex-raw-daily.v1",
+        entitlementVersion: rights.entitlementVersion, requestedAt: requestTime)
+    let provenance = try Provenance(providerID: "alpaca", feedID: "iex", sourceEventAt: EquityRecord.sourceTime(timestamp),
+        receivedAt: received, availableAt: nil, evidenceRef: rights.evidenceReference, origin: .provider,
+        endpointDescriptor: EndpointDescriptor.quote.rawValue, requestedAt: requestTime, requestID: request.id,
+        observationDate: MarketDate(iso8601: "2026-10-03"),
+        versionID: EquityRecord.contentVersion(symbol: symbol, timestamp: timestamp, quote: quote, bar: nil),
+        versionKind: .localContent, availability: .unknown, rawObjectRef: source.reference, rawHash: source.contentHash,
+        normalizationVersion: "equity.raw-iex.v1", licenseRef: rights.licenseReference)
+    let record = try EquityRecord(symbol: symbol, sourceTimestamp: timestamp, quote: quote, provenance: provenance)
+    return try .init(classID: "common", record: record, request: request, rawSource: source, rights: rights,
+        selectedSide: .ask, captureOrigin: .syntheticFixture)
+}
+
 @Suite @MainActor struct SECValuationWorkspaceTests {
+    @Test func explicitCapturedPriceFormRoundTripsSourceWithoutHistoricalEligibility() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let (_, storage, source, financial, _) = try await secValuationStorageFixture(path: path.path)
+        let now = source.cutoff.addingTimeInterval(10), network = ValuationWorkspaceNetworkProbe()
+        let model = persistentValuationWorkspace(storage, now: now, network: network)
+        let form = try capturedPriceWorkspaceForm(source), price = try capturedPriceWorkspaceQuote(symbol: source.ticker, cutoff: source.cutoff)
+        await model.openFinancialReport(financial.id); await model.loadValuationSources()
+        await model.generateValuationSupplement(applicability: .generalNonFinancial, sourceReference: form.industryReference,
+            excerpt: "Synthetic Report Company", rationale: "Synthetic local applicability review",
+            shareEvidence: form.shares, splitEvidence: form.split, capturedPrices: [price])
+        let generated = try #require(model.valuationSupplement)
+        #expect(model.canDisplayValuationSupplement && model.canSaveValuationSupplement)
+        #expect(generated.valuation.results.reference?.metrics["marketCap"]?.value == (try Money("1000")))
+        #expect(!source.sources.contains { $0.reference == price.rawSource.reference })
+        await model.saveValuationSupplement()
+        #expect(model.valuationIsSaved && !model.valuationHasError)
+        let reopened = try SECResearchStore(path: path.path)
+        let restored = persistentValuationWorkspace(reopened, now: now, network: network)
+        await restored.openValuationSupplement(generated.id)
+        #expect(!restored.canDisplayValuationSupplement && restored.valuationState == .notVerified)
+        let opened = try #require(restored.valuationSupplement)
+        #expect(try ResearchDocument.encoded(opened) == ResearchDocument.encoded(generated))
+        let retained = try #require(opened.valuation.evidence.prices.first)
+        #expect(try ResearchDocument.encoded(retained) == ResearchDocument.encoded(price))
+        #expect(retained.rawSource.bytes == price.rawSource.bytes && retained.rawSource.contentHash == digest(price.rawSource.bytes))
+        #expect(retained.request.id == price.request.id && retained.rights.evidenceBytes == price.rights.evidenceBytes)
+        #expect(retained.rights.evidenceHash == digest(price.rights.evidenceBytes) && retained.selectedSide == .ask)
+        await restored.recomputeValuationSupplement()
+        #expect(restored.canDisplayValuationSupplement && restored.valuationState == .matched)
+        let report = try #require(restored.valuationSupplement?.valuation)
+        #expect(report.results.reference?.metrics["marketCap"]?.value == (try Money("1000")))
+        #expect(report.results.base.metrics["marketCap"]?.value == nil)
+        #expect(report.inputSnapshot.financials.input.classes.isEmpty)
+        #expect(report.inputSnapshot.financials.input.normalization.asOf == source.cutoff)
+        #expect(retained.record.provenance.availability == .unknown && retained.record.provenance.versionKind == .localContent)
+        #expect(report.results.score?.valuation.historyInputs.isEmpty == true)
+        #expect(report.results.score?.valuation.metrics.values.allSatisfy { $0.prices.isEmpty && $0.validDays == 0 } == true)
+        #expect(report.assessment.referenceScenarioOnly && report.assessment.researchOnly)
+        #expect(!report.assessment.historicalPITQualified && !report.assessment.productionEligible)
+        #expect(report.assessment.gaps.contains(.syntheticReferenceOnly) && report.assessment.gaps.contains(.historicalValuationUnavailable))
+        #expect(try await reopened.savedValuationSupplements(parentReportID: financial.id).count == 1)
+        #expect(await network.calls == 0)
+    }
+
+    @Test func capturedPriceForDifferentTickerIsRejectedBeforePreparation() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation, stored: false)
+        let model = valuationWorkspace(storage, now: source.cutoff.addingTimeInterval(10))
+        let wrongPrice = try capturedPriceWorkspaceQuote(symbol: "MSFT", cutoff: source.cutoff)
+        #expect(wrongPrice.record.symbol != financial.ticker)
+        await model.openFinancialReport(financial.id)
+        await model.generateValuationSupplement(applicability: .unknown, sourceReference: "", excerpt: "", rationale: "",
+            capturedPrices: [wrongPrice])
+        #expect(model.valuationHasError && model.valuationSupplement == nil && !model.canSaveValuationSupplement)
+        #expect(await storage.preparations == 0)
+        #expect(await storage.receivedEvidence.isEmpty)
+        await model.saveValuationSupplement()
+        #expect(await storage.commits == 0)
+        #expect(await storage.stored.isEmpty)
+    }
+
+    @Test func omittingCapturedPricesKeepsTheFormPriceGap() async throws {
+        let (_, storage, source, financial, _) = try await secValuationStorageFixture()
+        let network = ValuationWorkspaceNetworkProbe()
+        let model = persistentValuationWorkspace(storage, now: source.cutoff.addingTimeInterval(10), network: network)
+        let form = try capturedPriceWorkspaceForm(source)
+        await model.openFinancialReport(financial.id); await model.loadValuationSources()
+        await model.generateValuationSupplement(applicability: .generalNonFinancial, sourceReference: form.industryReference,
+            excerpt: "Synthetic Report Company", rationale: "Synthetic local applicability review",
+            shareEvidence: form.shares, splitEvidence: form.split)
+        let report = try #require(model.valuationSupplement?.valuation)
+        #expect(model.canDisplayValuationSupplement && model.canSaveValuationSupplement)
+        #expect(report.evidence.prices.isEmpty && report.results.reference == nil)
+        #expect(report.assessment.gaps.contains(.priceSourceMissing) && !report.assessment.currentReferenceCapitalAvailable)
+        #expect(report.results.base.metrics["marketCap"]?.value == nil)
+        #expect(report.results.score?.valuation.historyInputs.isEmpty == true)
+        #expect(await network.calls == 0)
+    }
+
     @Test func listsAreIndependentAndNeverGenerateOpenOrImportOnLoad() async throws {
         let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
         let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation), network = ValuationWorkspaceNetworkProbe()

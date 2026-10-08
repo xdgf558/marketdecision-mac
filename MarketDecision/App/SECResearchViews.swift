@@ -10,12 +10,19 @@ private struct SECPagePreparation: Hashable { let ready: Bool; let attempt: UUID
 
 struct SECResearchPage: View {
     let workspace: WorkspaceModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: SECResearchWorkspaceModel?
+    @State private var equityModel: EquityResearchWorkspaceModel?
+    @State private var equityError: String?
+    @State private var equityAttempt = UUID()
     @State private var errorMessage: String?
     @State private var attempt = UUID()
     var body: some View {
         Group {
-            if let model { SECResearchContent(model: model) }
+            if let model {
+                SECResearchContent(model: model, equityModel: equityModel, equityError: equityError,
+                    retryEquity: { equityAttempt = UUID() })
+            }
             else if let errorMessage {
                 VStack(spacing: 14) {
                     ContentUnavailableView("SEC 研究暂不可用", systemImage: "doc.text.magnifyingglass", description: Text(errorMessage))
@@ -37,12 +44,33 @@ struct SECResearchPage: View {
                 errorMessage = "本地研究库无法通过检查。已有记录保留，可以重试；其他工作区不受影响。"
             }
         }
-        .onDisappear { model?.disappear() }
+        .task(id: SECPagePreparation(ready: workspace.isPrepared, attempt: equityAttempt)) {
+            guard workspace.isPrepared else { return }
+            do {
+                equityError = nil
+                if equityModel == nil {
+                    let ready = try workspace.makeEquityResearchWorkspace()
+                    try Task.checkCancellation(); equityModel = ready
+                }
+                if scenePhase == .active { equityModel?.appear() }
+            } catch {
+                guard !Task.isCancelled else { return }
+                equityError = "行情参考暂不可用，可以重试；SEC 财报、保存及重算仍可使用。"
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { equityModel?.appear() }
+            else { equityModel?.disappear() }
+        }
+        .onDisappear { model?.disappear(); equityModel?.disappear() }
     }
 }
 
 struct SECResearchContent: View {
     @Bindable var model: SECResearchWorkspaceModel
+    let equityModel: EquityResearchWorkspaceModel?
+    let equityError: String?
+    let retryEquity: () -> Void
     // User-provided contact stays in local preferences. It is excluded from research documents,
     // source provenance, exported material, error messages and diagnostics.
     @AppStorage("secContactEmail") private var contactEmail = ""
@@ -57,6 +85,7 @@ struct SECResearchContent: View {
     @State private var shareEvidence = SECValuationShareEvidenceDraft()
     @State private var includeSplitEvidence = false
     @State private var splitEvidence = SECValuationSplitEvidenceDraft()
+    @State private var includeCapturedPrice = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
@@ -95,11 +124,20 @@ struct SECResearchContent: View {
                     .accessibilityIdentifier("secMessage")
             }
             Picker("研究内容", selection: $section) {
-                ForEach(["财务数据", "财务报告", "估值与评分", "来源与修订", "已保存"], id: \.self) { Text($0).tag($0) }
+                ForEach(["财务数据", "财务报告", "行情参考", "估值与评分", "来源与修订", "已保存"], id: \.self) { Text($0).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("secSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if section == "财务报告" { financialReports }
+                    else if section == "行情参考" {
+                        if let equityModel {
+                            EquityResearchContent(model: equityModel, financialTicker: model.financialReport?.ticker)
+                        } else if let equityError {
+                            ContentUnavailableView("行情参考暂不可用", systemImage: "chart.xyaxis.line",
+                                description: Text(equityError))
+                            Button("重试行情参考") { retryEquity() }
+                        } else { ProgressView("正在准备本地行情参考…") }
+                    }
                     else if section == "估值与评分" { valuationReports }
                     else if section == "已保存" { saved }
                     else if let document = model.document {
@@ -121,11 +159,14 @@ struct SECResearchContent: View {
         .onChange(of: model.financialReport?.id) { _, _ in
             industryApplicability = .unknown; industrySource = ""; industryExcerpt = ""; industryRationale = ""
             includeShareEvidence = false; shareEvidence = .init(); includeSplitEvidence = false; splitEvidence = .init()
+            includeCapturedPrice = false
         }
         .onChange(of: model.valuationSourceDocument?.id) { _, _ in
             industrySource = ""; industryExcerpt = ""
             includeShareEvidence = false; shareEvidence = .init(); includeSplitEvidence = false; splitEvidence = .init()
+            includeCapturedPrice = false
         }
+        .onChange(of: capturedPriceSelectionKey) { _, _ in includeCapturedPrice = false }
     }
     private var progressText: String {
         guard let progress = model.progress else { return "正在准备…" }
@@ -513,21 +554,23 @@ struct SECResearchContent: View {
                             .disabled(!model.canGenerateValuationSupplement).accessibilityIdentifier("secLoadValuationSources")
                         industryEvidenceForm
                         shareAndSplitEvidenceForm
+                        capturedPriceSelection
                         Button("检查证据并生成补充报告") {
                             Task {
                                 await model.generateValuationSupplement(applicability: industryApplicability,
                                     sourceReference: industrySource, excerpt: industryExcerpt, rationale: industryRationale,
                                     shareEvidence: includeShareEvidence ? shareEvidence : nil,
-                                    splitEvidence: includeSplitEvidence ? splitEvidence : nil)
+                                    splitEvidence: includeSplitEvidence ? splitEvidence : nil,
+                                    capturedPrices: selectedCapturedPrices)
                             }
-                        }.disabled(!model.canGenerateValuationSupplement)
+                        }.disabled(!model.canGenerateValuationSupplement || (includeCapturedPrice && !canSelectCapturedPrice))
                             .accessibilityIdentifier("secGenerateValuationSupplement")
                     } else {
                         Text("先打开一份已保存的财务报告；新生成的财务报告需先保存，才能绑定补充证据。")
                             .font(.callout).foregroundStyle(.secondary)
                         Button("选择财务报告") { section = "财务报告" }.disabled(model.isBusy)
                     }
-                    Text("当前没有获准接入的行情来源。不会填写示例价格，也不会为估值自动联网；价格、股类资本、拆股及历史覆盖的缺口会逐项显示。")
+                    Text("行情只在“行情参考”中显式读取，取得后仍需在此勾选。IEX 买卖报价仅用于本次捕获参考，不是实时或历史 PIT 数据；缺少股类与口径证据时保留缺项。")
                         .font(.caption).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
             }
@@ -575,6 +618,62 @@ struct SECResearchContent: View {
             }
         }
     }
+    private var capturedPrice: SECValuationPriceEvidence? { equityModel?.result?.quoteEvidence }
+    private var canSelectCapturedPrice: Bool {
+        guard let price = capturedPrice, let parent = model.financialReport, model.financialReportIsSaved,
+              price.selectedPrice != nil, price.record.symbol == parent.ticker, includeShareEvidence else { return false }
+        return shareEvidence.classes.contains {
+            $0.classID.trimmingCharacters(in: .whitespacesAndNewlines) == price.classID
+                && $0.symbol.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == price.record.symbol
+        }
+    }
+    private var selectedCapturedPrices: [SECValuationPriceEvidence] {
+        includeCapturedPrice && canSelectCapturedPrice ? capturedPrice.map { [$0] } ?? [] : []
+    }
+    private var capturedPriceSelectionKey: String {
+        [capturedPrice?.request.id.uuidString ?? "", model.financialReport?.id.uuidString ?? "",
+         industrySource, shareEvidence.sourceReference, splitEvidence.sourceReference,
+         includeShareEvidence ? "shares" : "no-shares",
+         shareEvidence.classes.map { $0.classID + "/" + $0.symbol }.joined(separator: "|")].joined(separator: "\n")
+    }
+    private var capturedPriceSelection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("本次捕获的价格参考").font(.headline)
+            if let price = capturedPrice, let selectedPrice = price.selectedPrice {
+                capturedPriceDetails(price, selectedPrice: selectedPrice)
+                capturedPriceControls
+            } else {
+                Text("尚无满足当前参考条件的捕获报价。可以先生成保留价格缺项的报告。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Button("前往行情参考") { section = "行情参考" }.disabled(model.isBusy)
+        }.padding(.vertical, 4)
+    }
+
+    private func capturedPriceDetails(_ price: SECValuationPriceEvidence, selectedPrice: Money) -> some View {
+        let side: String = price.selectedSide == .bid ? "买方报价 Bid " : "卖方报价 Ask "
+        let priceText: String = "\(price.record.symbol) · 股类 \(price.classID) · \(side)\(selectedPrice.decimalString) USD"
+        let receivedText: String = "接收 \(price.capturedAt.formatted(date: .numeric, time: .standard)) · Alpaca / IEX · 历史可用时刻未知"
+        return Group {
+            Text(priceText).textSelection(.enabled)
+            Text(receivedText).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var capturedPriceControls: some View {
+        Group {
+            Toggle("将这份捕获报价加入本次补充报告", isOn: $includeCapturedPrice)
+                .disabled(model.isBusy || !canSelectCapturedPrice)
+                .accessibilityIdentifier("secIncludeCapturedPrice")
+            if !canSelectCapturedPrice {
+                Text("须与当前财务报告的股票代码一致，并在上方提交相同股类标识与代码；不会自动匹配或代填股类。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("选择只冻结这一份报价及来源证据。单份报价不替代完整股类价格，也不加入历史估值、评分历史或账本。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var industryEvidenceForm: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("行业适用性").font(.headline)

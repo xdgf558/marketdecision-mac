@@ -37,6 +37,11 @@ import SecuritySupport
         return try await environment.makeSECResearchWorkspace(networkAvailable: networkAvailable)
     }
 
+    public func makeEquityResearchWorkspace() throws -> EquityResearchWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try environment.makeEquityResearchWorkspace()
+    }
+
     /// False means this invocation did not complete a refresh, including busy/cancelled calls.
     /// A prior quote never makes a failed invocation successful.
     @discardableResult public func refresh() async -> Bool {

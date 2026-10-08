@@ -4,6 +4,17 @@ import CoreDomain
 import DataContracts
 import DataProviders
 
+/// GRDB executes the transaction on its own serial queue. Carry cancellation explicitly
+/// across that dispatch instead of asking the queue callback for Swift task context.
+private final class EquityWriteCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    func cancel() { lock.withLock { cancelled = true } }
+    func check() throws {
+        if lock.withLock({ cancelled }) { throw CancellationError() }
+    }
+}
+
 public struct EquityIngestReceipt: Sendable, Equatable {
     public let insertedDocuments: Int, insertedRecords: Int, insertedPages: Int
     public let revision: UUID
@@ -23,7 +34,17 @@ public extension BusinessDataStore {
     /// Raw + typed + page coverage commit atomically. The accepted wrapper is not publicly
     /// constructible; quote/bars capability, rights and exact request are checked before this API.
     @discardableResult
-    internal func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) throws -> EquityIngestReceipt {
+    internal func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID) async throws -> EquityIngestReceipt {
+        try Task.checkCancellation()
+        let cancellation = EquityWriteCancellation()
+        return try await withTaskCancellationHandler {
+            try cancellation.check()
+            return try ingestEquity(accepted, expectedRevision: expectedRevision, cancellation: cancellation)
+        } onCancel: { cancellation.cancel() }
+    }
+
+    private func ingestEquity(_ accepted: AcceptedProviderPayload<EquityRecord>, expectedRevision: UUID,
+                              cancellation: EquityWriteCancellation) throws -> EquityIngestReceipt {
         let result = accepted.exchange.result, raw = accepted.rawPayload, request = result.request
         guard case .latest = request.mode, request.providerID == "alpaca", request.feedID == "iex" else { throw ContractError.invalidRequest }
         guard [.quote, .bars].contains(request.capability), [.complete, .partial, .empty].contains(result.status),
@@ -49,6 +70,7 @@ public extension BusinessDataStore {
         let encoded = try result.items.map { ($0, try Self.encodeEquity($0)) }
         let nextRevision = UUID()
         let changes = try database.transaction { db -> (Int, Int, Int) in
+            try cancellation.check()
             guard try String.fetchOne(db, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1") == expectedRevision.uuidString.lowercased() else {
                 throw SnapshotError.stalePlan
             }
@@ -56,6 +78,7 @@ public extension BusinessDataStore {
                 let old = try Self.decodeStoredEquityPage(row, db: db)
                 guard try Self.equityPageID(old) == pageID, old.recordVersions == page.recordVersions,
                       old.status == page.status, old.nextPageToken == page.nextPageToken else { throw BusinessStoreError.immutableConflict }
+                try cancellation.check()
                 return (0, 0, 0)
             }
             let metadata = try document.metadataHash
@@ -94,6 +117,9 @@ public extension BusinessDataStore {
             try db.execute(sql: "INSERT INTO p1_equity_pages (page_id, symbol, source_reference, page_hash, page_json) VALUES (?, ?, ?, ?, ?)",
                            arguments: [pageID, request.resourceID, document.reference, digest(pageBytes), pageBytes])
             try db.execute(sql: "UPDATE p1_store_metadata SET revision = ? WHERE singleton = 1", arguments: [nextRevision.uuidString.lowercased()])
+            // A cancellation observed before this boundary rolls back all source, typed,
+            // page and revision writes. A transaction already committed may be retained.
+            try cancellation.check()
             return (documents, count, 1)
         }
         if changes.0 + changes.1 + changes.2 > 0 { currentRevision = nextRevision }
