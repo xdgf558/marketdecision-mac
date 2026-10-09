@@ -74,6 +74,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
 /// A page owns its task, progress and replay status. Opening a page only reads the isolated
 /// local store. Neither startup, selection nor replay constructs a network session.
 @MainActor @Observable public final class SECResearchWorkspaceModel {
+    public private(set) var archiveTransfer: SECArchiveTransferModel?
     public private(set) var ticker = "MSFT"
     public let networkAvailable: Bool
     public private(set) var document: SECResearchDocument?
@@ -131,6 +132,9 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     private var cancelFinancialWork: (@Sendable () -> Void)?
     private var generation = UUID()
     private var task: Task<Void, Never>?
+    private var archiveRestoreOperation: UUID?
+    private var archiveRefreshedGeneration: UUID?
+    private var isPageVisible = true
 
     public init(storage: any SECResearchWorkspaceStorage, networkAvailable: Bool,
                 importer: @escaping SECResearchImport,
@@ -154,6 +158,63 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         self.valuationStorage = valuationStorage; self.valuationReplay = valuationReplay
     }
 
+    /// Composition supplies the same isolated SEC store used by this workspace.
+    /// Installing archive actions does not read storage or construct a provider.
+    func configureArchiveTransfer(store: any SECArchiveStorage,
+                                  coordinator: SECArchiveWorkspaceCoordinator? = nil) {
+        archiveTransfer = SECArchiveTransferModel(store: store, workspace: self, coordinator: coordinator)
+    }
+
+    public var archiveRestoreInProgress: Bool { archiveRestoreOperation != nil }
+    var archiveRefreshNeeded: Bool { isPageVisible && archiveRefreshedGeneration != generation }
+
+    /// Called before the first suspension of archive commit. Generation invalidation
+    /// protects publication; cancellation is supplementary. Storage must still reject
+    /// old writes against their original revision inside its SQLite transaction.
+    func beginArchiveRestore() -> UUID? {
+        guard archiveRestoreOperation == nil else { return nil }
+        let token = UUID()
+        archiveRestoreOperation = token; generation = UUID()
+        archiveRefreshedGeneration = nil
+        task?.cancel(); task = nil
+        cancelFinancialWork?(); cancelFinancialWork = nil
+        isBusy = true; progress = nil
+        clearArchivePresentation()
+        return token
+    }
+
+    /// Success and failure both reload local summaries. Do not call load(), whose
+    /// busy guard would skip this refresh while an older operation is still pending.
+    /// Opening any restored record remains separate from explicit recomputation.
+    func finishArchiveRestore(_ operation: UUID, releaseReservation: Bool = true) async {
+        guard archiveRestoreOperation == operation else { return }
+        defer { if releaseReservation { endArchiveRestore(operation) } }
+        // An abandoned page stays clear. If it returns while another page is
+        // refreshing, the coordinator sees its pending generation and reloads it
+        // before releasing any page's reservation.
+        guard isPageVisible else { return }
+        let token = generation
+        clearArchivePresentation()
+        async let research: Void = reloadList(token)
+        async let reports: Void = reloadFinancialList(token)
+        async let supplements: Void = reloadValuationList(token)
+        _ = await (research, reports, supplements)
+        if generation == token { archiveRefreshedGeneration = token }
+    }
+
+    func endArchiveRestore(_ operation: UUID) {
+        if archiveRestoreOperation == operation {
+            archiveRestoreOperation = nil; archiveRefreshedGeneration = nil; isBusy = false
+        }
+    }
+
+    private func clearArchivePresentation() {
+        clearDocument(); message = nil; hasError = false
+        saved = []; listError = nil
+        savedFinancialReports = []; financialListError = nil
+        savedValuationSupplements = []; valuationListError = nil
+    }
+
     public func chooseTicker(_ value: String) {
         guard !isBusy else { return }
         let value = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -162,6 +223,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     }
 
     public func load() async {
+        isPageVisible = true
         guard !isBusy else { return }
         let token = begin(clear: false)
         defer { finish(token) }
@@ -550,11 +612,15 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
 
     public func cancel() {
         generation = UUID(); task?.cancel(); task = nil
-        cancelFinancialWork?(); cancelFinancialWork = nil; isBusy = false; progress = nil
+        cancelFinancialWork?(); cancelFinancialWork = nil
+        // Leaving or cancelling the page cannot release an archive transaction's
+        // reservation and allow another import/save to start before its refresh.
+        isBusy = archiveRestoreOperation != nil; progress = nil
         clearDocument(); hasError = false
         message = "操作已取消；已接收的源页或已提交的研究可能保留，可重新载入列表检查。"
     }
     public func disappear() {
+        isPageVisible = false
         cancel(); message = nil; saved = []; listError = nil
         savedFinancialReports = []; financialListError = nil
         savedValuationSupplements = []; valuationListError = nil

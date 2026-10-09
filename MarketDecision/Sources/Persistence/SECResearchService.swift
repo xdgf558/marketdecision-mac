@@ -228,10 +228,12 @@ public struct SECResearchDocument: Sendable, Codable, Identifiable {
 }
 
 /// A separate application-id-marked database. Neither the synthetic transfer API nor the
-/// reviewed-excerpt archive may open it. No export/restore permission is granted here.
+/// reviewed-excerpt archive may open it. Independent SEC local archives require their
+/// own per-operation consent; existing frozen-object permissions remain unchanged.
 public actor SECResearchStore {
     let database: DatabaseStore
     let business: BusinessDataStore
+    var archiveCandidates: [UUID: SECArchiveRestoreCandidate] = [:]
 
     public init(path: String) throws {
         try self.init(database: DatabaseStore(path: path, purpose: .secResearch))
@@ -243,19 +245,21 @@ public actor SECResearchStore {
     }
     func writeRevision() throws -> UUID { try Self.revision(database) }
     private static func revision(_ database: DatabaseStore) throws -> UUID {
-        try database.read { db in
-            guard try Int.fetchOne(db, sql: "PRAGMA application_id") == DatabasePurpose.secResearch.applicationID else {
-                throw MigrationError.incompatiblePurpose
-            }
-            guard let text = try String.fetchOne(db, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1"),
-                  let revision = UUID(uuidString: text) else { throw BusinessStoreError.corruptedStorage }
-            for table in ["p1_observations", "p1_market_sessions", "p1_company_events", "p1_equity_records", "p1_equity_pages",
-                          "p1_watchlist", "p1_watchlist_conflicts", "p1_financial_dictionaries",
-                          "p1_financial_normalization_runs", "p1_normalized_financial_facts"] {
-                guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM " + table) == 0 else { throw SnapshotError.unsupportedFormat }
-            }
-            return revision
+        try database.read(Self.revision)
+    }
+    // Shared by normal writes and archive transactions without nesting a database read.
+    static func revision(_ db: Database) throws -> UUID {
+        guard try Int.fetchOne(db, sql: "PRAGMA application_id") == DatabasePurpose.secResearch.applicationID else {
+            throw MigrationError.incompatiblePurpose
         }
+        guard let text = try String.fetchOne(db, sql: "SELECT revision FROM p1_store_metadata WHERE singleton = 1"),
+              let revision = UUID(uuidString: text) else { throw BusinessStoreError.corruptedStorage }
+        for table in ["p1_observations", "p1_market_sessions", "p1_company_events", "p1_equity_records", "p1_equity_pages",
+                      "p1_watchlist", "p1_watchlist_conflicts", "p1_financial_dictionaries",
+                      "p1_financial_normalization_runs", "p1_normalized_financial_facts"] {
+            guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM " + table) == 0 else { throw SnapshotError.unsupportedFormat }
+        }
+        return revision
     }
     func save(_ document: SECResearchDocument, expectedRevision: UUID) async throws {
         try Task.checkCancellation()

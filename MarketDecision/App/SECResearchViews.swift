@@ -105,7 +105,9 @@ struct SECResearchContent: View {
                             .accessibilityIdentifier("secContactEmail")
                         Button("导入财报") { model.startImport(email: contactEmail) }
                             .disabled(model.isBusy || !model.networkAvailable).accessibilityIdentifier("secImport")
-                        if model.isBusy { Button("取消") { model.cancel() }.accessibilityIdentifier("secCancel") }
+                        if model.isBusy && !model.archiveRestoreInProgress {
+                            Button("取消") { model.cancel() }.accessibilityIdentifier("secCancel")
+                        }
                     }
                     Text("点击后发送股票代码和联系邮箱给 SEC。邮箱仅保存在本机；不会随研究记录保存或公开。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -124,7 +126,7 @@ struct SECResearchContent: View {
                     .accessibilityIdentifier("secMessage")
             }
             Picker("研究内容", selection: $section) {
-                ForEach(["财务数据", "财务报告", "行情参考", "估值与评分", "来源与修订", "已保存"], id: \.self) { Text($0).tag($0) }
+                ForEach(["财务数据", "财务报告", "行情参考", "估值与评分", "来源与修订", "已保存", "归档与恢复"], id: \.self) { Text($0).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("secSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -140,6 +142,14 @@ struct SECResearchContent: View {
                     }
                     else if section == "估值与评分" { valuationReports }
                     else if section == "已保存" { saved }
+                    else if section == "归档与恢复" {
+                        if let transfer = model.archiveTransfer {
+                            SECArchiveTransferContent(transfer: transfer, research: model)
+                        } else {
+                            ContentUnavailableView("本构建未提供 SEC 归档", systemImage: "archivebox",
+                                description: Text("已有研究仍可查看和重算。"))
+                        }
+                    }
                     else if let document = model.document {
                         header(document)
                         if section == "来源与修订" { sources(document) }
@@ -169,6 +179,7 @@ struct SECResearchContent: View {
         .onChange(of: capturedPriceSelectionKey) { _, _ in includeCapturedPrice = false }
     }
     private var progressText: String {
+        if model.archiveRestoreInProgress { return "正在恢复 SEC 研究并刷新本地列表…" }
         guard let progress = model.progress else { return "正在准备…" }
         return "\(stageTitle(progress.stage)) · 已接收 \(progress.acceptedPages) 页 / \(progress.acceptedRecords) 条"
     }
