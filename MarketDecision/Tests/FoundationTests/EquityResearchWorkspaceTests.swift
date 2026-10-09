@@ -14,6 +14,11 @@ private let researchQuote = #"{"symbol":"AAPL","quote":{"t":"2026-09-18T14:59:59
 private func researchPayload(_ body: String, status: Int = 200) -> HTTPPayload {
     .init(statusCode: status, mediaType: "application/json", body: Data(body.utf8))
 }
+private func importLockResearchRights() throws -> SECCapturedPriceRights {
+    try SECCapturedPriceRights(entitlementVersion: "synthetic-rights", evidenceReference: "synthetic-rights",
+        licenseReference: "synthetic-license", recordedAt: researchNow, validFrom: researchNow,
+        validThrough: researchNow.addingTimeInterval(900), assertion: "Synthetic assertion", evidenceBytes: Data("Synthetic evidence".utf8))
+}
 private actor ResearchGate {
     var entered = false
     var pending: CheckedContinuation<Void, Never>?
@@ -83,17 +88,28 @@ private struct ResearchHarness {
     let counter: ResearchCounter
     let acquisition: EquityResearchAcquisition
     init(saved: Bool = true, responses: [HTTPPayload] = [researchPayload(researchQuote)], gate: ResearchGate? = nil,
-         clockBase: Date = researchNow) throws {
+         clockBase: Date = researchNow, workspaceLock: WorkspaceImportLock = WorkspaceImportLock(),
+         closingGate: ResearchGate? = nil, failFactory: Bool = false) throws {
         database = try BusinessDataStore(path: ":memory:")
         credentials = try ResearchCredentials(saved: saved)
         let transport = ResearchTransport(responses, gate: gate), counter = ResearchCounter(), clock = ResearchClock(base: clockBase)
         self.transport = transport; self.counter = counter
         acquisition = EquityResearchAcquisition(database: database, factory: { credentials, rights in
             counter.create()
+            if failFactory { throw ResearchInjectedError() }
             let provider = try AlpacaIEXProvider(apiKey: credentials.apiKey, secret: credentials.secret,
                 evidenceRef: rights.evidenceReference, licenseRef: rights.licenseReference, transport: transport, clock: clock)
-            return EquityResearchProviderSession(provider: provider, close: { counter.close() })
-        }, clock: { clock.now() }, captureOrigin: .syntheticFixture)
+            return EquityResearchProviderSession(provider: provider, close: {
+                if let closingGate { await closingGate.pause() }
+                counter.close()
+            })
+        }, clock: { clock.now() }, captureOrigin: .syntheticFixture, workspaceLock: workspaceLock)
+    }
+    func capture() async throws -> EquityResearchCapture {
+        let revision = try await acquisition.beginCredentialUpdate(expectedRevision: nil)
+        await acquisition.endCredentialUpdate(revision)
+        return try await acquisition.capture(symbol: "AAPL", classID: "common", side: .bid,
+            rights: importLockResearchRights(), bars: nil, credentialStore: credentials, expectedCredentialRevision: revision)
     }
     @MainActor func model(networkAvailable: Bool = true) -> EquityResearchWorkspaceModel {
         let model = EquityResearchWorkspaceModel(store: credentials, acquisition: acquisition,
@@ -309,6 +325,107 @@ private struct ResearchHarness {
         #expect(await h.credentials.reads == 1)
         await gate.release(); _ = try await operation.value
         #expect(model.result == nil && h.counter.values() == [1, 1])
+    }
+    @Test func subprocessWorkspaceOwnerRejectsEquityBeforeSecretOrFactory() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let child = try ImportLockChild(directory)
+        try child.expect("READY")
+        let h = try ResearchHarness(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        await #expect(throws: EquityResearchError.busy) { try await h.capture() }
+        #expect(await h.credentials.counts() == [0, 0, 0, 0])
+        #expect(h.counter.values() == [0, 0])
+        #expect(await h.transport.sent == 0)
+        try child.release()
+        #expect(try await h.capture().pages.count == 1)
+        #expect(await h.credentials.reads == 1)
+        #expect(h.counter.values() == [1, 1])
+    }
+    @Test func SECAndEquityShareWorkspacePermitInBothDirections() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let coordinator = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let secWork = ResearchGate(), equityWork = ResearchGate(), rejectedFactory = ResearchCounter()
+        let h = try ResearchHarness(gate: equityWork, workspaceLock: WorkspaceImportLock(directory: directory.url)), model = h.model()
+        _ = await model.checkCredentials(); model.rightsConfirmed = true
+        let sec = Task { try await coordinator.perform { await secWork.pause(); return 1 } }
+        await secWork.wait()
+        await model.fetch()
+        #expect(model.result == nil && model.hasFetchError && model.presence == .saved)
+        #expect(model.fetchMessage == "当前工作区还有读取或凭据操作在结束；请稍后重试。")
+        #expect(await h.credentials.reads == 0)
+        #expect(h.counter.values() == [0, 0])
+        await secWork.release(); _ = try await sec.value
+        let equity = Task { try await h.capture() }
+        await equityWork.wait()
+        await #expect(throws: SECResearchError.importInProgress) {
+            try await coordinator.perform { rejectedFactory.create(); return 2 }
+        }
+        #expect(rejectedFactory.values() == [0, 0])
+        await equityWork.release(); _ = try await equity.value
+        #expect(try await coordinator.perform { 3 } == 3)
+    }
+    @Test func cancelledEquityKeepsKernelPermitUntilClientCloseReturns() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let work = ResearchGate(), closing = ResearchGate()
+        let first = try ResearchHarness(gate: work, workspaceLock: WorkspaceImportLock(directory: directory.url), closingGate: closing)
+        let second = try ResearchHarness(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let operation = Task { try await first.capture() }
+        await work.wait(); operation.cancel()
+        await #expect(throws: EquityResearchError.busy) { try await second.capture() }
+        await work.release(); await closing.wait()
+        await #expect(throws: EquityResearchError.busy) { try await second.capture() }
+        let child = try ImportLockChild(directory, mode: "try")
+        try child.expect("BUSY"); try child.waitForExit()
+        #expect(await second.credentials.reads == 0)
+        #expect(second.counter.values() == [0, 0])
+        #expect(first.counter.values() == [1, 0])
+        await closing.release()
+        await #expect(throws: CancellationError.self) { try await operation.value }
+        #expect(first.counter.values() == [1, 1])
+        #expect(try await first.database.equityPages(symbol: "AAPL").isEmpty)
+        #expect(try await second.capture().pages.count == 1)
+    }
+    @Test func invalidWorkspaceAndPreCancelledEquityNeverReadOrConstructTransport() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let missing = try ResearchHarness(workspaceLock: WorkspaceImportLock(directory: directory.url.appendingPathComponent("missing")))
+        await #expect(throws: WorkspaceImportLockError.unavailable) { try await missing.capture() }
+        #expect(await missing.credentials.reads == 0)
+        #expect(missing.counter.values() == [0, 0])
+        let h = try ResearchHarness(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        let cancelled = Task { withUnsafeCurrentTask { $0?.cancel() }; return try await h.capture() }
+        await #expect(throws: CancellationError.self) { try await cancelled.value }
+        #expect(!FileManager.default.fileExists(atPath: directory.lockURL.path))
+        #expect(await h.credentials.reads == 0)
+        #expect(h.counter.values() == [0, 0])
+    }
+    @Test func throwingEquityFactoryReleasesWorkspacePermit() async throws {
+        let directory = try ImportLockTestDirectory(); defer { try? directory.remove() }
+        let h = try ResearchHarness(workspaceLock: WorkspaceImportLock(directory: directory.url), failFactory: true)
+        await #expect(throws: ResearchInjectedError.self) { try await h.capture() }
+        #expect(h.counter.values() == [1, 0])
+        let child = try ImportLockChild(directory, mode: "try")
+        try child.expect("ACQUIRED"); try child.waitForExit()
+        let coordinator = SECResearchImportCoordinator(workspaceLock: WorkspaceImportLock(directory: directory.url))
+        #expect(try await coordinator.perform { 1 } == 1)
+    }
+    @Test func inMemoryAppEnvironmentSharesPermitBetweenSECAndEquity() async throws {
+        let credentials = try ResearchCredentials()
+        let environment = try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"), credentials: credentials)
+        let revision = try await environment.equityAcquisition.beginCredentialUpdate(expectedRevision: nil)
+        await environment.equityAcquisition.endCredentialUpdate(revision)
+        let rights = try importLockResearchRights()
+        // Production acquisition uses real time, so build the same short assertion at that clock.
+        let now = Date()
+        let currentRights = try SECCapturedPriceRights(entitlementVersion: rights.entitlementVersion,
+            evidenceReference: rights.evidenceReference, licenseReference: rights.licenseReference,
+            recordedAt: now, validFrom: now, validThrough: now.addingTimeInterval(900),
+            assertion: rights.assertion, evidenceBytes: rights.evidenceBytes)
+        await #expect(throws: EquityResearchError.busy) {
+            try await environment.secImportCoordinator.perform {
+                try await environment.equityAcquisition.capture(symbol: "AAPL", classID: "common", side: .bid,
+                    rights: currentRights, bars: nil, credentialStore: credentials, expectedCredentialRevision: revision)
+            }
+        }
+        #expect(await credentials.reads == 0)
     }
     @Test func originalDatabaseRevisionSurvivesSuspendedCredentialRead() async throws {
         let gate = ResearchGate(), h = try ResearchHarness(), model = h.model()

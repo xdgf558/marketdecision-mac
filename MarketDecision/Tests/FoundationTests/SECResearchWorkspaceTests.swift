@@ -343,7 +343,7 @@ private func secWorkspaceCopy(_ document: SECResearchDocument) throws -> SECRese
         let pending = try #require(model.startImport(email: "researcher@example.invalid"))
         await pending.value
         #expect(model.hasError && !model.isBusy && model.document == nil && !model.canDisplayValues)
-        #expect(model.message == "另一个窗口正在导入 SEC 财报；请等待导入完成或取消结束后重试。已保存列表仍可查看。")
+        #expect(model.message == "当前工作区已有数据导入；请等待完成或取消收尾后重试。已保存列表仍可查看。")
         #expect(model.saved.map(\.id) == [document.id] && model.listError == nil)
         #expect(await importer.calls == 1)
         await model.load()

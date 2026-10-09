@@ -92,6 +92,19 @@ extension SECResearchStore {
     }
 }
 
+/// Created only by the complete selected-record reader below for one operation. Preparation
+/// may retain it after the read returns; it is never cached or shared across operations and
+/// does not grant permission to skip document validation or the final revision check.
+struct SECFinancialReportParentChain: Sendable {
+    let report: (document: SECFinancialReportDocument, bytes: Data)
+    let research: (document: SECResearchDocument, bytes: Data)
+
+    fileprivate init(report: (document: SECFinancialReportDocument, bytes: Data),
+                     research: (document: SECResearchDocument, bytes: Data)) {
+        self.report = report; self.research = research
+    }
+}
+
 enum SECFinancialReportStorage {
     private struct Catalog: Codable {
         let summary: SECFinancialReportSummary
@@ -149,6 +162,12 @@ enum SECFinancialReportStorage {
     /// Returns the retained report encoding, never a reconstructed JSON encoding. A
     /// valuation supplement binds this exact body and the fully validated SEC parent.
     static func validatedRecord(id: UUID, db: Database) throws -> (document: SECFinancialReportDocument, bytes: Data) {
+        try validatedParentChain(id: id, db: db).report
+    }
+
+    /// Reuse the already decoded and fully checked parent within this database operation.
+    /// Both original encodings remain bound; no catalog-only validation is substituted.
+    static func validatedParentChain(id: UUID, db: Database) throws -> SECFinancialReportParentChain {
         let key = id.uuidString.lowercased()
         guard let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE c.report_id = ?", arguments: [key]) else {
             guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sec_financial_report_documents WHERE report_id = ?", arguments: [key]) == 0
@@ -169,7 +188,7 @@ enum SECFinancialReportStorage {
         catch is CancellationError { throw CancellationError() }
         catch { throw BusinessStoreError.corruptedStorage }
         try Task.checkCancellation()
-        return (document, bytes)
+        return SECFinancialReportParentChain(report: (document, bytes), research: parent)
     }
 
     private static func decodeCatalog(_ row: Row) throws -> Catalog {

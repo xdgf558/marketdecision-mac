@@ -194,6 +194,8 @@ import FundamentalsEngine
             result = nil
             if error is CancellationError {
                 fetchMessage = "本次读取已取消；取消前已提交的来源页可能保留。"; hasFetchError = false
+            } else if (error as? EquityResearchError) == .busy {
+                fetchMessage = "当前工作区还有读取或凭据操作在结束；请稍后重试。"; hasFetchError = true
             } else {
                 fetchMessage = "本次行情读取未完成。请检查凭据、权利证据或连接后重试；已提交来源页可能保留。"; hasFetchError = true
                 if error is EquityCredentialError || (error as? EquityResearchError) == .missingCredentials || (error as? EquityResearchError) == .staleCredentials || (error as? ProviderFailure) == .authInvalid {

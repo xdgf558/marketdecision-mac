@@ -26,8 +26,10 @@ public struct AppEnvironment: Sendable {
             : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
                 .appendingPathComponent("sec-research.sqlite").path
         self.secRequestGate = try SECRateLimiter(requestsPerSecond: 5)
-        self.secImportCoordinator = SECResearchImportCoordinator()
-        self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData)
+        let workspaceLock = WorkspaceImportLock(directory: offlineResearchDatabasePath == ":memory:" ? nil
+            : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent())
+        self.secImportCoordinator = SECResearchImportCoordinator(workspaceLock: workspaceLock)
+        self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData, workspaceLock: workspaceLock)
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {
         ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData), transfer: ResearchTransferModel(store: ResearchTransferStore(database: database)))
