@@ -14,7 +14,10 @@ before = input_hashes(root)
 env = dict(os.environ, MARKETDECISION_TEST_KEYCHAIN='0')
 with tempfile.TemporaryDirectory(prefix='foundation-events-') as temporary:
     events = Path(temporary) / 'events.jsonl'
-    subprocess.run(['xcrun', 'swift', 'test', '--package-path', str(root), '--jobs', '4',
+    # CPU-heavy replay fixtures must not starve unrelated URLSession/continuation tests.
+    # Serialize test cases, not the explicit concurrent tasks exercised inside each test.
+    # Keep the full catalog, one event stream and every existing per-test time limit.
+    subprocess.run(['xcrun', 'swift', 'test', '--package-path', str(root), '--jobs', '4', '--no-parallel',
                     '--event-stream-output-path', str(events), '--event-stream-version', '0'], env=env, check=True)
     result = validate_events([json.loads(line) for line in events.read_text().splitlines()], expected)
     if input_hashes(root) != before:
