@@ -30,7 +30,7 @@ public struct DatabaseStore: Sendable {
     public let purpose: DatabasePurpose
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
         guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
-        let coreMigrations = purpose == .portfolioLedger ? [Self.portfolioLedgerMigration, Self.portfolioPerformanceMigration] : [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
+        let coreMigrations = purpose == .portfolioLedger ? [Self.portfolioLedgerMigration, Self.portfolioPerformanceMigration, Self.portfolioArchiveMigration] : [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
             + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration, Self.secValuationSupplementMigration] : [])
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {

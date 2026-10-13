@@ -7,6 +7,7 @@ actor LedgerStoreFactory {
     private let path: String
     private var cached: LedgerStore?
     private var performance: Task<PerformanceStore, Error>?
+    private var archive: Task<LedgerArchiveStore, Error>?
     init(path: String) { self.path = path }
     func store() throws -> LedgerStore {
         try Task.checkCancellation()
@@ -25,6 +26,16 @@ actor LedgerStoreFactory {
         do { return try await pending.value }
         catch { performance = nil; throw error }
     }
+    func archiveStore() async throws -> LedgerArchiveStore {
+        try Task.checkCancellation()
+        if let archive { return try await archive.value }
+        let ledger = try store()
+        let pending = Task { try await ledger.makeArchiveStore() }
+        archive = pending
+        do { return try await pending.value }
+        catch { archive = nil; throw error }
+    }
+
 
 }
 
@@ -33,12 +44,27 @@ extension AppEnvironment {
     @MainActor public func makeLedgerWorkspaceModel() async throws -> LedgerWorkspaceModel {
         let store = try await ledgerStoreFactory.store()
         try Task.checkCancellation()
-        return LedgerWorkspaceModel(storage: store)
+        let model = LedgerWorkspaceModel(storage: store)
+        let transfer = try await makeLedgerTransferModel()
+        try Task.checkCancellation()
+        model.installTransfer(transfer, coordinator: ledgerTransferCoordinator)
+        return model
     }
     @MainActor public func makePortfolioWorkspaceModel() async throws -> PortfolioWorkspaceModel {
         let store = try await ledgerStoreFactory.performanceStore()
         try Task.checkCancellation()
-        return PortfolioWorkspaceModel(storage: store)
+        let model = PortfolioWorkspaceModel(storage: store)
+        let transfer = try await makeLedgerTransferModel()
+        try Task.checkCancellation()
+        model.installTransfer(transfer, coordinator: ledgerTransferCoordinator)
+        return model
+    }
+    @MainActor private func makeLedgerTransferModel() async throws -> LedgerTransferModel {
+        let ledger = try await ledgerStoreFactory.store()
+        let performance = try await ledgerStoreFactory.performanceStore()
+        let archive = try await ledgerStoreFactory.archiveStore()
+        try Task.checkCancellation()
+        return LedgerTransferModel(store: archive, ledger: ledger, performance: performance, coordinator: ledgerTransferCoordinator)
     }
 
 }

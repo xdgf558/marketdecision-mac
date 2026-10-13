@@ -280,7 +280,7 @@ public actor PerformanceStore: PerformanceStorage {
             return envelope
         } catch { throw PerformanceStoreError.corruptedStorage }
     }
-    private static func loadReport(id:UUID,_ db:Database) throws -> SavedPerformanceReport {
+    static func loadReport(id:UUID,_ db:Database) throws -> SavedPerformanceReport {
         try Task.checkCancellation()
         guard let row = try Row.fetchOne(db,sql:catalogQuery + " WHERE c.report_id = ?",arguments:[id.uuidString]) else { throw PerformanceStoreError.notFound }
         let summary = try loadSummary(row), envelope = try loadInput(hash:summary.inputHash,db)

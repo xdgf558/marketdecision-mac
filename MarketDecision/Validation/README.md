@@ -61,7 +61,7 @@ formats fail. A failed or unavailable runner is not a passed platform check.
 
 Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
 paths, native replace/delete sheets, shared state in independent Settings, stale
-sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen, and portfolio synthetic-example isolation from account reports. These nine cases do not open a file importer or exporter. Native scene wiring is exercised here;
+sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen plus ledger clear preview/cancel/typed confirmation, and portfolio synthetic-example isolation from account reports. These nine cases do not open a file importer or exporter. Native scene wiring is exercised here;
 the foundation catalog's `build_only` label remains specific to its Swift Testing
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain

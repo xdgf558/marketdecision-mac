@@ -6,7 +6,7 @@ import Persistence
 
 /// One page owns one preview. Storage owns the transaction and checks the exact
 /// revision captured before parsing, replay or an asynchronous confirmation.
-@MainActor @Observable public final class LedgerWorkspaceModel {
+@MainActor @Observable public final class LedgerWorkspaceModel: LedgerTransferParticipant {
     public private(set) var snapshot: LedgerSnapshot?
     public private(set) var preview: LedgerImportPreview?
     public private(set) var message: String?
@@ -14,12 +14,41 @@ import Persistence
     public private(set) var isBusy = false
     public private(set) var selectedAccountID: String?
     private let storage: any LedgerStorage
+    public private(set) var transfer: LedgerTransferModel?
+    public private(set) var transferEpoch = UUID()
+    private var transferOperation: UUID?
+    private var transferRefreshedGeneration: UUID?
     private var generation = UUID()
     private var visible = true
     private var operation: UUID?
     private var committing: UUID?
 
     public init(storage: any LedgerStorage) { self.storage = storage }
+    public func installTransfer(_ transfer: LedgerTransferModel, coordinator: LedgerTransferCoordinator) {
+        self.transfer = transfer; coordinator.register(self)
+    }
+    var ledgerTransferRefreshNeeded: Bool {
+        transferOperation != nil && visible && committing == nil && transferRefreshedGeneration != generation
+    }
+    func beginLedgerTransfer(_ id: UUID) {
+        transferOperation = id; transferEpoch = UUID(); transferRefreshedGeneration = nil
+        generation = UUID(); operation = nil; isBusy = true
+        let previous = takePreview()
+        snapshot = nil; message = nil; hasError = false
+        if let previous, committing == nil { Task { [storage] in await storage.cancel(planID: previous.id) } }
+    }
+    func refreshLedgerTransfer(_ id: UUID) async {
+        guard transferOperation == id, visible, committing == nil else { return }
+        let token = begin()
+        await readSnapshot(token: token)
+        if owns(token) { transferRefreshedGeneration = generation }
+        finish(token)
+    }
+    func endLedgerTransfer(_ id: UUID) {
+        guard transferOperation == id else { return }
+        transferOperation = nil; transferRefreshedGeneration = nil
+        isBusy = committing != nil || operation != nil
+    }
     public var canPrepare: Bool { !isBusy && snapshot != nil && selectedAccountID != nil }
     public var canConfirm: Bool { !isBusy && preview?.canCommit == true }
 
@@ -136,7 +165,7 @@ import Persistence
     /// Editing the original draft invalidates approval. A new preview is required;
     /// no old row can silently inherit the revised form or a newer store baseline.
     public func draftChanged() {
-        guard committing == nil else { return }
+        guard committing == nil, transferOperation == nil else { return }
         generation = UUID(); operation = nil; isBusy = false
         let oldPlan = takePreview()
         message = nil; hasError = false
@@ -178,7 +207,7 @@ import Persistence
     }
 
     public func cancelPreview() async {
-        guard committing == nil else { return }
+        guard committing == nil, transferOperation == nil else { return }
         generation = UUID(); operation = nil; isBusy = false
         let oldPlan = takePreview()
         message = "预览已取消，未写入账本。"; hasError = false
@@ -190,7 +219,7 @@ import Persistence
         snapshot = nil; message = nil; hasError = false
         let oldPlan = takePreview()
         if committing == nil {
-            isBusy = false
+            isBusy = transferOperation != nil
             if let oldPlan { Task { [storage] in await storage.cancel(planID: oldPlan.id) } }
         }
     }
@@ -226,11 +255,12 @@ import Persistence
     private func owns(_ id: UUID) -> Bool { visible && generation == id && operation == id }
     private func finish(_ id: UUID) {
         guard operation == id else { return }
-        operation = nil; isBusy = committing != nil
+        operation = nil; isBusy = committing != nil || transferOperation != nil
     }
     private func finishCommit(token: UUID, commit: UUID) async {
         guard committing == commit else { return }
         committing = nil
+        if transferOperation != nil { isBusy = true; return }
         if operation == token { finish(token) }
         else {
             isBusy = false

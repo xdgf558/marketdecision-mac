@@ -200,8 +200,8 @@ public actor LedgerStore: LedgerStorage {
     }
 
     private struct Plan: Sendable { let preview: LedgerImportPreview; let source: Source }
-    private enum SourceKind: String, Codable, Sendable { case csv, manual }
-    private struct SourceMetadata: Codable, Equatable, Sendable {
+    enum SourceKind: String, Codable, Sendable { case csv, manual }
+    struct SourceMetadata: Codable, Equatable, Sendable {
         let kind: SourceKind
         let rawHash: String
         let accountID: String?
@@ -220,19 +220,19 @@ public actor LedgerStore: LedgerStorage {
             engineVersion = LedgerEngine.version; parametersVersion = "PARAMETERS_V1"; numericPolicyVersion = Money.numericPolicyVersion
         }
     }
-    private struct Source: Sendable {
+    struct Source: Sendable {
         let metadata: SourceMetadata
         let bytes: Data
         func id() throws -> String { LedgerCSV.hash(try LedgerStore.encode(metadata)) }
     }
-    private struct BatchRow: Codable, Equatable { let rowIndex: Int; let eventID: String?; let disposition: String }
-    private struct Batch: Codable, Equatable { let id: String; let sourceID: String; let appendBaseCount: Int; let rows: [BatchRow] }
+    struct BatchRow: Codable, Equatable { let rowIndex: Int; let eventID: String?; let disposition: String }
+    struct Batch: Codable, Equatable { let id: String; let sourceID: String; let appendBaseCount: Int; let rows: [BatchRow] }
 
-    private static func encode<T: Encodable>(_ value:T) throws -> Data {
+    static func encode<T: Encodable>(_ value:T) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys,.withoutEscapingSlashes]
         return try encoder.encode(value)
     }
-    private static func comparisonHash(_ event: LedgerEvent) throws -> String {
+    static func comparisonHash(_ event: LedgerEvent) throws -> String {
         // Same broker ID in another file is allowed only for the identical economic
         // event. The retained original source stays bound to the first accepted row.
         let source = event.source.externalTransactionID == nil ? event.source : LedgerSource(
@@ -241,7 +241,7 @@ public actor LedgerStore: LedgerStorage {
             providerSequence:event.providerSequence,source:source,payload:event.payload,rollGroupID:event.rollGroupID,
             multiLegGroupID:event.multiLegGroupID,notes:event.notes)))
     }
-    private static func candidates(source:Source) throws -> [LedgerImportRow] {
+    static func candidates(source:Source) throws -> [LedgerImportRow] {
         guard LedgerCSV.hash(source.bytes) == source.metadata.rawHash,
               source.metadata.mappingVersion == LedgerCSVMapping.version,
               source.metadata.normalizationVersion == LedgerCSVMapping.normalizationVersion,
@@ -277,7 +277,7 @@ public actor LedgerStore: LedgerStorage {
             }
         }
     }
-    private static func classify(_ rows:[LedgerImportRow],current:LedgerSnapshot) throws -> (rows:[LedgerImportRow],state:LedgerState?,message:String?) {
+    static func classify(_ rows:[LedgerImportRow],current:LedgerSnapshot) throws -> (rows:[LedgerImportRow],state:LedgerState?,message:String?) {
         var known: [String:LedgerEvent] = [:]
         for event in current.events { known[try event.idempotencyKey] = event }
         var ids = Set(current.events.map(\.id)), additions:[LedgerEvent] = [], result:[LedgerImportRow] = []
@@ -337,13 +337,16 @@ public actor LedgerStore: LedgerStorage {
             sourceHashes[id] = source.metadata.rawHash
         }
         var batches:[String:Batch] = [:]
+        let totalEvents = try Int.fetchOne(db,sql:"SELECT COUNT(*) FROM ledger_events") ?? 0
         let batchRows = try Row.fetchAll(db,sql:"SELECT * FROM ledger_batches ORDER BY batch_id")
         for row in batchRows {
             let bytes:Data = row["batch_json"]
             guard LedgerCSV.hash(bytes) == row["content_hash"] else { throw LedgerStoreError.corruptedStorage }
             let batch = try JSONDecoder().decode(Batch.self,from:bytes)
             guard batch.id == row["batch_id"],batch.sourceID == row["source_id"],let source = sources[batch.sourceID],
-                  batch.appendBaseCount >= 0,batch.rows.count == source.count,
+                  batch.appendBaseCount >= 0,batch.appendBaseCount <= totalEvents,
+                  batch.rows.filter({ $0.disposition == LedgerImportDisposition.new.rawValue }).count <= totalEvents - batch.appendBaseCount,
+                  batch.rows.count == source.count,
                   Set(batch.rows.map(\.rowIndex)).count == batch.rows.count else { throw LedgerStoreError.corruptedStorage }
             for item in batch.rows {
                 guard let sourceRow = source.first(where: { $0.rowIndex == item.rowIndex }),sourceRow.event?.id == item.eventID,

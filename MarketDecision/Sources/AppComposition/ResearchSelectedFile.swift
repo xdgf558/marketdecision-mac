@@ -26,6 +26,12 @@ public enum ResearchSelectedFile {
         try await read(url, maximumBytes: maximumBytes)
     }
 
+    /// A caller may narrow the existing selected-file budget; it cannot enlarge it.
+    /// This uses the same descriptor, scope, cancellation and integrity checks.
+    public static func read(_ url: URL, maximumBytes: Int) async throws -> Data {
+        try await read(url, maximumBytes: maximumBytes, access: .securityScoped, didReadChunk: { _ in })
+    }
+
     // A smaller bound and observation hook keep real-file race tests deterministic.
     static func read(_ url: URL, maximumBytes: Int, access: Access = .securityScoped,
                      didReadChunk: @escaping @Sendable (Int32) throws -> Void = { _ in }) async throws -> Data {

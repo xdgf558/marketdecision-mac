@@ -131,7 +131,10 @@ import XCTest
         XCTAssertTrue(template.waitForExistence(timeout: 5)); template.click()
         let preview = mainWindow.buttons["ledgerPreviewCSV"]
         func reach(_ element: XCUIElement) {
-            for _ in 0..<14 where !element.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+            for _ in 0..<14 {
+                if element.isHittable { break }
+                mainWindow.scrollViews.firstMatch.swipeUp()
+            }
             XCTAssertTrue(element.isHittable, mainWindow.debugDescription)
         }
         reach(preview); waitEnabled(preview); preview.click()
@@ -159,6 +162,29 @@ import XCTest
         app.typeKey("6", modifierFlags: .command)
         waitText("980 USD", in: cash)
         XCTAssertFalse(mainWindow.buttons["ledgerReviewCommit"].exists)
+        // Only in-app preview/confirmation: never opens an import/export panel.
+        researchTab("导出与备份")
+        let clearPreview = mainWindow.buttons["ledgerArchiveClearPreview"]
+        XCTAssertTrue(clearPreview.waitForExistence(timeout: 10))
+        reach(clearPreview); waitEnabled(clearPreview); clearPreview.click()
+        let archiveSheet = sheet(in: mainWindow)
+        XCTAssertTrue(archiveSheet.waitForExistence(timeout: 5))
+        let clearCommit = archiveSheet.buttons["ledgerArchiveCommit"]
+        XCTAssertTrue(clearCommit.waitForExistence(timeout: 5), archiveSheet.debugDescription)
+        XCTAssertFalse(clearCommit.isEnabled)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(archiveSheet.exists)
+        archiveSheet.buttons["ledgerArchiveCancel"].click(); waitNoSheet(in: mainWindow)
+        researchTab("现金与批次"); waitText("980 USD", in: cash)
+        researchTab("导出与备份"); reach(clearPreview); waitEnabled(clearPreview); clearPreview.click()
+        XCTAssertTrue(archiveSheet.waitForExistence(timeout: 5))
+        let clearText = archiveSheet.textFields["ledgerArchiveConfirmText"]
+        XCTAssertTrue(clearText.waitForExistence(timeout: 5), archiveSheet.debugDescription)
+        clearText.click(); clearText.typeText("确认"); waitEnabled(clearCommit); clearCommit.click()
+        waitNoSheet(in: mainWindow)
+        researchTab("现金与批次")
+        XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
+        XCTAssertFalse(cash.exists)
     }
     func testResearchSnapshotInspectorAndReplay() {
         launchResearch()
