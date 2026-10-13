@@ -2,7 +2,7 @@
 from pathlib import Path
 import json, re
 root=Path(__file__).resolve().parents[1]
-for name in ['CoreDomain','CoreCalculations','DataContracts']:
+for name in ['CoreDomain','CoreCalculations','DataContracts','PortfolioEngine']:
     for path in (root/'Sources'/name).glob('*.swift'):
         imports=set(re.findall(r'^import (\w+)',path.read_text(),re.M))
         assert not imports & {'SwiftUI','GRDB','DataProviders','AppComposition','Persistence'},path

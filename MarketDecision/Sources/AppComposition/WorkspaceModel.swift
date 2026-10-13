@@ -42,6 +42,11 @@ import SecuritySupport
         return try environment.makeEquityResearchWorkspace()
     }
 
+    public func makeLedgerWorkspaceModel() async throws -> LedgerWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try await environment.makeLedgerWorkspaceModel()
+    }
+
     /// False means this invocation did not complete a refresh, including busy/cancelled calls.
     /// A prior quote never makes a failed invocation successful.
     @discardableResult public func refresh() async -> Bool {

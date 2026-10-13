@@ -18,6 +18,7 @@ public struct AppEnvironment: Sendable {
     let secImportCoordinator: SECResearchImportCoordinator
     let secArchiveCoordinator: SECArchiveWorkspaceCoordinator
     let equityAcquisition: EquityResearchAcquisition
+    let ledgerStoreFactory: LedgerStoreFactory
     public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
                 log: SafeLog = SafeLog(), offlineResearchDatabasePath: String = ":memory:") throws {
         self.quotes = quotes; self.database = database; self.businessData = try BusinessDataStore(database: database)
@@ -32,6 +33,9 @@ public struct AppEnvironment: Sendable {
         self.secImportCoordinator = SECResearchImportCoordinator(workspaceLock: workspaceLock)
         self.secArchiveCoordinator = SECArchiveWorkspaceCoordinator()
         self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData, workspaceLock: workspaceLock)
+        self.ledgerStoreFactory = LedgerStoreFactory(path: offlineResearchDatabasePath == ":memory:" ? ":memory:"
+            : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
+                .appendingPathComponent("portfolio-ledger.sqlite").path)
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {
         ResearchWorkspaceModel(storage: ResearchStore(database: database, snapshots: businessData), transfer: ResearchTransferModel(store: ResearchTransferStore(database: database)))
