@@ -161,7 +161,9 @@ struct LedgerTransferContent: View {
                     .disabled(confirmation != "确认" || !model.canConfirm || model.plan?.id != plan.id)
                     .accessibilityIdentifier("ledgerArchiveCommit")
             }
-        }.padding(24).frame(width: 640).accessibilityIdentifier("ledgerArchivePlan")
+        // Keep identifiers on the actionable children: a container identifier propagates
+        // to the sheet controls on macOS 15 and masks their distinct identities.
+        }.padding(24).frame(width: 640)
     }
     private func current(_ request: UUID?) -> Bool { visible && fileFlow.owns(request) }
     private func resetFileRequest() {

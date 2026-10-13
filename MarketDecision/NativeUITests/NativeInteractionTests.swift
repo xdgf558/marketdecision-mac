@@ -131,7 +131,10 @@ import XCTest
         XCTAssertTrue(template.waitForExistence(timeout: 5)); template.click()
         let preview = mainWindow.buttons["ledgerPreviewCSV"]
         func reach(_ element: XCUIElement) {
-            for _ in 0..<14 where !element.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+            for _ in 0..<14 {
+                if element.isHittable { break }
+                mainWindow.scrollViews.firstMatch.swipeUp()
+            }
             XCTAssertTrue(element.isHittable, mainWindow.debugDescription)
         }
         reach(preview); waitEnabled(preview); preview.click()
@@ -167,6 +170,7 @@ import XCTest
         let archiveSheet = sheet(in: mainWindow)
         XCTAssertTrue(archiveSheet.waitForExistence(timeout: 5))
         let clearCommit = archiveSheet.buttons["ledgerArchiveCommit"]
+        XCTAssertTrue(clearCommit.waitForExistence(timeout: 5), archiveSheet.debugDescription)
         XCTAssertFalse(clearCommit.isEnabled)
         app.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(archiveSheet.exists)
@@ -175,6 +179,7 @@ import XCTest
         researchTab("导出与备份"); reach(clearPreview); waitEnabled(clearPreview); clearPreview.click()
         XCTAssertTrue(archiveSheet.waitForExistence(timeout: 5))
         let clearText = archiveSheet.textFields["ledgerArchiveConfirmText"]
+        XCTAssertTrue(clearText.waitForExistence(timeout: 5), archiveSheet.debugDescription)
         clearText.click(); clearText.typeText("确认"); waitEnabled(clearCommit); clearCommit.click()
         waitNoSheet(in: mainWindow)
         researchTab("现金与批次")
