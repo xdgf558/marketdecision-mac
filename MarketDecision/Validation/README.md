@@ -50,18 +50,18 @@ access. This does not automate native scene lifecycle, commands, sheets or actua
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
 
-The separate `Scripts/verify-native-ui.sh` runs eight XCTest UI cases in
+The separate `Scripts/verify-native-ui.sh` runs nine XCTest UI cases in
 `NativeUITests/NativeInteractionTests.swift`. The independently identified
 MarketDecisionUITestHost compiles the same native views with a compile-time-only
 factory using synthetic quotes, an in-memory database and an in-memory credential
 presence store. Neither shipping configuration compiles that factory. UI tests
 are separate from the fixed Swift Testing inventory; the xcresult summary and
-individual case results must both report eight passes with no skips. Unknown result
+individual case results must both report nine passes with no skips. Unknown result
 formats fail. A failed or unavailable runner is not a passed platform check.
 
 Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
 paths, native replace/delete sheets, shared state in independent Settings, stale
-sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, and ledger CSV preview/cancel/commit/page reopen. These eight cases do not open a file importer or exporter. Native scene wiring is exercised here;
+sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen, and portfolio synthetic-example isolation from account reports. These nine cases do not open a file importer or exporter. Native scene wiring is exercised here;
 the foundation catalog's `build_only` label remains specific to its Swift Testing
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain

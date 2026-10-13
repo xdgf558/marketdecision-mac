@@ -92,6 +92,26 @@ import XCTest
         XCTAssertTrue(page.waitForExistence(timeout: 15)); page.click()
         XCTAssertTrue(app.staticTexts["researchCompany"].waitForExistence(timeout: 15))
     }
+    func testPortfolioSyntheticExampleNeverBecomesAnAccountReport() {
+        configure(); app.launch()
+        let page = mainWindow.buttons["pagePortfolio"]
+        XCTAssertTrue(page.waitForExistence(timeout: 15)); waitEnabled(page)
+        app.typeKey("7", modifierFlags: .command)
+        let demo = mainWindow.buttons["portfolioDemo"]
+        XCTAssertTrue(demo.waitForExistence(timeout: 15)); waitEnabled(demo); demo.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["portfolioOrigin"])
+        waitText("1004", in: mainWindow.staticTexts["portfolioNAV"])
+        XCTAssertFalse(mainWindow.buttons["portfolioSavePreview"].exists)
+        researchTab("收益与风险")
+        let month = mainWindow.staticTexts["2026-01"]
+        for _ in 0..<8 where !month.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(month.waitForExistence(timeout: 5))
+        app.typeKey("1", modifierFlags: .command)
+        app.typeKey("7", modifierFlags: .command)
+        XCTAssertTrue(demo.waitForExistence(timeout: 15)); waitEnabled(demo)
+        XCTAssertFalse(mainWindow.staticTexts["portfolioNAV"].exists)
+        XCTAssertFalse(mainWindow.buttons["portfolioSavePreview"].exists)
+    }
     func testLedgerPreviewCancelCommitAndPageReopenStayLocal() {
         configure(); app.launch()
         let page = mainWindow.buttons["pageLedger"]

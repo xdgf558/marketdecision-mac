@@ -75,7 +75,7 @@ public protocol LedgerStorage: Sendable {
 /// Append-only ledger in a dedicated SQLite file. All entry points verify the
 /// same raw-source, index and event contracts; dedup never trusts a narrow index.
 public actor LedgerStore: LedgerStorage {
-    private let database: DatabaseStore
+    let database: DatabaseStore
     private var plans: [UUID: Plan] = [:]
     private var failNextCommit = false
     public init(database: DatabaseStore) throws {
@@ -311,7 +311,7 @@ public actor LedgerStore: LedgerStorage {
         try db.execute(sql:"INSERT INTO ledger_sources(source_id,raw_hash,metadata_hash,metadata_json,raw_bytes) VALUES (?,?,?,?,?)",
                        arguments:[try source.id(),source.metadata.rawHash,LedgerCSV.hash(metadata),metadata,source.bytes])
     }
-    private static func load(_ db:Database) throws -> LedgerSnapshot {
+    static func load(_ db:Database) throws -> LedgerSnapshot {
         do { return try checkedLoad(db) }
         catch is CancellationError { throw CancellationError() }
         catch { throw LedgerStoreError.corruptedStorage }
