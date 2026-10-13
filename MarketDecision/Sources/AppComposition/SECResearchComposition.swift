@@ -21,7 +21,7 @@ extension AppEnvironment {
         } onCancel: { preparation.cancel() }
         let gate = secRequestGate
         let coordinator = secImportCoordinator
-        return SECResearchWorkspaceModel(storage: store, networkAvailable: networkAvailable, importer: { ticker, contact, progress in
+        let model = SECResearchWorkspaceModel(storage: store, networkAvailable: networkAvailable, importer: { ticker, contact, progress in
             guard networkAvailable else { throw SECResearchConfigurationError.networkDisabled }
             return try await coordinator.perform {
                 try Task.checkCancellation()
@@ -48,5 +48,7 @@ extension AppEnvironment {
                 }
             }
         }, financialStorage: store, valuationStorage: store)
+        model.configureArchiveTransfer(store: store, coordinator: secArchiveCoordinator)
+        return model
     }
 }

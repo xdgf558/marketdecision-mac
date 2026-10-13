@@ -16,6 +16,7 @@ public struct AppEnvironment: Sendable {
     public let secResearchDatabasePath: String
     let secRequestGate: SECRateLimiter
     let secImportCoordinator: SECResearchImportCoordinator
+    let secArchiveCoordinator: SECArchiveWorkspaceCoordinator
     let equityAcquisition: EquityResearchAcquisition
     public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
                 log: SafeLog = SafeLog(), offlineResearchDatabasePath: String = ":memory:") throws {
@@ -29,6 +30,7 @@ public struct AppEnvironment: Sendable {
         let workspaceLock = WorkspaceImportLock(directory: offlineResearchDatabasePath == ":memory:" ? nil
             : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent())
         self.secImportCoordinator = SECResearchImportCoordinator(workspaceLock: workspaceLock)
+        self.secArchiveCoordinator = SECArchiveWorkspaceCoordinator()
         self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData, workspaceLock: workspaceLock)
     }
     @MainActor public func makeResearchWorkspace() -> ResearchWorkspaceModel {

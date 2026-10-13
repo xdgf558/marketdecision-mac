@@ -258,9 +258,14 @@ private func legacyBytes(_ database: DatabaseStore) throws -> [Data] {
         let details = try database.read { db in
             try Row.fetchAll(db, sql: "EXPLAIN QUERY PLAN " + SECResearchStorage.catalogShapeQuery).map { row -> String in row["detail"] }
         }
-        #expect(details.filter { $0.contains("COVERING INDEX sec_research_document_ids") }.count == 3)
-        #expect(details.filter { $0.contains("COVERING INDEX sec_research_legacy_object_metadata") }.count == 2)
-        #expect(!details.contains { $0.contains("SEARCH d USING PRIMARY KEY") || $0.contains("SEARCH o USING PRIMARY KEY") })
+        // Scope discovery adds query-plan nodes; count is an optimizer detail. Every
+        // access to the large-body tables must still use a covering metadata index.
+        #expect(details.contains { $0.contains("COVERING INDEX sec_research_document_ids") })
+        #expect(details.contains { $0.contains("COVERING INDEX sec_research_legacy_object_metadata") })
+        #expect(!details.contains {
+            $0.range(of: "^(SEARCH|SCAN) (d|o|sec_research_documents|p1_snapshot_objects)( |$)", options: .regularExpression) != nil
+                && !$0.contains("COVERING INDEX")
+        })
         #expect(try await upgraded.open(id: document.id).id == document.id)
         #expect(try await upgraded.open(id: legacy.id).id == legacy.id)
     }
