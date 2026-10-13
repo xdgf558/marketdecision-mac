@@ -523,57 +523,92 @@ struct LedgerWorkspaceContent: View {
             VStack(alignment: .leading, spacing: 10) {
                 Text("计划 \(preview.id.uuidString)").font(.caption.monospaced()).textSelection(.enabled)
                 if let validation = preview.validationMessage { Text(validation).font(.callout).foregroundStyle(.red) }
-                if let state = preview.projectedState, let account = model.selectedAccountID, let cash = state.cashByAccount[account] {
-                    Text("预期账户 " + account).font(.caption.bold())
-                    Text("预期账本现金 " + cash.decimalString + " USD").font(.callout).monospacedDigit().accessibilityIdentifier("ledgerPreviewCash")
-                    ForEach(state.lots.filter { $0.accountID == account && !$0.isClosed }) { lot in
-                        Text("预期批次 " + lot.id + " · " + lot.instrument.label + " · " + lot.quantityRemaining.decimalString
-                            + " · 管理成本 " + lot.managementCostRemaining.decimalString + " USD").font(.caption).monospacedDigit()
-                    }
-                    let affected = Set(preview.rows.compactMap { $0.event?.id })
-                    ForEach(Array(state.realizations.filter { affected.contains($0.eventID) }.enumerated()), id: \.offset) { _, realization in
-                        Text("本批实现管理盈亏 " + realization.lotID + " · " + realization.pnl.decimalString + " USD").font(.caption).monospacedDigit()
-                    }
-                }
+                previewProjection(preview)
                 ForEach(preview.rows, id: \.rowIndex) { row in
-                    HStack(alignment: .top) {
-                        Text("第 \(row.rowIndex) 行").frame(width: 70, alignment: .leading)
-                        Text(row.disposition.rawValue).frame(width: 85, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 4) {
-                            if let event = row.event {
-                                Text(event.payload.kind + " · " + (event.source.externalTransactionID ?? event.id)).font(.headline)
-                                Text("实际账户 " + event.accountID).font(.caption.bold())
-                                Text(event.effectiveAt.formatted(date: .abbreviated, time: .standard)).font(.caption)
-                                Text(eventEconomics(event)).font(.callout).monospacedDigit()
-                                DisclosureGroup("完整事件与证据（日期为 2001-01-01 UTC 起秒数）") {
-                                    Text(eventJSON(event)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                                }
-                            }
-                            Text(row.message).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if previewUsesCSV {
-                            Toggle("本次排除", isOn: Binding(get: { excludedRows.contains(row.rowIndex) }, set: { skip in
-                                if skip { excludedRows.insert(row.rowIndex) } else { excludedRows.remove(row.rowIndex) }
-                                approval = nil
-                            })).toggleStyle(.checkbox).disabled(busy)
-                        }
-                    }.padding(.vertical, 4)
+                    previewRow(row)
                     Divider()
                 }
-                if previewUsesCSV {
-                    Text("已明确选择排除 \(excludedRows.count) 行。改变选择后必须重新预检；排除选择和原始文件一并留存，未选择的冲突仍阻止整批。 ").font(.caption).foregroundStyle(.secondary)
-                    Button("按当前排除选择重新预检") { previewCSV() }.disabled(busy)
-                }
-                HStack {
-                    Button("取消预览") { Task { await model.cancelPreview() } }.disabled(busy).accessibilityIdentifier("ledgerCancelPreview")
-                    Spacer()
-                    Button("审阅并确认入账…") {
-                        approval = .init(id: preview.id, revision: preview.targetRevision); confirmation = ""
-                    }.disabled(!model.canConfirm || busy || (previewUsesCSV && excludedRows != csvPreviewExclusions))
-                        .accessibilityIdentifier("ledgerReviewCommit")
-                }
+                previewExclusionActions
+                previewActions(preview)
             }.padding(8)
+        }
+    }
+
+    @ViewBuilder private func previewProjection(_ preview: LedgerImportPreview) -> some View {
+        if let state = preview.projectedState, let account = model.selectedAccountID, let cash = state.cashByAccount[account] {
+            projectedPreviewContent(state: state, account: account, cash: cash, preview: preview)
+        }
+    }
+
+    @ViewBuilder private func projectedPreviewContent(state: LedgerState, account: String, cash: Money,
+                                                     preview: LedgerImportPreview) -> some View {
+        let projectedLots: [LedgerLot] = state.lots.filter { $0.accountID == account && !$0.isClosed }
+        let affected: Set<String> = Set(preview.rows.compactMap { $0.event?.id })
+        let realizations: [LedgerRealization] = state.realizations.filter { affected.contains($0.eventID) }
+        Text("预期账户 " + account).font(.caption.bold())
+        Text("预期账本现金 " + cash.decimalString + " USD").font(.callout).monospacedDigit().accessibilityIdentifier("ledgerPreviewCash")
+        ForEach(projectedLots) { lot in previewLot(lot) }
+        ForEach(Array(realizations.enumerated()), id: \.offset) { _, realization in
+            previewRealization(realization)
+        }
+    }
+
+    private func previewLot(_ lot: LedgerLot) -> some View {
+        let summary: String = "预期批次 \(lot.id) · \(lot.instrument.label) · \(lot.quantityRemaining.decimalString) · 管理成本 \(lot.managementCostRemaining.decimalString) USD"
+        return Text(summary).font(.caption).monospacedDigit()
+    }
+
+    private func previewRealization(_ realization: LedgerRealization) -> some View {
+        let summary: String = "本批实现管理盈亏 \(realization.lotID) · \(realization.pnl.decimalString) USD"
+        return Text(summary).font(.caption).monospacedDigit()
+    }
+
+    private func previewRow(_ row: LedgerImportRow) -> some View {
+        HStack(alignment: .top) {
+            Text("第 \(row.rowIndex) 行").frame(width: 70, alignment: .leading)
+            Text(row.disposition.rawValue).frame(width: 85, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                if let event = row.event { previewEvent(event) }
+                Text(row.message).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if previewUsesCSV { previewExclusionToggle(rowIndex: row.rowIndex) }
+        }.padding(.vertical, 4)
+    }
+
+    @ViewBuilder private func previewEvent(_ event: LedgerEvent) -> some View {
+        let title: String = event.payload.kind + " · " + (event.source.externalTransactionID ?? event.id)
+        Text(title).font(.headline)
+        Text("实际账户 " + event.accountID).font(.caption.bold())
+        Text(event.effectiveAt.formatted(date: .abbreviated, time: .standard)).font(.caption)
+        Text(eventEconomics(event)).font(.callout).monospacedDigit()
+        DisclosureGroup("完整事件与证据（日期为 2001-01-01 UTC 起秒数）") {
+            Text(eventJSON(event)).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        }
+    }
+
+    private func previewExclusionToggle(rowIndex: Int) -> some View {
+        Toggle("本次排除", isOn: Binding(get: { excludedRows.contains(rowIndex) }, set: { skip in
+            if skip { excludedRows.insert(rowIndex) } else { excludedRows.remove(rowIndex) }
+            approval = nil
+        })).toggleStyle(.checkbox).disabled(busy)
+    }
+
+    @ViewBuilder private var previewExclusionActions: some View {
+        if previewUsesCSV {
+            Text("已明确选择排除 \(excludedRows.count) 行。改变选择后必须重新预检；排除选择和原始文件一并留存，未选择的冲突仍阻止整批。 ").font(.caption).foregroundStyle(.secondary)
+            Button("按当前排除选择重新预检") { previewCSV() }.disabled(busy)
+        }
+    }
+
+    private func previewActions(_ preview: LedgerImportPreview) -> some View {
+        HStack {
+            Button("取消预览") { Task { await model.cancelPreview() } }.disabled(busy).accessibilityIdentifier("ledgerCancelPreview")
+            Spacer()
+            Button("审阅并确认入账…") {
+                approval = .init(id: preview.id, revision: preview.targetRevision); confirmation = ""
+            }.disabled(!model.canConfirm || busy || (previewUsesCSV && excludedRows != csvPreviewExclusions))
+                .accessibilityIdentifier("ledgerReviewCommit")
         }
     }
     @State private var csvPreviewExclusions: Set<Int> = []
