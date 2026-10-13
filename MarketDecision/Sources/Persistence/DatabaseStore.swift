@@ -3,14 +3,15 @@ import GRDB
 
 public enum MigrationError: Error, Equatable { case invalidCatalog, unsupportedHistory, incompatiblePurpose }
 public enum DatabasePurpose: Sendable, Equatable {
-    case business, offlineIssuerResearch, secResearch
-    // Stable SQLite file markers: MDB1, MDO1 and MDS1. These are independent of the
+    case business, offlineIssuerResearch, secResearch, portfolioLedger
+    // Stable SQLite file markers: MDB1, MDO1, MDS1 and MDL1. These are independent of the
     // migration history and survive clearing the business rows.
     var applicationID: Int {
         switch self {
         case .business: 0x4d444231
         case .offlineIssuerResearch: 0x4d444f31
         case .secResearch: 0x4d445331
+        case .portfolioLedger: 0x4d444c31
         }
     }
 }
@@ -29,7 +30,7 @@ public struct DatabaseStore: Sendable {
     public let purpose: DatabasePurpose
     public init(path: String, migrations: [DatabaseMigration] = [], purpose: DatabasePurpose = .business) throws {
         guard purpose == .business || migrations.isEmpty else { throw MigrationError.invalidCatalog }
-        let coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
+        let coreMigrations = purpose == .portfolioLedger ? [Self.portfolioLedgerMigration] : [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
             + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration, Self.secValuationSupplementMigration] : [])
         let ids = ["foundation.v1"] + coreMigrations.map(\.identifier) + migrations.map(\.identifier)
         guard Set(ids).count == ids.count, ids.allSatisfy({ !$0.isEmpty && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines) }) else {

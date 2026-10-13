@@ -92,6 +92,54 @@ import XCTest
         XCTAssertTrue(page.waitForExistence(timeout: 15)); page.click()
         XCTAssertTrue(app.staticTexts["researchCompany"].waitForExistence(timeout: 15))
     }
+    func testLedgerPreviewCancelCommitAndPageReopenStayLocal() {
+        configure(); app.launch()
+        let page = mainWindow.buttons["pageLedger"]
+        XCTAssertTrue(page.waitForExistence(timeout: 15)); waitEnabled(page)
+        app.typeKey("6", modifierFlags: .command)
+        let identifier = mainWindow.textFields["ledgerAccountID"]
+        XCTAssertTrue(identifier.waitForExistence(timeout: 15)); waitEnabled(identifier)
+        identifier.click(); identifier.typeText("synthetic-ledger")
+        let name = mainWindow.textFields["ledgerAccountName"]
+        name.click(); name.typeText("Synthetic ledger")
+        let create = mainWindow.buttons["ledgerCreateAccount"]
+        waitEnabled(create); create.click()
+        let cash = mainWindow.staticTexts["ledgerCash"]
+        waitText("0 USD", in: cash)
+        researchTab("CSV 导入")
+        let template = mainWindow.buttons["填入合成模板"]
+        XCTAssertTrue(template.waitForExistence(timeout: 5)); template.click()
+        let preview = mainWindow.buttons["ledgerPreviewCSV"]
+        func reach(_ element: XCUIElement) {
+            for _ in 0..<14 where !element.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+            XCTAssertTrue(element.isHittable, mainWindow.debugDescription)
+        }
+        reach(preview); waitEnabled(preview); preview.click()
+        let expectedCash = mainWindow.staticTexts["ledgerPreviewCash"]
+        waitText("980 USD", in: expectedCash)
+        let cancel = mainWindow.buttons["ledgerCancelPreview"]
+        reach(cancel); cancel.click()
+        researchTab("现金与批次"); waitText("0 USD", in: cash)
+        researchTab("CSV 导入"); reach(preview); waitEnabled(preview); preview.click()
+        waitText("980 USD", in: expectedCash)
+        let review = mainWindow.buttons["ledgerReviewCommit"]
+        reach(review); waitEnabled(review); review.click()
+        let panel = sheet(in: mainWindow)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        let commit = panel.buttons["ledgerCommit"]
+        XCTAssertFalse(commit.isEnabled)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(panel.exists)
+        let confirmation = panel.textFields["ledgerConfirmText"]
+        confirmation.click(); confirmation.typeText("入账"); waitEnabled(commit); commit.click()
+        waitNoSheet(in: mainWindow)
+        researchTab("现金与批次"); waitText("980 USD", in: cash)
+        app.typeKey("1", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["pageLedger"].exists)
+        app.typeKey("6", modifierFlags: .command)
+        waitText("980 USD", in: cash)
+        XCTAssertFalse(mainWindow.buttons["ledgerReviewCommit"].exists)
+    }
     func testResearchSnapshotInspectorAndReplay() {
         launchResearch()
         let save = app.buttons["researchSave"]
