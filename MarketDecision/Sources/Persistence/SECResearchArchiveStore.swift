@@ -14,10 +14,11 @@ private struct SECArchiveInventory: Sendable {
     let research: [String]
     let reports: [String]
     let supplements: [String]
+    let legacyNamespaces: [String]
     func signature() throws -> String {
         // Replace deliberately inventories damaged IDs without decoding old bodies.
         // Array boundaries must therefore remain unambiguous even for arbitrary text.
-        digest(try ResearchDocument.encoded([research, reports, supplements]))
+        digest(try ResearchDocument.encoded([research, reports, supplements, legacyNamespaces]))
     }
 }
 
@@ -128,6 +129,7 @@ extension SECResearchStore: SECArchiveStorage {
                 return (revision, checked.inventory, checked.signature)
             }
             let inventory = try Self.archiveInventory(db)
+            try Self.validateArchiveReplacement(inventory, db: db)
             return (revision, inventory, try inventory.signature())
         }
         try Task.checkCancellation()
@@ -174,11 +176,20 @@ extension SECResearchStore: SECArchiveStorage {
                     } else {
                         let checked = try Self.archiveInventory(db)
                         guard try checked.signature() == candidate.targetSignature else { throw SnapshotError.stalePlan }
+                        try Self.validateArchiveReplacement(checked, db: db)
+                        // Shared graph tables are scoped before any SEC-specific deletion.
+                        // Never delete incoming references owned by another namespace.
+                        for namespace in checked.legacyNamespaces {
+                            for table in Self.archiveLegacyTables {
+                                try cancellation.check()
+                                try db.execute(sql: "DELETE FROM " + table + " WHERE namespace = ?", arguments: [namespace])
+                            }
+                        }
                         for table in Self.archiveReplacementTables {
                             try cancellation.check()
                             try db.execute(sql: "DELETE FROM " + table)
                         }
-                        current = .init(research: [], reports: [], supplements: [])
+                        current = .init(research: [], reports: [], supplements: [], legacyNamespaces: [])
                     }
                     try cancellation.check()
                     let incoming = candidate.incoming
@@ -210,16 +221,14 @@ extension SECResearchStore: SECArchiveStorage {
         archiveCandidates.removeValue(forKey: approval.planID)
     }
 
-    /// A metadata-only inventory deliberately includes orphan bodies/legacy namespaces.
-    /// Replace can repair them without decoding the bytes that are about to be removed.
+    /// SEC-only metadata inventory includes orphan SEC bodies and recognized legacy
+    /// namespaces. Unknown shared-graph namespaces are retained, never counted as SEC.
+    /// Replace repairs old bodies without decoding bytes that will be removed.
     private static func archiveInventory(_ db: Database) throws -> SECArchiveInventory {
         let research = try String.fetchAll(db, sql: """
             SELECT document_id AS id FROM sec_research_catalog
             UNION SELECT document_id FROM sec_research_documents INDEXED BY sec_research_document_ids
-            UNION SELECT namespace FROM p1_snapshot_roots
-            UNION SELECT namespace FROM p1_snapshot_objects INDEXED BY sec_research_legacy_object_metadata
-            UNION SELECT namespace FROM p1_snapshot_root_edges
-            UNION SELECT namespace FROM p1_snapshot_object_edges ORDER BY id
+            UNION SELECT namespace FROM (\(SECResearchStorage.legacyNamespacesQuery)) ORDER BY id
             """)
         let reports = try String.fetchAll(db, sql: """
             SELECT report_id AS id FROM sec_financial_report_catalog
@@ -229,7 +238,40 @@ extension SECResearchStore: SECArchiveStorage {
             SELECT supplement_id AS id FROM sec_valuation_supplement_catalog
             UNION SELECT supplement_id FROM sec_valuation_supplement_documents ORDER BY id
             """)
-        return .init(research: research, reports: reports, supplements: supplements)
+        let legacyNamespaces = try String.fetchAll(db, sql: SECResearchStorage.legacyNamespacesQuery + " ORDER BY namespace")
+        return .init(research: research, reports: reports, supplements: supplements, legacyNamespaces: legacyNamespaces)
+    }
+
+    /// A reserved version identifies only a candidate namespace, not permission to
+    /// discard arbitrary neighbours. Every row to be deleted must have the SEC legacy
+    /// address shape. Body corruption is repairable; ambiguous ownership is not.
+    private static func validateArchiveReplacement(_ inventory: SECArchiveInventory, db: Database) throws {
+        for namespace in inventory.legacyNamespaces {
+            guard let id = UUID(uuidString: namespace), id.uuidString.lowercased() == namespace
+            else { throw SECArchiveError.scopeDenied }
+            let invalidObjects = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM p1_snapshot_objects INDEXED BY sec_research_legacy_object_metadata
+                WHERE namespace = ? AND (object_id != namespace OR object_version != 'sec-research.v1'
+                    OR source_namespace != namespace OR source_object_id != object_id OR source_object_version != object_version)
+                """, arguments: [namespace])
+            let invalidRoots = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM p1_snapshot_roots WHERE namespace = ? AND
+                    (root_id != namespace OR root_version != 'sec-research.v1' OR source_namespace != namespace
+                    OR source_root_id != root_id OR source_root_version != root_version)
+                """, arguments: [namespace])
+            let invalidEdges = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM p1_snapshot_root_edges WHERE namespace = ? AND
+                    (root_id != namespace OR root_version != 'sec-research.v1' OR role != 'sec-research'
+                    OR target_namespace != namespace OR target_id != root_id OR target_version != root_version)
+                """, arguments: [namespace])
+            guard invalidObjects == 0, invalidRoots == 0, invalidEdges == 0,
+                  try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM p1_snapshot_object_edges WHERE namespace = ?", arguments: [namespace]) == 0
+            else { throw SECArchiveError.scopeDenied }
+            for table in ["p1_snapshot_root_edges", "p1_snapshot_object_edges"] {
+                guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM " + table + " WHERE target_namespace = ? AND namespace != ?",
+                                       arguments: [namespace, namespace]) == 0 else { throw SECArchiveError.scopeDenied }
+            }
+        }
     }
 
     private static func rejectOrphanArchiveBodies(_ db: Database) throws {
@@ -287,7 +329,9 @@ extension SECResearchStore: SECArchiveStorage {
     private static let archiveReplacementTables = [
         "sec_valuation_supplement_documents", "sec_valuation_supplement_catalog",
         "sec_financial_report_documents", "sec_financial_report_catalog",
-        "sec_research_documents", "sec_research_catalog", "p1_snapshot_root_edges",
-        "p1_snapshot_object_edges", "p1_snapshot_roots", "p1_snapshot_objects",
+        "sec_research_documents", "sec_research_catalog",
+    ]
+    private static let archiveLegacyTables = [
+        "p1_snapshot_root_edges", "p1_snapshot_object_edges", "p1_snapshot_roots", "p1_snapshot_objects",
     ]
 }

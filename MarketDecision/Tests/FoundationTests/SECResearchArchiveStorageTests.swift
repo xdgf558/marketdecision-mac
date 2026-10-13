@@ -29,6 +29,85 @@ private func archiveRows(_ database: DatabaseStore) throws -> [Data] {
     }
 }
 
+private func archiveLegacyBundle(_ document: SECResearchDocument) throws -> SnapshotBundle {
+    let identity = ObjectIdentity(id: document.id.uuidString.lowercased(), version: "sec-research.v1")
+    let object = FrozenObject(identity: identity, kind: .result,
+        payload: .string(try archivePretty(document).base64EncodedString()), references: [],
+        capturedAt: try MillisecondInstant(rounding: document.cutoff),
+        permission: .init(mayStore: true, mayBackup: false, evidenceReference: "sec-research.local-only.v1"), synthetic: false)
+    return SnapshotBundle(sourceNamespace: document.id, objects: [object], roots: [
+        .init(identity: identity, kind: .analysisRun,
+              references: [.init(role: "sec-research", target: identity, contentHash: try object.contentHash())]),
+    ])
+}
+
+private func archiveForeignBundle(namespace: UUID = UUID()) throws -> SnapshotBundle {
+    let capturedAt = try MillisecondInstant(iso8601: "2026-09-10T01:02:03.123Z")
+    let permission = RetentionPermission(mayStore: true, mayBackup: true, evidenceReference: "synthetic.other-workspace")
+    let input = FrozenObject(identity: .init(id: "other-input", version: "v1"), kind: .input,
+        payload: .string("retained external input"), references: [], capturedAt: capturedAt, permission: permission, synthetic: true)
+    let result = FrozenObject(identity: .init(id: "other-result", version: "v1"), kind: .result,
+        payload: .string("retained external result"),
+        references: [.init(role: "input", target: input.identity, contentHash: try input.contentHash())],
+        capturedAt: capturedAt, permission: permission, synthetic: true)
+    let root = SnapshotRoot(identity: .init(id: "other-research", version: "v1"), kind: .researchRun,
+        references: [.init(role: "result", target: result.identity, contentHash: try result.contentHash())])
+    return SnapshotBundle(sourceNamespace: namespace, objects: [input, result], roots: [root])
+}
+
+/// Include every SQL field, including source addresses, original JSON bytes and both
+/// kinds of resolved edges. A count-only check would miss a rewritten or retargeted graph.
+private func archiveSnapshotRows(_ database: DatabaseStore, namespace: UUID? = nil) throws -> [[Row]] {
+    try database.read { db in
+        try ["p1_snapshot_objects", "p1_snapshot_roots", "p1_snapshot_object_edges", "p1_snapshot_root_edges"].map { table in
+            let condition = namespace == nil ? "" : " WHERE namespace = ?"
+            let arguments: StatementArguments = namespace.map { [$0.uuidString.lowercased()] } ?? []
+            return try Row.fetchAll(db, sql: "SELECT * FROM " + table + condition + " ORDER BY 1, 2, 3", arguments: arguments)
+        }
+    }
+}
+
+private func archiveFamilyRows(_ database: DatabaseStore) throws -> [[Row]] {
+    try database.read { db in
+        try ["sec_research_catalog", "sec_research_documents", "sec_financial_report_catalog",
+             "sec_financial_report_documents", "sec_valuation_supplement_catalog", "sec_valuation_supplement_documents"].map {
+            try Row.fetchAll(db, sql: "SELECT * FROM " + $0 + " ORDER BY 1")
+        }
+    }
+}
+
+/// Persist an internally valid cross-namespace reference while deliberately keeping
+/// the business revision. Restore must recheck ownership/dependencies at commit too.
+private func archiveAttachForeignReference(_ database: DatabaseStore, foreign: SnapshotBundle,
+                                          legacy: SnapshotBundle, fromRoot: Bool, revision: UUID) throws {
+    let target = try #require(legacy.objects.first)
+    let result = try #require(foreign.objects.first { $0.kind == .result })
+    let root = try #require(foreign.roots.first)
+    let targetAddress = ObjectAddress(namespace: legacy.sourceNamespace, identity: target.identity)
+    let resultAddress = ObjectAddress(namespace: foreign.sourceNamespace, identity: result.identity)
+    let rootAddress = ObjectAddress(namespace: foreign.sourceNamespace, identity: root.identity)
+    let link = ObjectReference(role: "retained-sec-input", target: target.identity, contentHash: try target.contentHash())
+    try database.transaction { db in
+        var graph = try BusinessDataStore.loadGraph(db)
+        let storedResult = try #require(graph.objects[resultAddress]), storedRoot = try #require(graph.roots[rootAddress])
+        let updated = FrozenObject(identity: result.identity, kind: result.kind, payload: result.payload,
+            references: result.references + (fromRoot ? [] : [link]), capturedAt: result.capturedAt,
+            permission: result.permission, synthetic: result.synthetic)
+        var objectTargets = storedResult.targets
+        if !fromRoot { objectTargets[link.role] = targetAddress }
+        graph.objects[resultAddress] = PersistedObject(object: updated, source: storedResult.source, targets: objectTargets)
+        let updatedRoot = SnapshotRoot(identity: root.identity, kind: root.kind,
+            references: [.init(role: "result", target: result.identity, contentHash: try updated.contentHash())] + (fromRoot ? [link] : []))
+        var rootTargets = storedRoot.targets
+        if fromRoot { rootTargets[link.role] = targetAddress }
+        graph.roots[rootAddress] = PersistedRoot(root: updatedRoot, source: storedRoot.source, targets: rootTargets)
+        try BusinessDataStore.validate(graph)
+        try BusinessDataStore.save(graph, revision: revision, db: db)
+        _ = try BusinessDataStore.loadGraph(db)
+        #expect(try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty)
+    }
+}
+
 /// Deliberately noncanonical encodings at all three levels make accidental re-encoding
 /// observable. Parent bindings are constructed from those exact retained encodings.
 private func archiveStorageFixture(filingHTML: String = "<p>QA</p>") async throws
@@ -168,6 +247,121 @@ private actor SECArchiveEntryGate {
         }
         #expect(cacheAfter == cacheBefore && cacheBefore.count == 2)
         #expect(try await target.store.business.secIdentity(ticker: target.research.ticker, asOf: target.research.cutoff).cik == target.research.identity.cik)
+    }
+
+    @Test func replaceKeepsOtherSnapshotGraphsWhileRemovingHealthyAndDamagedSECLegacy() async throws {
+        let incoming = try await archiveStorageFixture()
+        let archive = try await incoming.store.exportArchive(researchID: incoming.research.id, consent: archiveConsent)
+        for damagedLegacy in [false, true] {
+            let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
+            defer { try? FileManager.default.removeItem(at: path) }
+            let database = try DatabaseStore(path: path.path, purpose: .secResearch), store = try SECResearchStore(database: database)
+            let legacyDocument = try archiveVersion(incoming.research), foreign = try archiveForeignBundle()
+            let legacy = try archiveLegacyBundle(legacyDocument)
+            try await store.business.freeze(foreign, expectedRevision: store.writeRevision())
+            try await store.business.freeze(legacy, expectedRevision: store.writeRevision())
+            // Exercise both unindexed legacy metadata and an indexed record whose
+            // body is unusable. Neither makes the unrelated namespace disposable.
+            if damagedLegacy { #expect(try await store.savedResearch().map(\.id) == [legacyDocument.id]) }
+            try database.transaction { db in
+                for object in foreign.objects {
+                    try db.execute(sql: "UPDATE p1_snapshot_objects SET object_json = ? WHERE namespace = ? AND object_id = ?",
+                        arguments: [try archivePretty(object), foreign.sourceNamespace.uuidString.lowercased(), object.identity.id])
+                }
+                for root in foreign.roots {
+                    try db.execute(sql: "UPDATE p1_snapshot_roots SET root_json = ? WHERE namespace = ? AND root_id = ?",
+                        arguments: [try archivePretty(root), foreign.sourceNamespace.uuidString.lowercased(), root.identity.id])
+                }
+                _ = try BusinessDataStore.loadGraph(db)
+                if damagedLegacy {
+                    try db.execute(sql: "UPDATE p1_snapshot_objects SET object_json = ?, content = ? WHERE namespace = ?",
+                        arguments: [Data("broken legacy JSON".utf8), Data("broken legacy content".utf8), legacyDocument.id.uuidString.lowercased()])
+                    try db.execute(sql: "UPDATE p1_snapshot_roots SET root_json = ? WHERE namespace = ?",
+                        arguments: [Data("broken legacy root".utf8), legacyDocument.id.uuidString.lowercased()])
+                }
+            }
+            let retained = try archiveSnapshotRows(database, namespace: foreign.sourceNamespace)
+            #expect(retained.map(\.count) == [2, 1, 1, 1])
+            let plan = try await store.prepareArchiveRestore(archive, mode: .replace, consent: archiveConsent)
+            #expect(plan.removedResearchCount == 1)
+            try await store.commitArchiveRestore(.init(planID: plan.id, digest: plan.digest))
+            #expect(try archiveSnapshotRows(database, namespace: foreign.sourceNamespace) == retained)
+            #expect(try archiveSnapshotRows(database, namespace: legacyDocument.id).allSatisfy(\.isEmpty))
+            #expect(try archiveRows(database) == archiveRows(incoming.database))
+            #expect(try await store.savedResearch().map(\.id) == [incoming.research.id])
+            let reopened = try SECResearchStore(path: path.path)
+            #expect(try await reopened.open(id: incoming.research.id).sources == incoming.research.sources)
+            #expect(try await reopened.savedResearch().map(\.id) == [incoming.research.id])
+            let merge = try await reopened.prepareArchiveRestore(archive, mode: .merge, consent: archiveConsent)
+            #expect(merge.removedResearchCount == 0)
+            try await reopened.commitArchiveRestore(.init(planID: merge.id, digest: merge.digest))
+            #expect(try archiveSnapshotRows(database, namespace: foreign.sourceNamespace) == retained)
+            let graph = try database.read(BusinessDataStore.loadGraph)
+            #expect(graph.objects.count == 2 && graph.roots.count == 1)
+        }
+    }
+
+    @Test func replacePreviewRejectsForeignRootAndObjectReferencesWithoutChangingAnyRows() async throws {
+        let incoming = try await archiveStorageFixture()
+        let archive = try await incoming.store.exportArchive(researchID: incoming.research.id, consent: archiveConsent)
+        for fromRoot in [false, true] {
+            let target = try await archiveStorageFixture()
+            let legacy = try archiveLegacyBundle(archiveVersion(target.research)), foreign = try archiveForeignBundle()
+            try await target.store.business.freeze(legacy, expectedRevision: target.store.writeRevision())
+            try await target.store.business.freeze(foreign, expectedRevision: target.store.writeRevision())
+            let revision = try await target.store.writeRevision()
+            try archiveAttachForeignReference(target.database, foreign: foreign, legacy: legacy, fromRoot: fromRoot, revision: revision)
+            let snapshots = try archiveSnapshotRows(target.database), family = try archiveFamilyRows(target.database)
+            await #expect(throws: SECArchiveError.scopeDenied) {
+                try await target.store.prepareArchiveRestore(archive, mode: .replace, consent: archiveConsent)
+            }
+            #expect(try archiveSnapshotRows(target.database) == snapshots)
+            #expect(try archiveFamilyRows(target.database) == family)
+            #expect(try await target.store.writeRevision() == revision)
+        }
+    }
+
+    @Test func replaceCommitRechecksLateForeignRootAndObjectReferencesWithoutRevisionChange() async throws {
+        let incoming = try await archiveStorageFixture()
+        let archive = try await incoming.store.exportArchive(researchID: incoming.research.id, consent: archiveConsent)
+        for fromRoot in [false, true] {
+            let target = try await archiveStorageFixture()
+            let legacy = try archiveLegacyBundle(archiveVersion(target.research)), foreign = try archiveForeignBundle()
+            try await target.store.business.freeze(legacy, expectedRevision: target.store.writeRevision())
+            try await target.store.business.freeze(foreign, expectedRevision: target.store.writeRevision())
+            let plan = try await target.store.prepareArchiveRestore(archive, mode: .replace, consent: archiveConsent)
+            #expect(plan.removedResearchCount == 2)
+            let revision = try await target.store.writeRevision()
+            try archiveAttachForeignReference(target.database, foreign: foreign, legacy: legacy, fromRoot: fromRoot, revision: revision)
+            let snapshots = try archiveSnapshotRows(target.database), family = try archiveFamilyRows(target.database)
+            #expect(try await target.store.writeRevision() == plan.baseRevision)
+            await #expect(throws: SECArchiveError.scopeDenied) {
+                try await target.store.commitArchiveRestore(.init(planID: plan.id, digest: plan.digest))
+            }
+            #expect(try archiveSnapshotRows(target.database) == snapshots)
+            #expect(try archiveFamilyRows(target.database) == family)
+            #expect(try await target.store.writeRevision() == revision)
+            _ = try target.database.read(BusinessDataStore.loadGraph)
+        }
+    }
+
+    @Test func replaceRejectsMixedSECNamespaceInsteadOfDeletingUnownedSnapshotRows() async throws {
+        let incoming = try await archiveStorageFixture(), target = try await archiveStorageFixture()
+        let archive = try await incoming.store.exportArchive(researchID: incoming.research.id, consent: archiveConsent)
+        let legacy = try archiveLegacyBundle(archiveVersion(target.research))
+        let foreign = try archiveForeignBundle(namespace: legacy.sourceNamespace)
+        try await target.store.business.freeze(legacy, expectedRevision: target.store.writeRevision())
+        try await target.store.business.freeze(foreign, expectedRevision: target.store.writeRevision())
+        let graph = try target.database.read(BusinessDataStore.loadGraph)
+        #expect(graph.objects.count == 3 && graph.roots.count == 2)
+        let snapshots = try archiveSnapshotRows(target.database), family = try archiveFamilyRows(target.database)
+        let revision = try await target.store.writeRevision()
+        await #expect(throws: SECArchiveError.scopeDenied) {
+            try await target.store.prepareArchiveRestore(archive, mode: .replace, consent: archiveConsent)
+        }
+        #expect(try archiveSnapshotRows(target.database) == snapshots)
+        #expect(try archiveFamilyRows(target.database) == family)
+        #expect(try await target.store.writeRevision() == revision)
     }
 
     @Test func identicalMergeKeepsBytesAndDifferentEncodingUnderSameIDConflicts() async throws {

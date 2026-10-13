@@ -64,7 +64,7 @@ enum SECResearchStorage {
             return try String.fetchAll(db, sql: """
                 SELECT r.namespace FROM p1_snapshot_roots r
                 LEFT JOIN sec_research_catalog c ON c.document_id = r.namespace
-                WHERE c.document_id IS NULL ORDER BY r.namespace
+                WHERE c.document_id IS NULL AND r.namespace IN (\(legacyNamespacesQuery)) ORDER BY r.namespace
                 """)
         }
         for text in pending {
@@ -179,7 +179,20 @@ enum SECResearchStorage {
     // INDEXED BY is intentional: SQLite otherwise prefers a WITHOUT ROWID primary
     // key lookup, which may copy a complete large BLOB merely to compare its key.
     // Keep this query available to the storage-plan regression, not to app callers.
+    // Shared snapshot tables may contain non-SEC graphs. A reserved legacy version or
+    // an explicit legacy catalog entry identifies candidate SEC namespaces; unknown
+    // namespaces are never adopted merely because they occupy the same database.
+    static let legacyNamespacesQuery = """
+        SELECT document_id AS namespace FROM sec_research_catalog WHERE storage_kind = 'legacy'
+        UNION SELECT namespace FROM p1_snapshot_roots WHERE root_version = 'sec-research.v1'
+        UNION SELECT namespace FROM p1_snapshot_objects INDEXED BY sec_research_legacy_object_metadata
+            WHERE object_version = 'sec-research.v1'
+        UNION SELECT namespace FROM p1_snapshot_root_edges WHERE root_version = 'sec-research.v1'
+        UNION SELECT namespace FROM p1_snapshot_object_edges WHERE object_version = 'sec-research.v1'
+        """
+
     static let catalogShapeQuery = """
+            WITH sec_legacy_namespaces AS (\(legacyNamespacesQuery))
             SELECT
             (SELECT COUNT(*) FROM sec_research_catalog c WHERE
                 (c.storage_kind = 'blob' AND (NOT EXISTS (SELECT 1 FROM sec_research_documents d INDEXED BY sec_research_document_ids WHERE d.document_id = c.document_id)
@@ -188,18 +201,19 @@ enum SECResearchStorage {
                     OR EXISTS (SELECT 1 FROM sec_research_documents d INDEXED BY sec_research_document_ids WHERE d.document_id = c.document_id))))
             + (SELECT COUNT(*) FROM sec_research_documents d INDEXED BY sec_research_document_ids WHERE NOT EXISTS
                 (SELECT 1 FROM sec_research_catalog c WHERE c.document_id = d.document_id AND c.storage_kind = 'blob'))
-            + (SELECT COUNT(*) FROM p1_snapshot_object_edges)
-            + (SELECT COUNT(*) FROM p1_snapshot_roots r WHERE
+            + (SELECT COUNT(*) FROM p1_snapshot_object_edges WHERE namespace IN (SELECT namespace FROM sec_legacy_namespaces))
+            + (SELECT COUNT(*) FROM p1_snapshot_roots r WHERE r.namespace IN (SELECT namespace FROM sec_legacy_namespaces) AND (
                 r.root_id != r.namespace OR r.root_version != 'sec-research.v1' OR r.source_namespace != r.namespace
                 OR r.source_root_id != r.root_id OR r.source_root_version != r.root_version
                 OR NOT EXISTS (SELECT 1 FROM p1_snapshot_objects o INDEXED BY sec_research_legacy_object_metadata WHERE o.namespace = r.namespace AND o.object_id = r.root_id
                     AND o.object_version = r.root_version AND o.source_namespace = o.namespace
-                    AND o.source_object_id = o.object_id AND o.source_object_version = o.object_version))
-            + (SELECT COUNT(*) FROM p1_snapshot_objects o INDEXED BY sec_research_legacy_object_metadata WHERE NOT EXISTS
+                    AND o.source_object_id = o.object_id AND o.source_object_version = o.object_version)))
+            + (SELECT COUNT(*) FROM p1_snapshot_objects o INDEXED BY sec_research_legacy_object_metadata WHERE o.namespace IN (SELECT namespace FROM sec_legacy_namespaces) AND NOT EXISTS
                 (SELECT 1 FROM p1_snapshot_roots r WHERE r.namespace = o.namespace AND r.root_id = o.object_id AND r.root_version = o.object_version))
-            + (SELECT COUNT(*) FROM p1_snapshot_root_edges e WHERE e.role != 'sec-research' OR e.target_namespace != e.namespace
-                OR e.target_id != e.root_id OR e.target_version != e.root_version)
-            + ABS((SELECT COUNT(*) FROM p1_snapshot_roots) - (SELECT COUNT(*) FROM p1_snapshot_root_edges))
+            + (SELECT COUNT(*) FROM p1_snapshot_root_edges e WHERE e.namespace IN (SELECT namespace FROM sec_legacy_namespaces) AND (e.role != 'sec-research' OR e.target_namespace != e.namespace
+                OR e.target_id != e.root_id OR e.target_version != e.root_version))
+            + ABS((SELECT COUNT(*) FROM p1_snapshot_roots WHERE namespace IN (SELECT namespace FROM sec_legacy_namespaces))
+                - (SELECT COUNT(*) FROM p1_snapshot_root_edges WHERE namespace IN (SELECT namespace FROM sec_legacy_namespaces)))
             """
 
     private static func legacyDocument(id: UUID, db: Database) throws -> (SECResearchDocument, Data) {
