@@ -64,14 +64,15 @@ struct PerformancePersistenceTests {
         let original = try database.read { db in try ["ledger_metadata","ledger_accounts","ledger_sources","ledger_batches","ledger_events"].map { try Row.fetchAll(db,sql:"SELECT * FROM " + $0 + " ORDER BY 1") } }
         // Recreate the exact pre-performance schema/history while retaining real ledger bytes.
         try database.transaction { db in
+            try db.execute(sql:"DROP TABLE ledger_archive_batch_links; DROP TABLE ledger_archive_origins; DROP TABLE ledger_archive_conflicts")
             try db.execute(sql:"DROP TABLE performance_report_documents; DROP TABLE performance_report_catalog; DROP TABLE performance_inputs; DROP TABLE performance_metadata")
-            try db.execute(sql:"DELETE FROM grdb_migrations WHERE identifier = 'portfolio-ledger.performance.v1'")
+            try db.execute(sql:"DELETE FROM grdb_migrations WHERE identifier IN ('portfolio-ledger.performance.v1','portfolio-ledger.archive.v1')")
         }
         let reopened = try DatabaseStore(path:path.path,purpose:.portfolioLedger)
         let after = try LedgerStore(database:reopened)
         #expect(try await after.snapshot() == before)
         #expect(try reopened.read { db in try ["ledger_metadata","ledger_accounts","ledger_sources","ledger_batches","ledger_events"].map { try Row.fetchAll(db,sql:"SELECT * FROM " + $0 + " ORDER BY 1") } } == original)
-        #expect(try reopened.migrationVersions() == ["foundation.v1","portfolio-ledger.performance.v1","portfolio-ledger.v1"])
+        #expect(try reopened.migrationVersions() == ["foundation.v1","portfolio-ledger.archive.v1","portfolio-ledger.performance.v1","portfolio-ledger.v1"])
         #expect(try reopened.read { try Int.fetchOne($0,sql:"SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'p1_%'") } == 0)
         for purpose in [DatabasePurpose.business,.offlineIssuerResearch,.secResearch] {
             let foreign = try DatabaseStore(path:":memory:",purpose:purpose)

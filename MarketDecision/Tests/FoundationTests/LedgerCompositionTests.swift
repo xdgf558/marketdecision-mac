@@ -41,7 +41,7 @@ private actor LedgerCredentialProbe: CredentialStorage {
         #expect(reopened.preview == nil && reopened.message == nil)
         #expect(await credentials.calls == 0)
         let database = try DatabaseStore(path: path, purpose: .portfolioLedger)
-        #expect(try database.migrationVersions() == ["foundation.v1", "portfolio-ledger.performance.v1", "portfolio-ledger.v1"])
+        #expect(try database.migrationVersions() == ["foundation.v1", "portfolio-ledger.archive.v1", "portfolio-ledger.performance.v1", "portfolio-ledger.v1"])
     }
 
     @Test func memoryPagesShareRecordsButNotInteractionState() async throws {

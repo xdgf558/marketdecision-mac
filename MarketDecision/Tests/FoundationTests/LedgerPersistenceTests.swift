@@ -44,7 +44,7 @@ struct LedgerPersistenceTests {
         let sec = try DatabaseStore(path:":memory:",purpose:.secResearch)
         #expect(throws:LedgerStoreError.incompatiblePurpose) { try LedgerStore(database:sec) }
         let independent = try ledgerNewDatabase()
-        #expect(try independent.migrationVersions() == ["foundation.v1","portfolio-ledger.performance.v1","portfolio-ledger.v1"])
+        #expect(try independent.migrationVersions() == ["foundation.v1","portfolio-ledger.archive.v1","portfolio-ledger.performance.v1","portfolio-ledger.v1"])
         #expect(try independent.read { try Int.fetchOne($0,sql:"SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'p1_%'") } == 0)
     }
 

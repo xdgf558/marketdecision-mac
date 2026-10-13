@@ -93,6 +93,12 @@ private final class SelectedFileProbe: @unchecked Sendable {
         let exact = Data(repeating: 7, count: 8)
         try exact.write(to: fixture.file)
         #expect(try await ResearchSelectedFile.read(fixture.file, maximumBytes: 8) == exact)
+        await #expect(throws: ResearchSelectedFile.ReadError.resourceLimit) {
+            try await ResearchSelectedFile.read(fixture.file, maximumBytes: 7)
+        }
+        await #expect(throws: ResearchSelectedFile.ReadError.resourceLimit) {
+            try await ResearchSelectedFile.read(fixture.file, maximumBytes: ResearchSelectedFile.maximumBytes + 1)
+        }
         let probe = SelectedFileProbe()
         await #expect(throws: ResearchSelectedFile.ReadError.resourceLimit) {
             try await ResearchSelectedFile.read(fixture.file, maximumBytes: 7, access: probe.access())

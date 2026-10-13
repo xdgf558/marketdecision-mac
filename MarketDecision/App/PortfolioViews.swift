@@ -49,7 +49,7 @@ struct PortfolioWorkspaceContent: View {
     @State private var approval: PortfolioApproval?
     @State private var confirmation = ""
     @State private var evidenceExpanded = false
-    private let sections = ["组合概览", "本地证据", "收益与风险", "回合与归因", "已保存"]
+    private let sections = ["组合概览", "本地证据", "收益与风险", "回合与归因", "已保存", "导出与备份"]
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
@@ -63,6 +63,7 @@ struct PortfolioWorkspaceContent: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if section == "本地证据" { editor }
                     else if section == "已保存" { history }
+                    else if section == "导出与备份", let transfer = model.transfer { LedgerTransferContent(model: transfer, reportID: model.savedReport?.id) }
                     else if let report = model.report {
                         reportHeading(report)
                         if section == "组合概览" { overview(report) }
@@ -78,6 +79,9 @@ struct PortfolioWorkspaceContent: View {
             }
         }.padding(24)
         .sheet(item: $approval) { confirmSheet($0) }
+        .onChange(of: model.transferEpoch) { _, _ in
+            approval = nil; draft = .init(); rawJSON = ""; inputError = nil; publishedRate = .init(); rateImportMessage = nil; evidenceExpanded = false
+        }
         .onChange(of: draft) { _, _ in if !model.isBusy { model.draftChanged(); approval = nil } }
         .onChange(of: rawJSON) { _, _ in if !model.isBusy { model.draftChanged(); approval = nil } }
         .onChange(of: advanced) { _, _ in if !model.isBusy { model.draftChanged(); approval = nil } }

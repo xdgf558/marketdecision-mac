@@ -108,7 +108,7 @@ struct LedgerWorkspaceContent: View {
                 Button("重新载入") { Task { await model.load() } }.disabled(busy)
                     .accessibilityIdentifier("ledgerReload")
             }
-            Label("现金与批次按记录重放；管理成本不是税务成本。本批不提供市值、净值或收益率，研究归档也不包含此账本。", systemImage: "info.circle")
+            Label("现金与批次按记录重放；管理成本不是税务成本。净值与收益见“组合收益”；账本备份独立于研究归档。", systemImage: "info.circle")
                 .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             accountSection
@@ -118,7 +118,7 @@ struct LedgerWorkspaceContent: View {
                     .accessibilityIdentifier("ledgerMessage")
             }
             Picker("账本内容", selection: $section) {
-                ForEach(["现金与批次", "手工录入", "CSV 导入", "来源与审计"], id: \.self) { Text($0).tag($0) }
+                ForEach(["现金与批次", "手工录入", "CSV 导入", "来源与审计", "导出与备份"], id: \.self) { Text($0).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("ledgerSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -126,9 +126,11 @@ struct LedgerWorkspaceContent: View {
                     case "手工录入": manualSection
                     case "CSV 导入": csvSection
                     case "来源与审计": auditSection
+                    case "导出与备份":
+                        if let transfer = model.transfer { LedgerTransferContent(model: transfer, reportID: nil) }
                     default: balancesSection
                     }
-                    if let preview = model.preview { previewSection(preview) }
+                    if section != "导出与备份", let preview = model.preview { previewSection(preview) }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             }
         }.padding(24)
@@ -149,6 +151,11 @@ struct LedgerWorkspaceContent: View {
                 }
             }
         } onCancellation: { finishFile(.cancelled, request: fileRequest) }
+        .onChange(of: model.transferEpoch) { _, _ in
+            fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); importing = false; approval = nil
+            staged = []; correctionID = ""; reversalBatchID = ""; form = .init()
+            csvText = ""; selectedCSVBytes = nil; selectedCSVDisplayBytes = nil; parsedHeaders = []; excludedRows = []
+        }
         .onChange(of: model.preview?.id) { _, id in if approval?.id != id { approval = nil } }
         .onChange(of: form) { _, _ in if !model.isBusy { invalidateDraft() } }
         .onChange(of: model.selectedAccountID) { _, _ in

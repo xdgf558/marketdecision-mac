@@ -7,7 +7,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
 
 /// Page-local state. Every preview captures both revisions before suspension;
 /// only storage can freeze the result against the same ledger and evidence history.
-@MainActor @Observable public final class PortfolioWorkspaceModel {
+@MainActor @Observable public final class PortfolioWorkspaceModel: LedgerTransferParticipant {
     public private(set) var context: PerformanceStoreContext?
     public private(set) var selectedAccountID: String?
     public private(set) var preview: PerformancePreview?
@@ -21,12 +21,42 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     public private(set) var hasError = false
     public private(set) var listError: String?
     private let storage: any PerformanceStorage
+    public private(set) var transfer: LedgerTransferModel?
+    public private(set) var transferEpoch = UUID()
+    private var transferOperation: UUID?
+    private var transferRefreshedGeneration: UUID?
     private var generation = UUID()
     private var operation: UUID?
     private var committing: UUID?
     private var visible = true
 
     public init(storage: any PerformanceStorage) { self.storage = storage }
+    public func installTransfer(_ transfer: LedgerTransferModel, coordinator: LedgerTransferCoordinator) {
+        self.transfer = transfer; coordinator.register(self)
+    }
+    var ledgerTransferRefreshNeeded: Bool {
+        transferOperation != nil && visible && committing == nil && transferRefreshedGeneration != generation
+    }
+    func beginLedgerTransfer(_ id: UUID) {
+        transferOperation = id; transferEpoch = UUID(); transferRefreshedGeneration = nil
+        generation = UUID(); operation = nil; isBusy = true
+        let previous = takePreview()
+        context = nil; saved = []; clearReport(); message = nil; hasError = false; listError = nil
+        if let previous, committing == nil { Task { [storage] in await storage.cancel(planID: previous.id) } }
+    }
+    func refreshLedgerTransfer(_ id: UUID) async {
+        guard transferOperation == id, visible, committing == nil else { return }
+        let token = begin()
+        await reloadContext(token)
+        if owns(token) { await reloadReports(token) }
+        if owns(token) { transferRefreshedGeneration = generation }
+        finish(token)
+    }
+    func endLedgerTransfer(_ id: UUID) {
+        guard transferOperation == id else { return }
+        transferOperation = nil; transferRefreshedGeneration = nil
+        isBusy = committing != nil || operation != nil
+    }
     public var canPrepare: Bool { !isBusy && context != nil && selectedAccountID != nil }
     public var canSave: Bool { !isBusy && preview != nil && origin == .preview }
 
@@ -157,7 +187,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     }
 
     public func cancelPreview() async {
-        guard committing == nil else { return }
+        guard committing == nil, transferOperation == nil else { return }
         generation = UUID(); operation = nil; isBusy = false
         let previous = takePreview(); clearReport()
         message = "估值预览已取消，未冻结报告。"; hasError = false
@@ -165,7 +195,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     }
 
     public func draftChanged() {
-        guard committing == nil else { return }
+        guard committing == nil, transferOperation == nil else { return }
         generation = UUID(); operation = nil; isBusy = false
         let previous = takePreview(); clearReport(); message = nil; hasError = false
         if let previous { Task { [storage] in await storage.cancel(planID: previous.id) } }
@@ -175,7 +205,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
         visible = false; generation = UUID(); operation = nil
         let previous = takePreview(); context = nil; saved = []; clearReport(); message = nil; hasError = false
         if committing == nil {
-            isBusy = false
+            isBusy = transferOperation != nil
             if let previous { Task { [storage] in await storage.cancel(planID: previous.id) } }
         }
     }
@@ -187,11 +217,12 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     private func owns(_ token: UUID) -> Bool { visible && generation == token && operation == token }
     private func finish(_ token: UUID) {
         guard operation == token else { return }
-        operation = nil; isBusy = committing != nil
+        operation = nil; isBusy = committing != nil || transferOperation != nil
     }
     private func finishCommit(token: UUID, commit: UUID) async {
         guard committing == commit else { return }
         committing = nil
+        if transferOperation != nil { isBusy = true; return }
         if operation == token { finish(token) }
         else { isBusy = false; if visible { await load() } }
     }
