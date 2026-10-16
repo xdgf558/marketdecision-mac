@@ -186,6 +186,49 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
         XCTAssertFalse(cash.exists)
     }
+    func testOptionsLabExplicitCalculationFrozenReplayAndDraftInvalidation() {
+        configure(); app.launch()
+        let navigation = app.buttons["pageOptions"]
+        XCTAssertTrue(navigation.waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        let template = mainWindow.buttons["optionLabTemplate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let saveSnapshot = mainWindow.buttons["optionLabSave"]
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        let calculate = mainWindow.buttons["optionLabCalculate"]
+        waitEnabled(calculate); calculate.click()
+        let status = mainWindow.staticTexts["optionLabReportStatus"]
+        waitText("SYNTHETIC", in: status)
+        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
+        waitText("已按完整输入重算", in: status)
+        let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
+        screenshot.name = "Options-lab-synthetic-result"; screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.typeKey("1", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["pageWorkspace"].exists)
+        app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        researchTab("已保存")
+        let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
+        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        waitText("已按完整输入重算", in: status)
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        let copy = mainWindow.buttons["optionLabCopy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5)); copy.click()
+        // Copy already clears the saved result. Recalculate first so editing,
+        // rather than the copy action, must invalidate an available result.
+        waitEnabled(calculate); calculate.click()
+        waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
+        researchTab("输入")
+        let symbol = mainWindow.textFields["optionLabSymbol"]
+        XCTAssertTrue(symbol.waitForExistence(timeout: 5)); symbol.click()
+        symbol.typeKey("a", modifierFlags: .command); symbol.typeText("OTHER")
+        waitEnabled(saveSnapshot, false)
+        researchTab("结果")
+        XCTAssertFalse(status.exists)
+        // This path never opens a system file importer/exporter or real account.
+    }
+
     func testResearchSnapshotInspectorAndReplay() {
         launchResearch()
         let save = app.buttons["researchSave"]
