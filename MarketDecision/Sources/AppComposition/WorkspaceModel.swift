@@ -52,6 +52,11 @@ import SecuritySupport
         return try await environment.makePortfolioWorkspaceModel()
     }
 
+    public func makeOptionLabWorkspaceModel() async throws -> OptionLabWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try await environment.makeOptionLabWorkspaceModel()
+    }
+
     /// False means this invocation did not complete a refresh, including busy/cancelled calls.
     /// A prior quote never makes a failed invocation successful.
     @discardableResult public func refresh() async -> Bool {
