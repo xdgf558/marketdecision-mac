@@ -142,12 +142,14 @@ public struct OptionLabInput: Sendable, Codable, Equatable {
     public let policy: OptionLabPolicy
     public let expiry: OptionLabExpiry
     public let scenarioPrices: [Money]
+    public let pricing: OptionLabPricingInput?
     public init(id: UUID = UUID(), createdAt: Date, asOf: Date, strategy: OptionLabStrategy,
                 shortLeg: OptionLabLeg, longLeg: OptionLabLeg?, underlying: OptionLabUnderlying,
-                capital: OptionLabCapital, policy: OptionLabPolicy, expiry: OptionLabExpiry, scenarioPrices: [Money]) {
+                capital: OptionLabCapital, policy: OptionLabPolicy, expiry: OptionLabExpiry, scenarioPrices: [Money],
+                pricing: OptionLabPricingInput? = nil) {
         self.id = id; self.createdAt = createdAt; self.asOf = asOf; self.strategy = strategy
         self.shortLeg = shortLeg; self.longLeg = longLeg; self.underlying = underlying
-        self.capital = capital; self.policy = policy; self.expiry = expiry; self.scenarioPrices = scenarioPrices
+        self.capital = capital; self.policy = policy; self.expiry = expiry; self.scenarioPrices = scenarioPrices; self.pricing = pricing
     }
 }
 
@@ -202,12 +204,13 @@ public struct OptionLabReport: Sendable, Codable, Equatable {
     public let conservative: OptionLabOutcome
     public let researchOnly: Bool
     public let limitations: [String]
+    public let pricing: OptionLabPricingReport?
 }
 
 public enum OptionLabError: Error, Equatable, LocalizedError {
     case invalidIdentity, invalidTime, invalidQuote, missingTick, insufficientSize, quoteSkew
     case staleQuote, unsupportedContract, mismatchedLegs, invalidPolicy, invalidCapital
-    case expired, invalidCredit, invalidScenarios, incompatibleReport
+    case expired, invalidCredit, invalidScenarios, incompatibleReport, invalidPricingInput
     public var errorDescription: String? {
         switch self {
         case .invalidIdentity: "请补齐标的、合约及来源说明。"
@@ -224,6 +227,7 @@ public enum OptionLabError: Error, Equatable, LocalizedError {
         case .expired: "合约已到所填到期时刻，不能作为新的前瞻策略计算。"
         case .invalidCredit: "净收入须为正，且不能达到或超过担保名义额或价差宽度金额。"
         case .invalidScenarios: "须提供 1 至 401 个互不重复的非负到期价格。"
+        case .invalidPricingInput: "定价模型或连续率假设无效：股息率和理论波动率须非负，并须保留输入来源。"
         case .incompatibleReport: "报告与固定模型或完整输入重算不一致，不能展示为已核对结果。"
         }
     }

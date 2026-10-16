@@ -49,18 +49,21 @@ struct OptionLabContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            Text("到期损益 · 手工假设或合成输入 · 不联网、不下单。资金检查是研究约束，不是券商购买力或交易许可。")
+            Text("本地模型与到期损益 · 手工假设或合成输入 · 不联网、不下单。资金约束和风险中性概率都不代表交易许可或真实胜率。")
                 .font(.callout).foregroundStyle(.secondary)
             if let message = model.message { Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionLabMessage") }
             if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
             Picker("实验室内容", selection: $section) {
-                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("已保存").tag("已保存")
+                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("已保存").tag("已保存")
             }.pickerStyle(.segmented).accessibilityIdentifier("optionLabSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if section == "输入" { editor }
                     else if section == "已保存" { history }
-                    else if let report = model.report { result(report) }
+                    else if let report = model.report {
+                        if section == "模型分析" { pricingAnalysis(report) }
+                        else { result(report) }
+                    }
                     else {
                         ContentUnavailableView("尚无已核对计算", systemImage: "chart.xyaxis.line",
                             description: Text("填写完整输入并计算，或显式载入合成模板。修改输入后，旧结果立即失效。"))
@@ -87,7 +90,7 @@ struct OptionLabContent: View {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("期权实验室").font(.system(size: 32, weight: .bold))
-                    Text("从完整输入核对四种策略的到期损益").foregroundStyle(.secondary)
+                    Text("从完整输入核对四种策略的定价与到期损益").foregroundStyle(.secondary)
                 }
                 Spacer()
                 if blocked { ProgressView().controlSize(.small) }
@@ -134,6 +137,7 @@ struct OptionLabContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
+            pricingEditor
             GroupBox("标的报价（USD / 股）") {
                 fields {
                     field("买价 Bid", $draft.underlyingBid); field("卖价 Ask", $draft.underlyingAsk)
@@ -157,6 +161,35 @@ struct OptionLabContent: View {
                     .accessibilityLabel("到期情景价格").accessibilityIdentifier("optionLabScenarioPrices")
             }
         }.disabled(blocked)
+    }
+    private var pricingEditor: some View {
+        GroupBox("可选：本地定价、IV / Greeks 与风险中性研究") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("显式启用模型研究", isOn: $draft.pricing.enabled).accessibilityIdentifier("optionLabPricingEnabled")
+                Text("旧快照不会自动增加模型结果。启用后必须明确填写连续利率、连续股息率和理论价波动率假设；空白不当作零。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if draft.pricing.enabled {
+                    fields {
+                        field("连续利率 r（0.05 = 5%）", $draft.pricing.rate, id: "optionLabPricingRate")
+                        field("连续股息率 q（0.01 = 1%）", $draft.pricing.dividendYield, id: "optionLabPricingDividend")
+                        field("仅理论价使用的 σ（0.25 = 25%）", $draft.pricing.volatility, id: "optionLabPricingSigma")
+                        field("r / q / σ 来源与假设说明", $draft.pricing.sourceReference, id: "optionLabPricingSource")
+                    }
+                    Text("理论价使用上面的手工 σ。IV 由每条腿的 Mid 在本地反解，Greeks 用该腿反解结果；主分布只用短腿反解 IV，失败不回退手工 σ 或供应商值。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("欧式连续股息 BSM 假设：对美式合约仅作模型参考，不处理提前行权或离散股息。风险中性概率不是经验胜率，也不是建议。")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if draft.origin == .synthetic {
+                    Button("填入合成模型假设") {
+                        do { try draft.useSyntheticPricingAssumptions() }
+                        catch { inputError = "合成假设只能填入显式合成草稿。" }
+                    }.accessibilityIdentifier("optionLabPricingSynthetic")
+                    Text("按钮会明确填入合成 r=5%、q=1%、理论 σ=25%；这些不是市场数据。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
     private func legEditor(_ title: String, _ leg: Binding<OptionLabLegDraft>, id: String) -> some View {
         GroupBox("\(title) · \(draft.right == .put ? "Put" : "Call")") {
@@ -230,17 +263,16 @@ struct OptionLabContent: View {
                     Text("\(containsSynthetic(report) ? "SYNTHETIC 合成" : "MANUAL 手工假设") · \(strategyName(report.input.strategy)) · \(model.savedID == nil ? "未保存预览" : "已按完整输入重算")")
                         .font(.headline).accessibilityIdentifier("optionLabReportStatus")
                     Text("评估 \(report.input.asOf.formatted(.iso8601)) · 到期 \(report.input.expiry.settlementAt.formatted(.iso8601))")
-                    Text("自然日 DTE \(report.dte) · ANN_v1 简单年化 · 不含提前指派、动态 Greeks 或获利概率。")
+                    Text("自然日 DTE \(report.dte) · ANN_v1 简单年化 · 到期损益不包含提前指派路径；启用后的模型指标在“模型分析”页。")
                         .font(.caption).foregroundStyle(.secondary)
                     if !report.conservative.canFund || !report.mid.canFund {
                         Text("资金或覆盖持股不足：以下仅为损益研究，不能表示可执行策略。")
                             .foregroundStyle(.red).accessibilityIdentifier("optionLabFundingGap")
                     }
-                    Button("复制为新草稿") {
-                        var value = OptionLabInputDraft(input: report.input)
-                        if let basis = model.reportLedgerBasis { try? value.useLedgerBasis(basis) }
-                        draft = value; model.draftChanged(); section = "输入"
-                    }.disabled(blocked).accessibilityIdentifier("optionLabCopy")
+                    if report.pricing != nil {
+                        Button("查看模型分析") { section = "模型分析" }.accessibilityIdentifier("optionLabShowPricing")
+                    }
+                    Button("复制为新草稿") { copyToDraft(report) }.disabled(blocked).accessibilityIdentifier("optionLabCopy")
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             outcome(report.mid, title: "Mid 基准", shortDTE: report.dte < 7)
@@ -256,6 +288,195 @@ struct OptionLabContent: View {
             }
             DisclosureGroup("本次输入与模型依据") { frozenInput(report) }
             ForEach(report.limitations, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    @ViewBuilder private func pricingAnalysis(_ report: OptionLabReport) -> some View {
+        if let pricing = report.pricing {
+            VStack(alignment: .leading, spacing: 16) {
+                GroupBox("模型参考 · 欧式连续股息假设") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("\(containsSynthetic(report) ? "SYNTHETIC 合成" : "MANUAL 手工假设") · \(model.savedID == nil ? "未保存预览" : "已按完整输入重算")")
+                            .font(.headline).accessibilityIdentifier("optionLabPricingStatus")
+                        Text("RISK_NEUTRAL · 风险中性概率 ≠ 真实世界胜率；EV 和尾部指标不是收益承诺。")
+                            .font(.headline).foregroundStyle(.orange).accessibilityIdentifier("optionLabRiskNeutralBoundary")
+                        Text("当前合约为美式情景；本地 BSM 忽略提前行权和离散股息，仅作模型参考。")
+                        Text("理论价使用显式假设 σ；IV / Greeks 来自逐腿 Mid 本地求解；主分布使用短腿 IV。失败不会改用人工 σ 或供应商值。")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Text("连续 r = \(pricing.input.rate.decimalString) · 连续 q = \(pricing.input.dividendYield.decimalString) · 理论价 σ = \(pricing.input.volatility.decimalString)（均为 ratio）")
+                            .font(.system(.body, design: .monospaced)).textSelection(.enabled).accessibilityIdentifier("optionLabPricingInputs")
+                        Text("模型时间 T = \(pricingNumber(pricing.timeYears)) 年；使用实际秒数 / 365 天，与到期损益的自然日 DTE 分开。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("来源：\(pricing.input.source.origin == .synthetic ? "SYNTHETIC 合成" : "MANUAL 手工假设") · \(pricing.input.source.reference)")
+                            .font(.caption).textSelection(.enabled)
+                        Button("复制为新草稿") { copyToDraft(report) }.disabled(blocked).accessibilityIdentifier("optionLabCopy")
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(pricing.legs, id: \.contractID) { leg in legPricing(leg, in: report) }
+                GroupBox("组合 Greeks · 按方向、张数与乘数聚合") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let greeks = pricing.aggregateGreeks {
+                            greekGrid(greeks, aggregate: true)
+                                .accessibilityIdentifier("optionLabAggregateGreeks")
+                        } else {
+                            Text("不可用：" + pricingState(pricing.aggregateState)).foregroundStyle(.orange)
+                                .accessibilityIdentifier("optionLabAggregateUnavailable")
+                        }
+                        Text("聚合按多空方向、张数和乘数计算，备兑含覆盖股票的 Delta。任一必需腿缺少本地 IV 时不展示残缺组合 Greeks；缺值不当作零。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                distributionAnalysis(pricing)
+                DisclosureGroup("模型、参数和数值口径") {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("方法：\(pricing.input.methodVersion)")
+                        Text("模型：\(pricing.modelReference.id) · \(pricing.modelReference.version) · \(pricing.modelReference.contentHash)")
+                        Text("参数：\(pricing.parameterReference.id) · \(pricing.parameterReference.version) · \(pricing.parameterReference.contentHash)")
+                        Text("数值策略：\(pricing.numericPolicyVersion)")
+                        Text("本页浮点模型数值按 8 位有效数字显示；快照保存原值与完整输入，重开须复算核对。到期损益金额仍用原精确十进制。")
+                    }.font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(pricing.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            }
+        } else {
+            ContentUnavailableView("这份输入未启用模型研究", systemImage: "function",
+                description: Text("原到期损益快照保持原样。复制为新草稿后显式开启并填写完整假设，再计算新结果；不会自动升级旧快照。"))
+                .accessibilityIdentifier("optionLabPricingNotEnabled")
+        }
+    }
+    private func legPricing(_ leg: OptionLabLegPricing, in report: OptionLabReport) -> some View {
+        let isPut = ([report.input.shortLeg] + (report.input.longLeg.map { [$0] } ?? [])).first { $0.contractID == leg.contractID }?.right == .put
+        return GroupBox("\(leg.direction == .sell ? "卖出腿" : "买入腿") · \(leg.contractID)") {
+            VStack(alignment: .leading, spacing: 12) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 205))], alignment: .leading, spacing: 12) {
+                    metric("Mid 输入 USD / 股", leg.quoteMid)
+                    pricingMetric("理论价 USD / 股 · 手工 σ", leg.theoreticalPrice)
+                    pricingMetric("当前内在值边界 USD / 股", leg.expiryIntrinsicValue)
+                    pricingMetric("本地反解 IV · 来自 Mid", leg.impliedVolatility.volatility, factor: 100, suffix: "%")
+                }
+                Text("理论价状态：" + pricingState(leg.theoryState)).font(.caption).foregroundStyle(.secondary)
+                Text("IV 状态：" + pricingState(leg.impliedVolatility.state))
+                    .foregroundStyle(leg.impliedVolatility.state == .available ? Color.secondary : Color.orange)
+                    .accessibilityIdentifier("optionLabIVState-" + leg.contractID)
+                if let greeks = leg.canonicalGreeks {
+                    Text("以下敏感度使用该腿的本地 IV；不是上方手工 σ 的敏感度。").font(.caption).foregroundStyle(.secondary)
+                    greekGrid(greeks, aggregate: false)
+                } else { Text("本地 IV / Greeks 不可用；没有采用供应商值或人工波动率替代。").foregroundStyle(.orange) }
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 205))], alignment: .leading, spacing: 12) {
+                    pricingMetric(isPut ? "Q 下实值概率 N(−d₂)" : "Q 下实值概率 N(d₂)", leg.itmProbability, factor: 100, suffix: "%")
+                    pricingMetric("|Delta|（不是胜率）", leg.absoluteDelta)
+                    pricingMetric("|Delta| − 实值概率", leg.itmDeltaDifference, factor: 100, suffix: " 个百分点")
+                }
+                Text("实值概率只说明模型下到期处于价内；扣除权利金、费用后的策略获利概率在下方分布中另算。")
+                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("本地 IV 求解依据") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("迭代次数：\(leg.impliedVolatility.iterations) · 价格残差：\(pricingNumber(leg.impliedVolatility.residual))")
+                        Text("σ bracket：\(pricingNumber(leg.impliedVolatility.bracketLower)) 至 \(pricingNumber(leg.impliedVolatility.bracketUpper))")
+                        Text("σ 容差：\(pricingNumber(leg.impliedVolatility.sigmaTolerance)) · 价格容差：\(pricingNumber(leg.impliedVolatility.priceTolerance))")
+                    }.font(.caption).textSelection(.enabled)
+                }
+                ForEach(leg.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private func distributionAnalysis(_ pricing: OptionLabPricingReport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("主分布 · 使用短腿本地 IV") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("RISK_NEUTRAL · 风险中性测度 Q · 不是历史频率或真实世界概率")
+                        .font(.headline).foregroundStyle(.orange).accessibilityIdentifier("optionLabDistributionMeasure")
+                    Text("状态：" + pricingState(pricing.distributionState)).accessibilityIdentifier("optionLabDistributionStatus")
+                    if let distribution = pricing.distribution {
+                        distributionReport(distribution, sensitivity: false)
+                    } else {
+                        Text("没有可用的主分布；不显示获利概率、EV 或尾部数值，不回退人工 σ。")
+                            .foregroundStyle(.secondary).accessibilityIdentifier("optionLabDistributionUnavailable")
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if pricing.legs.count > 1 {
+                DisclosureGroup("长腿 IV 敏感度对照（不参与主排序）") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("将整条策略改用长腿本地 IV 重新计算。此处与主分布并列比较，不能解释为概率上下界或模型置信区间。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("状态：" + pricingState(pricing.longLegSensitivityState))
+                        if let sensitivity = pricing.longLegSensitivity { distributionReport(sensitivity, sensitivity: true) }
+                        else { Text("长腿对照不可用；没有填入替代波动率。").foregroundStyle(.secondary) }
+                    }.padding(.vertical, 8)
+                }.accessibilityIdentifier("optionLabLongIVSensitivity")
+            }
+        }
+    }
+    private func distributionReport(_ distribution: OptionLabDistributionReport, sensitivity: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("σ 来源合约：\(distribution.volatilitySourceContractID) · 本地 IV \(pricingNumber(distribution.volatility * 100, suffix: "%"))")
+                .font(.callout).textSelection(.enabled)
+            Text("\(pricingNumber(distribution.confidence * 100, suffix: "%")) 尾部口径：取最差 \(pricingNumber(distribution.tailMass * 100, suffix: "%")) 的到期净损益；不是统计置信区间。")
+                .font(.caption).foregroundStyle(.secondary)
+            distributionOutcome(distribution.mid, title: "Mid 损益", id: sensitivity ? "optionLabSensitivityMid" : "optionLabDistributionMid")
+            distributionOutcome(distribution.conservative, title: "保守成交损益", id: sensitivity ? "optionLabSensitivityConservative" : "optionLabDistributionConservative")
+            DisclosureGroup("分布模型与数值依据") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("版本：\(distribution.modelVersion)")
+                    Text("连续 r \(pricingNumber(distribution.rate)) · 连续 q \(pricingNumber(distribution.dividendYield)) · T \(pricingNumber(distribution.timeYears)) 年")
+                    Text("绝对 USD 容差 \(pricingNumber(distribution.absoluteUSDTolerance)) · 相对容差 \(pricingNumber(distribution.relativeTolerance)) · 分段上限 \(distribution.maximumSubintervals)")
+                    Text("数值误差估计只描述积分／浮点计算，不包含输入误差、欧式近似误差或模型风险。")
+                }.font(.caption).textSelection(.enabled)
+            }
+            ForEach(distribution.limitations, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func distributionOutcome(_ outcome: OptionLabDistributionOutcome, title: String, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline).accessibilityIdentifier(id)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 205))], alignment: .leading, spacing: 12) {
+                pricingMetric("Q 下净获利概率（PnL > 0）", outcome.probabilityProfit, factor: 100, suffix: "%")
+                pricingMetric("到期净损益 EV · 未贴现 USD", outcome.expectedPnL)
+                pricingMetric("最差尾部收益均值 · 带符号 USD", outcome.signedTailMean)
+                pricingMetric("尾部损失 max(0, −尾均值) USD", outcome.tailLoss)
+                pricingMetric("现值 EV USD", outcome.presentValueExpectedPnL)
+                pricingMetric("估计绝对数值误差 USD", outcome.numericalErrorBound)
+            }
+            Text("未选择现值折算口径时，现值 EV 保持不可用；不把未贴现 EV 冒充现值。尾均值保留正负号，尾部损失保持非负。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func greekGrid(_ greeks: OptionLabGreeks, aggregate: Bool) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170))], alignment: .leading, spacing: 12) {
+            pricingMetric(aggregate ? "Delta · 组合" : "Delta · 每股", greeks.delta)
+            pricingMetric(aggregate ? "Gamma · 组合" : "Gamma · 每股", greeks.gamma)
+            pricingMetric("Theta / 自然日", greeks.thetaPerDay)
+            pricingMetric("Vega / σ 上升 1 个百分点", greeks.vegaPerPercentagePoint)
+            pricingMetric("Rho / r 上升 1 个百分点", greeks.rhoPerPercentagePoint)
+        }
+    }
+    private func pricingMetric(_ title: String, _ value: Double?, factor: Double = 1, suffix: String = "") -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(pricingNumber(value.map { $0 * factor }, suffix: suffix))
+                .font(.system(.body, design: .monospaced)).textSelection(.enabled)
+        }
+    }
+    private func pricingNumber(_ value: Double?, suffix: String = "") -> String {
+        guard let value, value.isFinite else { return "不可用" }
+        return String(format: "%.8g", locale: Locale(identifier: "en_US_POSIX"), value) + suffix
+    }
+    private func pricingState(_ value: OptionLabPricingState) -> String {
+        switch value {
+        case .available: "可用（仅在本模型假设内）"
+        case .expiryBoundary: "到期边界；不报告常规 IV / Greeks"
+        case .zeroVolatilityBoundary: "零波动率边界"
+        case .zeroSpotBoundary: "标的价格为零的边界"
+        case .tooNearExpiry: "距离到期过近，拒绝常规模型指标"
+        case .boundaryPrice: "报价处于无套利边界，无法取得有效内点 IV"
+        case .arbitrageViolation: "报价不满足本模型无套利界限"
+        case .ivNotBracketed: "给定搜索区间未包围 IV 根"
+        case .ivIterationLimit: "IV 迭代次数达到上限"
+        case .residualNotMet: "IV 价格残差未满足要求"
+        case .numericFailure: "数值计算失败"
+        case .invalidInput: "模型输入无效"
+        case .missingLegIV: "必需腿缺少可用本地 IV"
+        case .notApplicable: "不适用"
         }
     }
     private func outcome(_ value: OptionLabOutcome, title: String, shortDTE: Bool) -> some View {
@@ -348,6 +569,11 @@ struct OptionLabContent: View {
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
+    private func copyToDraft(_ report: OptionLabReport) {
+        var value = OptionLabInputDraft(input: report.input)
+        if let basis = model.reportLedgerBasis { try? value.useLedgerBasis(basis) }
+        draft = value; model.draftChanged(); section = "输入"
+    }
     private func calculate() {
         do {
             let captured = draft, session = visibleSession, navigation = navigationEpoch
@@ -361,7 +587,7 @@ struct OptionLabContent: View {
                 section = "结果"
             }
         } catch {
-            inputError = "请填写所有必需字段；金额用十进制文本，张数用整数，时间须含明确时区。账本依据须与当前标的和评估时刻一致。"
+            inputError = "请补齐输入：金额和 r/q/σ 用十进制，张数用整数，时间含明确时区；启用模型后不得留空利率、股息率、理论 σ 或来源。账本依据须与标的和评估时刻一致。"
         }
     }
     private func inspectLedger(_ snapshot: LedgerSnapshot) {
@@ -405,7 +631,7 @@ struct OptionLabContent: View {
     private func containsSynthetic(_ report: OptionLabReport) -> Bool {
         report.input.underlying.source.origin == .synthetic || report.input.shortLeg.source.origin == .synthetic
             || report.input.longLeg?.source.origin == .synthetic || report.input.expiry.source.origin == .synthetic
-            || report.input.capital.origin == .synthetic
+            || report.input.capital.origin == .synthetic || report.input.pricing?.source.origin == .synthetic
     }
     private func strategyName(_ strategy: OptionLabStrategy) -> String {
         switch strategy { case .cashSecuredPut: "现金担保卖 Put"; case .coveredCall: "备兑 Call"; case .putCreditSpread: "Put 信用价差"; case .callCreditSpread: "Call 信用价差" }

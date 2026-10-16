@@ -9,6 +9,28 @@ public enum OptionLabDraftError: Error, Equatable, Sendable {
     case invalidNumber, missingField, invalidDate, incompatibleLedgerBasis
 }
 
+/// Optional model inputs never acquire market values from blank fields. An old
+/// payoff-only snapshot remains payoff-only until this mode is explicitly enabled.
+public struct OptionLabPricingDraft: Equatable, Sendable {
+    public var enabled = false
+    public var rate = ""
+    public var dividendYield = ""
+    public var volatility = ""
+    public var sourceReference = ""
+    public private(set) var methodVersion = "options.bsm-risk-neutral.v1"
+    public init() {}
+    init(_ input: OptionLabPricingInput) {
+        enabled = true; rate = input.rate.decimalString; dividendYield = input.dividendYield.decimalString
+        volatility = input.volatility.decimalString; sourceReference = input.source.reference; methodVersion = input.methodVersion
+    }
+    func build(origin: OptionLabOrigin, enteredAt: Date) throws -> OptionLabPricingInput? {
+        guard enabled else { return nil }
+        guard !sourceReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw OptionLabDraftError.missingField }
+        return try .init(rate: Money(rate), dividendYield: Money(dividendYield), volatility: Money(volatility),
+            source: .init(origin: origin, reference: sourceReference, enteredAt: enteredAt), methodVersion: methodVersion)
+    }
+}
+
 public struct OptionLabLegDraft: Equatable, Sendable {
     public var contractID = ""
     public var strike = ""
@@ -72,6 +94,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public var committedShares = ""
     public var capitalReference = ""
     public var scenarioPrices = ""
+    public var pricing = OptionLabPricingDraft()
     public private(set) var ledgerBasis: OptionLabLedgerBasis?
     private var originalAsOf: Date?
     private var originalSettlementAt: Date?
@@ -84,7 +107,8 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public init(input: OptionLabInput) {
         strategy = input.strategy
         origin = input.underlying.source.origin == .synthetic || input.shortLeg.source.origin == .synthetic || input.longLeg?.source.origin == .synthetic
-            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic ? .synthetic : .manual
+            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
+            || input.pricing?.source.origin == .synthetic ? .synthetic : .manual
         originalAsOf = input.asOf; originalSettlementAt = input.expiry.settlementAt
         originalUnderlyingQuotedAt = input.underlying.quotedAt; originalUnderlyingReceivedAt = input.underlying.receivedAt
         symbol = input.underlying.symbol; asset = input.underlying.asset; asOf = optionDraftTimestamp(input.asOf)
@@ -101,8 +125,15 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         // ledger basis is selected; a reference string alone is not that basis.
         capitalReference = input.capital.origin == .ledger ? "" : input.capital.reference
         scenarioPrices = input.scenarioPrices.map(\.decimalString).joined(separator: "\n")
+        pricing = input.pricing.map(OptionLabPricingDraft.init) ?? .init()
     }
     public static func synthetic(strategy: OptionLabStrategy) throws -> Self { try .init(input: OptionLabDemo.input(strategy: strategy)) }
+    /// Explicit example values only; this method cannot populate a manual draft.
+    public mutating func useSyntheticPricingAssumptions() throws {
+        guard origin == .synthetic else { throw OptionLabDraftError.missingField }
+        pricing.enabled = true; pricing.rate = "0.05"; pricing.dividendYield = "0.01"; pricing.volatility = "0.25"
+        pricing.sourceReference = "SYNTHETIC-OPTION-PRICING; r=5%, continuous q=1%, theoretical sigma=25%; not market data"
+    }
     public mutating func useLedgerBasis(_ basis: OptionLabLedgerBasis) throws {
         guard let capital = basis.capital, basis.underlying.symbol == symbol, basis.asOf == (try evaluationDate()),
               (basis.underlying.kind == .stock) == (asset == .stock) else { throw OptionLabDraftError.incompatibleLedgerBasis }
@@ -142,7 +173,8 @@ public struct OptionLabInputDraft: Equatable, Sendable {
             underlying: underlying, capital: capital,
             policy: .init(lambda: Money(lambda), openingFeePerContract: Money(openingFeePerContract), ticketFee: Money(ticketFee), terminalFeeTotal: Money(terminalFeeTotal)),
             expiry: .init(date: expiry, settlementAt: optionDraftDate(settlementAt, original: originalSettlementAt),
-                source: .init(origin: origin, reference: expiryReference, enteredAt: createdAt)), scenarioPrices: prices)
+                source: .init(origin: origin, reference: expiryReference, enteredAt: createdAt)), scenarioPrices: prices,
+            pricing: pricing.build(origin: origin, enteredAt: createdAt))
     }
 }
 private func optionDraftTimestamp(_ date: Date) -> String {

@@ -229,6 +229,55 @@ import XCTest
         // This path never opens a system file importer/exporter or real account.
     }
 
+    func testOptionPricingExplicitAssumptionsReplayAndEditInvalidation() {
+        configure(); app.launch()
+        XCTAssertTrue(app.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        let template = mainWindow.buttons["optionLabTemplate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let assumptions = mainWindow.buttons["optionLabPricingSynthetic"]
+        XCTAssertTrue(assumptions.waitForExistence(timeout: 5))
+        for _ in 0..<10 where !assumptions.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(assumptions.isHittable); assumptions.click()
+        let calculate = mainWindow.buttons["optionLabCalculate"]
+        let saveSnapshot = mainWindow.buttons["optionLabSave"]
+        waitEnabled(calculate); calculate.click()
+        waitEnabled(saveSnapshot)
+        researchTab("模型分析")
+        let status = mainWindow.staticTexts["optionLabPricingStatus"]
+        waitText("SYNTHETIC", in: status)
+        waitText("RISK_NEUTRAL", in: mainWindow.staticTexts["optionLabRiskNeutralBoundary"])
+        let localIV = mainWindow.staticTexts["optionLabIVState-SYNTHETIC-P100"]
+        XCTAssertTrue(localIV.waitForExistence(timeout: 10)); waitText("可用", in: localIV)
+        let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
+        screenshot.name = "Options-pricing-synthetic-model-reference"; screenshot.lifetime = .keepAlways
+        add(screenshot)
+        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
+        waitText("已按完整输入重算", in: status)
+        app.typeKey("1", modifierFlags: .command); app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        researchTab("已保存")
+        let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
+        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
+        researchTab("模型分析"); waitText("已按完整输入重算", in: status)
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        let copy = mainWindow.buttons["optionLabCopy"]
+        for _ in 0..<10 where !copy.isHittable { mainWindow.scrollViews.firstMatch.swipeDown() }
+        XCTAssertTrue(copy.isHittable); copy.click()
+        // Editing must invalidate a freshly computed result, not an already-cleared copy.
+        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot); researchTab("模型分析")
+        waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
+        researchTab("输入")
+        let rate = mainWindow.textFields["optionLabPricingRate"]
+        XCTAssertTrue(rate.waitForExistence(timeout: 5))
+        for _ in 0..<10 where !rate.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(rate.isHittable); rate.click(); rate.typeKey("a", modifierFlags: .command); rate.typeText("0.04")
+        waitEnabled(saveSnapshot, false)
+        researchTab("模型分析"); XCTAssertFalse(status.exists)
+        // In-app synthetic controls only: no file panel, provider or Keychain.
+    }
+
     func testResearchSnapshotInspectorAndReplay() {
         launchResearch()
         let save = app.buttons["researchSave"]
