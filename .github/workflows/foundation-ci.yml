@@ -13,8 +13,8 @@ jobs:
   foundation:
     name: macOS foundation (no account signing)
     runs-on: macos-15
-    # PR50 took 28m41s; retain every check with headroom for the added performance suite.
-    timeout-minutes: 45
+    # PR54 needed 40m14s before native checks; retain all checks and their per-case limits.
+    timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
       MARKETDECISION_TEST_KEYCHAIN: '0'
