@@ -272,19 +272,41 @@ import XCTest
         let rate = mainWindow.textFields["optionLabPricingRate"]
         XCTAssertTrue(rate.waitForExistence(timeout: 5))
         waitEnabled(rate)
-        let editor = mainWindow.scrollViews.containing(.textField, identifier: "optionLabPricingRate").firstMatch
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        // Resolve the owning viewport once, then keep its structural index.
+        // A descendant-based query stops matching on macOS 15 if scrolling
+        // temporarily removes that descendant from the accessibility tree.
+        guard let editorIndex = mainWindow.scrollViews.allElementsBoundByIndex.firstIndex(where: {
+            $0.textFields["optionLabPricingRate"].exists
+        }) else {
+            XCTFail("Missing rate editor viewport: \(mainWindow.debugDescription)")
+            return
+        }
+        let editor = mainWindow.scrollViews.element(boundBy: editorIndex)
         func rateFullyVisible() -> Bool {
+            guard rate.exists else { return false }
             let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
             return !rate.frame.isEmpty && !viewport.isEmpty && viewport.contains(rate.frame)
         }
-        // macOS can report isHittable when only two points of the field are
-        // visible. Bring the entire field inside its own scroll viewport first.
+        // isHittable can be true with only two visible points. Use bounded
+        // pixel scrolling rather than a fast swipe that can overshoot the field.
+        var lastScroll: CGFloat = 0
+        var recoveringMissingRate = false
         for _ in 0..<10 {
             if rateFullyVisible() { break }
-            if rate.frame.midY > editor.frame.midY { editor.swipeUp() }
-            else { editor.swipeDown() }
+            if !rate.exists {
+                // Recover an overshoot without asking an absent field for its frame.
+                if !recoveringMissingRate { lastScroll = -lastScroll / 2 }
+                recoveringMissingRate = true
+                guard abs(lastScroll) >= 1 else { XCTFail("Rate field disappeared before scrolling"); return }
+                editor.scroll(byDeltaX: 0, deltaY: lastScroll)
+                continue
+            }
+            recoveringMissingRate = false
+            let distance = editor.frame.midY - rate.frame.midY
+            lastScroll = max(-80, min(80, distance))
+            editor.scroll(byDeltaX: 0, deltaY: lastScroll)
         }
+        guard rate.exists else { XCTFail("Rate field missing after bounded scrolling"); return }
         XCTAssertTrue(rateFullyVisible(), "Rate frame \(rate.frame), editor frame \(editor.frame)")
         XCTAssertTrue(rate.isHittable)
         rate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
