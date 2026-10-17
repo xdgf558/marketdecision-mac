@@ -229,6 +229,101 @@ import XCTest
         // This path never opens a system file importer/exporter or real account.
     }
 
+    func testOptionPricingExplicitAssumptionsReplayAndEditInvalidation() {
+        configure(); app.launch()
+        XCTAssertTrue(app.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        let template = mainWindow.buttons["optionLabTemplate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let assumptions = mainWindow.buttons["optionLabPricingSynthetic"]
+        XCTAssertTrue(assumptions.waitForExistence(timeout: 5))
+        for _ in 0..<10 where !assumptions.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(assumptions.isHittable); assumptions.click()
+        let calculate = mainWindow.buttons["optionLabCalculate"]
+        let saveSnapshot = mainWindow.buttons["optionLabSave"]
+        waitEnabled(calculate); calculate.click()
+        waitEnabled(saveSnapshot)
+        researchTab("模型分析")
+        let status = mainWindow.staticTexts["optionLabPricingStatus"]
+        waitText("SYNTHETIC", in: status)
+        waitText("RISK_NEUTRAL", in: mainWindow.staticTexts["optionLabRiskNeutralBoundary"])
+        let localIV = mainWindow.staticTexts["optionLabIVState-SYNTHETIC-P100"]
+        XCTAssertTrue(localIV.waitForExistence(timeout: 10)); waitText("可用", in: localIV)
+        let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
+        screenshot.name = "Options-pricing-synthetic-model-reference"; screenshot.lifetime = .keepAlways
+        add(screenshot)
+        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
+        waitText("已按完整输入重算", in: status)
+        app.typeKey("1", modifierFlags: .command); app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        researchTab("已保存")
+        let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
+        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
+        researchTab("模型分析"); waitText("已按完整输入重算", in: status)
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        let copy = mainWindow.buttons["optionLabCopy"]
+        for _ in 0..<10 where !copy.isHittable { mainWindow.scrollViews.firstMatch.swipeDown() }
+        XCTAssertTrue(copy.isHittable); copy.click()
+        // Editing must invalidate a freshly computed result, not an already-cleared copy.
+        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot); researchTab("模型分析")
+        waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
+        researchTab("输入")
+        let rate = mainWindow.textFields["optionLabPricingRate"]
+        XCTAssertTrue(rate.waitForExistence(timeout: 5))
+        waitEnabled(rate)
+        // Resolve the owning viewport once, then keep its structural index.
+        // A descendant-based query stops matching on macOS 15 if scrolling
+        // temporarily removes that descendant from the accessibility tree.
+        guard let editorIndex = mainWindow.scrollViews.allElementsBoundByIndex.firstIndex(where: {
+            $0.textFields["optionLabPricingRate"].exists
+        }) else {
+            XCTFail("Missing rate editor viewport: \(mainWindow.debugDescription)")
+            return
+        }
+        let editor = mainWindow.scrollViews.element(boundBy: editorIndex)
+        func rateFullyVisible() -> Bool {
+            guard rate.exists else { return false }
+            let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !rate.frame.isEmpty && !viewport.isEmpty && viewport.contains(rate.frame)
+        }
+        // isHittable can be true with only two visible points. Use bounded
+        // pixel scrolling rather than a fast swipe that can overshoot the field.
+        var lastScroll: CGFloat = 0
+        var recoveringMissingRate = false
+        for _ in 0..<10 {
+            if rateFullyVisible() { break }
+            if !rate.exists {
+                // Recover an overshoot without asking an absent field for its frame.
+                if !recoveringMissingRate { lastScroll = -lastScroll / 2 }
+                recoveringMissingRate = true
+                guard abs(lastScroll) >= 1 else { XCTFail("Rate field disappeared before scrolling"); return }
+                editor.scroll(byDeltaX: 0, deltaY: lastScroll)
+                continue
+            }
+            recoveringMissingRate = false
+            let distance = editor.frame.midY - rate.frame.midY
+            lastScroll = max(-80, min(80, distance))
+            editor.scroll(byDeltaX: 0, deltaY: lastScroll)
+        }
+        guard rate.exists else { XCTFail("Rate field missing after bounded scrolling"); return }
+        XCTAssertTrue(rateFullyVisible(), "Rate frame \(rate.frame), editor frame \(editor.frame)")
+        XCTAssertTrue(rate.isHittable)
+        rate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        // XCUIElement.hasFocus is not available on macOS. Check the field's
+        // own AX description, not a focused ancestor window or another field.
+        let focused = NSPredicate { _, _ in
+            rate.exists && rate.debugDescription.components(separatedBy: "\n").first?.contains("Keyboard Focused") == true
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: focused, object: nil)], timeout: 10),
+                       .completed, rate.debugDescription)
+        rate.typeKey("a", modifierFlags: .command); rate.typeText("0.04")
+        XCTAssertEqual(rate.value as? String, "0.04")
+        waitEnabled(saveSnapshot, false)
+        researchTab("模型分析"); XCTAssertFalse(status.exists)
+        // In-app synthetic controls only: no file panel, provider or Keychain.
+    }
+
     func testResearchSnapshotInspectorAndReplay() {
         launchResearch()
         let save = app.buttons["researchSave"]

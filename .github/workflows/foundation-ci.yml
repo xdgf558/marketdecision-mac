@@ -13,8 +13,8 @@ jobs:
   foundation:
     name: macOS foundation (no account signing)
     runs-on: macos-15
-    # PR50 took 28m41s; retain every check with headroom for the added performance suite.
-    timeout-minutes: 45
+    # PR54 needed 40m14s before native checks; retain all checks and their per-case limits.
+    timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
       MARKETDECISION_TEST_KEYCHAIN: '0'
@@ -46,7 +46,7 @@ jobs:
             echo '## Foundation CI evidence'
             echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
             echo "- Debug/Release, effective main/helper permissions and synthetic XPC/socket-denial probe: $BUILD_OUTCOME"
-            echo "- Native interaction suite (ten cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
+            echo "- Native interaction suite (eleven cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
             echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'
