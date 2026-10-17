@@ -271,8 +271,32 @@ import XCTest
         researchTab("输入")
         let rate = mainWindow.textFields["optionLabPricingRate"]
         XCTAssertTrue(rate.waitForExistence(timeout: 5))
-        for _ in 0..<10 where !rate.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
-        XCTAssertTrue(rate.isHittable); rate.click(); rate.typeKey("a", modifierFlags: .command); rate.typeText("0.04")
+        waitEnabled(rate)
+        let editor = mainWindow.scrollViews.containing(.textField, identifier: "optionLabPricingRate").firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        func rateFullyVisible() -> Bool {
+            let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !rate.frame.isEmpty && !viewport.isEmpty && viewport.contains(rate.frame)
+        }
+        // macOS can report isHittable when only two points of the field are
+        // visible. Bring the entire field inside its own scroll viewport first.
+        for _ in 0..<10 {
+            if rateFullyVisible() { break }
+            if rate.frame.midY > editor.frame.midY { editor.swipeUp() }
+            else { editor.swipeDown() }
+        }
+        XCTAssertTrue(rateFullyVisible(), "Rate frame \(rate.frame), editor frame \(editor.frame)")
+        XCTAssertTrue(rate.isHittable)
+        rate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        // XCUIElement.hasFocus is not available on macOS. Check the field's
+        // own AX description, not a focused ancestor window or another field.
+        let focused = NSPredicate { _, _ in
+            rate.exists && rate.debugDescription.components(separatedBy: "\n").first?.contains("Keyboard Focused") == true
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: focused, object: nil)], timeout: 10),
+                       .completed, rate.debugDescription)
+        rate.typeKey("a", modifierFlags: .command); rate.typeText("0.04")
+        XCTAssertEqual(rate.value as? String, "0.04")
         waitEnabled(saveSnapshot, false)
         researchTab("模型分析"); XCTAssertFalse(status.exists)
         // In-app synthetic controls only: no file panel, provider or Keychain.
