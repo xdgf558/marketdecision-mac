@@ -68,12 +68,12 @@ public enum PortfolioGreeksEngine {
             }
         }
         let groups = try Dictionary(grouping: rows, by: groupKey).sorted { $0.key < $1.key }.map { key, entries in
-            let first = entries[0], coverage = coverage(entries)
+            let first = entries[0], coverage = Self.coverage(entries)
             let covered = try sum(entries.compactMap(\.values))
             return PortfolioGreeksGroup(id: key, underlyingID: first.underlyingID, underlyingSymbol: first.underlyingSymbol,
                 expirationDate: first.expirationDate, coverage: coverage, covered: covered, complete: coverage.isComplete ? covered : nil)
         }
-        let coverage = coverage(rows), totals = try totals(rows.compactMap(\.values))
+        let coverage = Self.coverage(rows), totals = try Self.totals(rows.compactMap(\.values))
         let (parameters, model) = try definitions()
         return PortfolioGreeksReport(schemaVersion: schemaVersion, input: input, model: model, parameters: parameters,
             ledgerState: state, rows: rows, groups: groups, coverage: coverage, coveredTotals: totals,
