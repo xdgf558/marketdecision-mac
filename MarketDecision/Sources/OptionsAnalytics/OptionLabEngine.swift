@@ -7,6 +7,7 @@ import DataContracts
 public enum OptionLabEngine {
     public static let schemaVersion = "option-lab-report.v1"
     public static let pricingSchemaVersion = "option-lab-report.v2"
+    public static let riskSchemaVersion = "option-lab-report.v3"
     public static func definitions() throws -> (ParameterSet, ModelDefinition) {
         let parameters = ParameterSet(id: "options.deterministic.parameters", version: "PARAMETERS_V1",
             revisionID: UUID(uuidString: "C035AA00-2026-4016-8000-000000000001")!,
@@ -52,18 +53,33 @@ public enum OptionLabEngine {
             notes.append("独立定价模块仅提供欧式参考及风险中性研究；原确定性模型、成交及费用口径未更换。")
             if input.pricing?.source.origin == .synthetic { notes.append("定价假设含合成来源，不能据此授予真实行情或校准资格。") }
         }
-        return .init(schemaVersion: input.pricing == nil ? schemaVersion : pricingSchemaVersion, input: input, model: model, parameters: parameters,
+        let risk = try input.risk.map { try OptionLabRiskEngine.calculate(input: input, assumptions: $0,
+            pricing: pricing, underlyingMid: underlyingMid, dte: dte) }
+        let scenario = try input.scenario.map { try OptionLabScenarioEngine.calculate(input: input, assumptions: $0,
+            pricing: pricing, underlyingMid: underlyingMid, mid: mid, conservative: conservative) }
+        if risk != nil || scenario != nil {
+            notes.removeAll { $0 == "没有 IV、Greeks、概率、历史频率、事件风险或自动下单。" }
+            notes.append("风险与情景为显式离线假设；不提供真实行权概率、成交保证或实盘指令。")
+        }
+        return .init(schemaVersion: reportSchema(input), input: input, model: model, parameters: parameters,
                      dte: dte, expired: false, timeYears: timeYears, tradingDTE: nil, underlyingMid: underlyingMid,
-                     mid: mid, conservative: conservative, researchOnly: true, limitations: notes, pricing: pricing)
+                     mid: mid, conservative: conservative, researchOnly: true, limitations: notes, pricing: pricing, risk: risk, scenario: scenario)
     }
 
     /// Decode alone is never verification. Refuse changed model, parameters, inputs or results.
     public static func replay(_ report: OptionLabReport) throws -> OptionLabReport {
-        guard report.schemaVersion == (report.input.pricing == nil ? schemaVersion : pricingSchemaVersion),
-              (report.input.pricing == nil) == (report.pricing == nil) else { throw OptionLabError.incompatibleReport }
+        guard report.schemaVersion == reportSchema(report.input),
+              (report.input.pricing == nil) == (report.pricing == nil),
+              (report.input.risk == nil) == (report.risk == nil),
+              (report.input.scenario == nil) == (report.scenario == nil) else { throw OptionLabError.incompatibleReport }
         let expected = try calculate(report.input)
         guard expected == report else { throw OptionLabError.incompatibleReport }
         return expected
+    }
+
+    private static func reportSchema(_ input: OptionLabInput) -> String {
+        if input.risk != nil || input.scenario != nil { return riskSchemaVersion }
+        return input.pricing == nil ? schemaVersion : pricingSchemaVersion
     }
 
     private static let limitations = [

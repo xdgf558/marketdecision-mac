@@ -140,6 +140,7 @@ public actor OptionLabStore: OptionLabStorage {
         let synthetic = input.underlying.source.origin == .synthetic || input.shortLeg.source.origin == .synthetic
             || input.longLeg?.source.origin == .synthetic || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
             || input.pricing?.source.origin == .synthetic
+            || input.risk?.containsSyntheticInput == true || input.scenario?.source.origin == .synthetic
         return .init(id: input.id, createdAt: input.createdAt, asOf: input.asOf,
             strategy: input.strategy, origin: synthetic ? .synthetic : .manual,
             underlyingSymbol: report.input.underlying.symbol, inputHash: inputHash, reportHash: reportHash)
