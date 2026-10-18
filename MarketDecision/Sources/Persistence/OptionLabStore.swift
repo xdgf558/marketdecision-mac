@@ -65,6 +65,7 @@ public actor OptionLabStore: OptionLabStorage {
     public func makeDailyStore() throws -> OptionDailyStore { try OptionDailyStore(database: database) }
     public func makeChainStore() throws -> OptionChainStore { try OptionChainStore(database: database) }
     public func makePortfolioGreeksStore() throws -> PortfolioGreeksStore { try PortfolioGreeksStore(database: database) }
+    public func makeEvidenceStore() throws -> OptionEvidenceStore { try OptionEvidenceStore(database: database) }
     public func makeArchiveStore() throws -> OptionLabArchiveStore { try OptionLabArchiveStore(database: database) }
 
     /// The caller fixes its baseline before preparing the calculation. Neither a

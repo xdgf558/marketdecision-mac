@@ -161,7 +161,7 @@ struct PortfolioGreeksStorageTests {
         let saved = try await store.save(input, expectedRevision: store.revision())
         let raw = try await OptionLabArchiveStore(database: db).exportArchive(), files = try ResearchZIP.decode(raw)
         let manifest = try JSONDecoder().decode(OptionLabArchiveCodec.Manifest.self, from: #require(files["manifest.json"]))
-        #expect(manifest.format == "options-lab-archive.v3" && !manifest.encrypted && manifest.embeddedLedgerBases == 1)
+        #expect(manifest.format == "options-lab-archive.v4" && !manifest.encrypted && manifest.embeddedLedgerBases == 1)
         let path = pgsPath(); defer { try? FileManager.default.removeItem(at: path) }
         let target = try DatabaseStore(path: path.path, purpose: .optionsLab), archive = try OptionLabArchiveStore(database: target)
         let plan = try await archive.prepareRestore(raw, mode: .replace, expectedRevision: archive.status().revision)
@@ -291,13 +291,13 @@ struct PortfolioGreeksStorageTests {
         let chain = try await lab.makeChainStore(); _ = try await chain.save(OptionChainDemo.capture(), expectedRevision: chain.revision())
         let before = try db.read(OptionLabArchiveState.capture)
         try db.transaction { connection in
-            try connection.execute(sql: "DROP TABLE portfolio_greeks_documents; DROP TABLE portfolio_greeks_catalog")
-            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier='options-lab.v4'")
+            try connection.execute(sql: "DROP TABLE option_evidence_documents; DROP TABLE option_evidence_catalog; DROP TABLE portfolio_greeks_documents; DROP TABLE portfolio_greeks_catalog")
+            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('options-lab.v4','options-lab.v5')")
         }
         let upgraded = try DatabaseStore(path: path.path, purpose: .optionsLab)
         #expect(try upgraded.read(OptionLabArchiveState.capture) == before)
         #expect(try await OptionLabStore(database: upgraded).makePortfolioGreeksStore().summaries().isEmpty)
-        #expect(try upgraded.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3", "options-lab.v4"])
+        #expect(try upgraded.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3", "options-lab.v4", "options-lab.v5"])
     }
     @Test func wrongPurposeUnknownIDAndPrecancelledSaveFailWithoutWrites() async throws {
         for purpose in [DatabasePurpose.business, .offlineIssuerResearch, .secResearch, .portfolioLedger] {

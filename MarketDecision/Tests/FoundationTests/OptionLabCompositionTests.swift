@@ -28,6 +28,9 @@ private actor OptionLabCredentialProbe: CredentialStorage {
         let second = try await environment.makeOptionLabWorkspaceModel()
         await first.load(); await second.load()
         let history = try #require(first.history), transfer = try #require(first.transfer)
+        let evidence = try #require(first.evidence)
+        await evidence.load()
+        #expect(evidence.saved.isEmpty && evidence.report == nil && !evidence.canSave)
         await history.load(); await transfer.load()
         #expect(history.revision == first.revision && transfer.status?.revision == first.revision)
         #expect(history.dailySummaries.isEmpty && history.historySummaries.isEmpty)
@@ -37,7 +40,7 @@ private actor OptionLabCredentialProbe: CredentialStorage {
         #expect(FileManager.default.fileExists(atPath: optionsPath))
         #expect(!FileManager.default.fileExists(atPath: ledgerPath))
         #expect(await credentials.calls == 0)
-        #expect(try DatabaseStore(path: optionsPath, purpose: .optionsLab).migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3", "options-lab.v4"])
+        #expect(try DatabaseStore(path: optionsPath, purpose: .optionsLab).migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3", "options-lab.v4", "options-lab.v5"])
         #expect(throws: MigrationError.incompatiblePurpose) {
             try DatabaseStore(path: optionsPath, purpose: .portfolioLedger)
         }

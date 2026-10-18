@@ -55,11 +55,12 @@ struct OptionLabContent: View {
             if let message = model.message { Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionLabMessage") }
             if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
             Picker("实验室内容", selection: $section) {
-                Text("组合风险").tag("组合风险"); Text("期权链").tag("期权链"); Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("风险与情景").tag("风险与情景"); Text("已保存").tag("已保存"); Text("波动率历史").tag("波动率历史"); Text("期权归档").tag("期权归档")
+                Text("数据对照").tag("数据对照"); Text("组合风险").tag("组合风险"); Text("期权链").tag("期权链"); Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("风险与情景").tag("风险与情景"); Text("已保存").tag("已保存"); Text("波动率历史").tag("波动率历史"); Text("期权归档").tag("期权归档")
             }.pickerStyle(.segmented).accessibilityIdentifier("optionLabSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if section == "组合风险", let portfolio = model.portfolioGreeks { PortfolioGreeksContent(model: portfolio) }
+                    if section == "数据对照", let evidence = model.evidence { OptionEvidenceContent(model: evidence) }
+                    else if section == "组合风险", let portfolio = model.portfolioGreeks { PortfolioGreeksContent(model: portfolio) }
                     else if section == "期权链", let chain = model.chain {
                         OptionChainContent(model: chain, history: model.history) { imported, stillCurrent in
                             let session = visibleSession, navigation = navigationEpoch
@@ -111,7 +112,7 @@ struct OptionLabContent: View {
                 Spacer()
                 if blocked { ProgressView().controlSize(.small) }
             }
-            if section != "组合风险" && section != "期权链" && section != "波动率历史" && section != "期权归档" {
+            if section != "数据对照" && section != "组合风险" && section != "期权链" && section != "波动率历史" && section != "期权归档" {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 125))], alignment: .leading, spacing: 8) {
                 Button("新建手工输入") { model.draftChanged(); draft = .init(); ledgerCandidate = nil; section = "输入" }.disabled(blocked).accessibilityIdentifier("optionLabNew")
                 Button("载入合成模板") {

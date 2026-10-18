@@ -36,7 +36,7 @@ struct OptionArchiveTransferContent: View {
             if let message = model.message {
                 Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionArchiveMessage")
             }
-            if model.isBusy { ProgressView("正在校验期权实验、日摘要与历史报告…") }
+            if model.isBusy { ProgressView("正在校验期权库报告与冻结证据…") }
             clearSection
         }
         .fileExporter(isPresented: $exporting, document: exportFile, contentTypes: [exportType], defaultFilename: exportName) { result in
@@ -73,7 +73,7 @@ struct OptionArchiveTransferContent: View {
                 Spacer()
                 Button("刷新元数据") { run { await model.load() } }.disabled(busy).accessibilityIdentifier("optionArchiveReload")
             }
-            Text("此归档仅包含期权实验、每日摘要与历史分析。研究库和实际账本库不被导出或恢复；若实验引用过账本，包内仍含只读历史账户及事件依据。").foregroundStyle(.secondary)
+            Text("此归档包含期权实验、日摘要、历史分析、链采集、组合风险、数据对照和交易归因。研究库和实际账本库不被导出或恢复；包内可能含只读历史账户及事件依据。").foregroundStyle(.secondary)
             if let value = model.status {
                 Text(counts(value.counts)).font(.callout).accessibilityIdentifier("optionArchiveCounts")
                 Text("期权库版本 \(value.revision.uuidString)").font(.caption).textSelection(.enabled)
@@ -113,9 +113,9 @@ struct OptionArchiveTransferContent: View {
     private var clearSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider()
-            Button("预检清空期权实验、日摘要与历史报告…", role: .destructive) { run { await model.prepareClear() } }
+            Button("预检清空独立期权库…", role: .destructive) { run { await model.prepareClear() } }
                 .disabled(!model.canPrepare || fileFlow.isBusy).accessibilityIdentifier("optionArchiveClearPreview")
-            Text("清空范围以预检摘要为准。只影响期权实验、日摘要与历史报告；研究归档、实际账本库、行情/SEC 来源库、设置、Keychain 和外部备份不变；不是磁盘物理擦除。").font(.caption).foregroundStyle(.secondary)
+            Text("清空范围包含预检列出的期权库全部类型；研究归档、实际账本库、行情/SEC 来源库、设置、Keychain 和外部备份不变；不是磁盘物理擦除。").font(.caption).foregroundStyle(.secondary)
         }
     }
     private func confirmationSheet(_ plan: OptionLabTransferPlan) -> some View {
@@ -183,5 +183,5 @@ struct OptionArchiveTransferContent: View {
     }
 }
 private func counts(_ value: OptionLabArchiveCounts) -> String {
-    "链采集 \(value.chainCaptures) · 实验 \(value.experiments) · 日摘要 \(value.dailySummaries) · 历史报告 \(value.historyReports) · 嵌入账户依据 \(value.embeddedLedgerBases)"
+    "链采集 \(value.chainCaptures) · 实验 \(value.experiments) · 日摘要 \(value.dailySummaries) · 历史报告 \(value.historyReports) · 组合风险 \(value.portfolioReports) · 对照与归因 \(value.evidenceReports) · 嵌入账户依据 \(value.embeddedLedgerBases)"
 }

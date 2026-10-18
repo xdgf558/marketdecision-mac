@@ -8,7 +8,8 @@ import PortfolioEngine
 public enum OptionLabArchiveCodec {
     public static let maximumArchiveBytes = 128 * 1_024 * 1_024
     public static let maximumRows = 100_000
-    static let format = "options-lab-archive.v3"
+    static let format = "options-lab-archive.v4"
+    static let portfolioFormat = "options-lab-archive.v3"
     static let chainFormat = "options-lab-archive.v2"
     static let legacyFormat = "options-lab-archive.v1"
     struct Manifest: Codable, Equatable {
@@ -38,16 +39,17 @@ public enum OptionLabArchiveCodec {
             let files = try ResearchZIP.decode(data)
             guard let manifestBytes = files["manifest.json"], let stateBytes = files["research-state.json"] else { throw OptionLabArchiveError.unsupportedFormat }
             let manifest = try JSONDecoder().decode(Manifest.self, from: manifestBytes)
-            guard [format, chainFormat, legacyFormat].contains(manifest.format), manifest.purpose == "MDQ1", !manifest.encrypted,
+            guard [format, portfolioFormat, chainFormat, legacyFormat].contains(manifest.format), manifest.purpose == "MDQ1", !manifest.encrypted,
                   manifest.ledgerBasisScope == ledgerBasisScope else { throw OptionLabArchiveError.unsupportedFormat }
             guard try canonical(manifest) == manifestBytes, manifest.stateBytes == stateBytes.count,
                   manifest.stateHash == LedgerCSV.hash(stateBytes) else { throw OptionLabArchiveError.corruptedArchive }
             let state = try JSONDecoder().decode(OptionLabArchiveState.self, from: stateBytes)
             guard try canonical(state) == stateBytes, manifest.embeddedLedgerBases == state.counts.embeddedLedgerBases else { throw OptionLabArchiveError.corruptedArchive }
             guard (manifest.format == format && state.format == OptionLabArchiveState.format)
+                || (manifest.format == portfolioFormat && state.format == OptionLabArchiveState.portfolioFormat)
                 || (manifest.format == chainFormat && state.format == OptionLabArchiveState.chainFormat)
                 || (manifest.format == legacyFormat && state.format == OptionLabArchiveState.legacyFormat) else { throw OptionLabArchiveError.unsupportedFormat }
-            // Verify the original v1/v2 bytes and exact versioned table catalog before
+            // Verify original v1/v2/v3 bytes and exact versioned table catalog before
             // an in-memory upgrade. Existing frozen body bytes stay intact.
             try state.validateShape(); return try state.upgraded()
         } catch is CancellationError { throw CancellationError() }
@@ -79,7 +81,8 @@ struct OptionLabArchiveDefinition: Sendable {
     }
 }
 struct OptionLabArchiveState: Codable, Equatable, Sendable {
-    static let format = "options-lab-state.v3"
+    static let format = "options-lab-state.v4"
+    static let portfolioFormat = "options-lab-state.v3"
     static let chainFormat = "options-lab-state.v2"
     static let legacyFormat = "options-lab-state.v1"
     let format: String
@@ -104,11 +107,16 @@ struct OptionLabArchiveState: Codable, Equatable, Sendable {
         .init("portfolio_greeks_catalog", "report_id,ledger_revision,input_hash,report_hash,model_version,numeric_policy_version,summary_hash,summary_json", "tttttttb"),
         .init("portfolio_greeks_documents", "report_id,input_json,report_json", "tbb")
     ]
-    static let definitions = legacyDefinitions + chainDefinitions + portfolioDefinitions
+    static let evidenceDefinitions: [OptionLabArchiveDefinition] = [
+        .init("option_evidence_catalog", "report_id,kind,input_hash,report_hash,summary_hash,summary_json", "tttttb"),
+        .init("option_evidence_documents", "report_id,input_json,report_json", "tbb")
+    ]
+    static let definitions = legacyDefinitions + chainDefinitions + portfolioDefinitions + evidenceDefinitions
     private var acceptedDefinitions: [OptionLabArchiveDefinition] {
         switch format {
         case Self.legacyFormat: Self.legacyDefinitions
         case Self.chainFormat: Self.legacyDefinitions + Self.chainDefinitions
+        case Self.portfolioFormat: Self.legacyDefinitions + Self.chainDefinitions + Self.portfolioDefinitions
         default: Self.definitions
         }
     }
@@ -120,8 +128,9 @@ struct OptionLabArchiveState: Codable, Equatable, Sendable {
         let bases = rows("option_lab_documents").filter { $0.count == 5 && $0[3] != .null }.count
         return .init(experiments: rows("option_lab_catalog").count, dailySummaries: rows("option_daily_catalog").count,
             historyReports: rows("option_history_catalog").count, contractSummaries: rows("option_daily_contracts").count,
-            embeddedLedgerBases: bases + rows("portfolio_greeks_catalog").count, chainCaptures: rows("option_chain_catalog").count,
-            portfolioReports: rows("portfolio_greeks_catalog").count)
+            embeddedLedgerBases: bases + rows("portfolio_greeks_catalog").count + rows("option_evidence_catalog").filter { $0.count == 6 && $0[1] == .text("tradeAttribution") }.count,
+            chainCaptures: rows("option_chain_catalog").count,
+            portfolioReports: rows("portfolio_greeks_catalog").count, evidenceReports: rows("option_evidence_catalog").count)
     }
     static func empty(revision: UUID) -> Self {
         .init(format: Self.format, revision: revision, tables: definitions.map { .init(name: $0.name, rows: []) })
@@ -129,17 +138,19 @@ struct OptionLabArchiveState: Codable, Equatable, Sendable {
     func upgraded() throws -> Self {
         try validateShape()
         guard format != Self.format else { return self }
-        let missing = format == Self.legacyFormat ? Self.chainDefinitions + Self.portfolioDefinitions : Self.portfolioDefinitions
+        let existingNames = Set(tables.map(\.name))
+        let missing = Self.definitions.filter { !existingNames.contains($0.name) }
         return .init(format: Self.format, revision: revision,
                      tables: tables + missing.map { .init(name: $0.name, rows: []) })
     }
     func validateShape() throws {
-        guard [Self.format, Self.chainFormat, Self.legacyFormat].contains(format), tables.map(\.name) == acceptedDefinitions.map(\.name),
+        guard [Self.format, Self.portfolioFormat, Self.chainFormat, Self.legacyFormat].contains(format), tables.map(\.name) == acceptedDefinitions.map(\.name),
               tables.reduce(0, { $0 + $1.rows.count }) <= OptionLabArchiveCodec.maximumRows,
               counts.experiments <= OptionLabStore.maximumSnapshots, counts.dailySummaries <= OptionDailyStore.maximumRecords,
               counts.historyReports <= OptionDailyStore.maximumRecords,
               counts.chainCaptures <= OptionChainStore.maximumCaptures,
-              counts.portfolioReports <= PortfolioGreeksStore.maximumReports else { throw OptionLabArchiveError.budgetExceeded }
+              counts.portfolioReports <= PortfolioGreeksStore.maximumReports,
+              counts.evidenceReports <= OptionEvidenceStore.maximumReports else { throw OptionLabArchiveError.budgetExceeded }
         var totalBytes = 0
         for (table, definition) in zip(tables, acceptedDefinitions) {
             var keys: Set<String> = [], orderedKeys: [String] = []
@@ -220,6 +231,7 @@ struct OptionLabArchiveState: Codable, Equatable, Sendable {
                       counts.historyReports == (try rows("option_history_documents")).count,
                       counts.chainCaptures == (try rows("option_chain_documents")).count,
                       counts.portfolioReports == (try rows("portfolio_greeks_documents")).count,
+                      counts.evidenceReports == (try rows("option_evidence_documents")).count,
                       try Row.fetchAll(db, sql: "PRAGMA foreign_key_check").isEmpty else { throw OptionLabArchiveError.corruptedArchive }
                 for row in try rows("option_lab_catalog") {
                     guard let id = UUID(uuidString: try row[0].text()), try OptionLabStore.load(id: id, db: db) != nil else { throw OptionLabArchiveError.corruptedArchive }
@@ -235,6 +247,9 @@ struct OptionLabArchiveState: Codable, Equatable, Sendable {
                 }
                 for row in try rows("portfolio_greeks_catalog") {
                     guard let id = UUID(uuidString: try row[0].text()), try PortfolioGreeksStore.load(id: id, db: db) != nil else { throw OptionLabArchiveError.corruptedArchive }
+                }
+                for row in try rows("option_evidence_catalog") {
+                    guard let id = UUID(uuidString: try row[0].text()), try OptionEvidenceStore.load(id: id, db: db) != nil else { throw OptionLabArchiveError.corruptedArchive }
                 }
             }
         } catch is CancellationError { throw CancellationError() }

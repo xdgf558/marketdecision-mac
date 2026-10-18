@@ -15,10 +15,12 @@ public struct OptionLabArchiveCounts: Codable, Equatable, Sendable {
     public let embeddedLedgerBases: Int
     public let chainCaptures: Int
     public let portfolioReports: Int
-    public init(experiments: Int, dailySummaries: Int, historyReports: Int, contractSummaries: Int = 0, embeddedLedgerBases: Int = 0, chainCaptures: Int = 0, portfolioReports: Int = 0) {
+    public let evidenceReports: Int
+    public init(experiments: Int, dailySummaries: Int, historyReports: Int, contractSummaries: Int = 0, embeddedLedgerBases: Int = 0, chainCaptures: Int = 0, portfolioReports: Int = 0, evidenceReports: Int = 0) {
         self.experiments = experiments; self.dailySummaries = dailySummaries; self.historyReports = historyReports
         self.contractSummaries = contractSummaries; self.embeddedLedgerBases = embeddedLedgerBases
         self.chainCaptures = chainCaptures; self.portfolioReports = portfolioReports
+        self.evidenceReports = evidenceReports
     }
 }
 public struct OptionLabArchiveStatus: Equatable, Sendable {
