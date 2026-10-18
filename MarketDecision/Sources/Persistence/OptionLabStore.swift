@@ -48,7 +48,8 @@ public protocol OptionLabStorage: Sendable {
 }
 
 /// Append-only offline experiments in a purpose-marked, independent SQLite file.
-/// No ledger mutation, backup/restore contract, real quotes or trading authority.
+/// No ledger mutation, real quotes or trading authority. The independent archive
+/// preserves these exact bytes and only operates on this purpose-marked database.
 public actor OptionLabStore: OptionLabStorage {
     public static let maximumInputBytes = 2 * 1_024 * 1_024
     public static let maximumReportBytes = 4 * 1_024 * 1_024
@@ -61,6 +62,8 @@ public actor OptionLabStore: OptionLabStorage {
     }
     public init(path: String) throws { database = try DatabaseStore(path: path, purpose: .optionsLab) }
     public func revision() throws -> UUID { try database.read(Self.revision) }
+    public func makeDailyStore() throws -> OptionDailyStore { try OptionDailyStore(database: database) }
+    public func makeArchiveStore() throws -> OptionLabArchiveStore { try OptionLabArchiveStore(database: database) }
 
     /// The caller fixes its baseline before preparing the calculation. Neither a
     /// failed save nor an old page is allowed to silently acquire a fresh revision.
@@ -165,7 +168,7 @@ public actor OptionLabStore: OptionLabStorage {
             return value
         } catch { throw OptionLabStoreError.corruptedStorage }
     }
-    private static func load(id: UUID, db: Database) throws -> SavedOptionLab? {
+    static func load(id: UUID, db: Database) throws -> SavedOptionLab? {
         guard let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE c.snapshot_id = ?", arguments: [id.uuidString]) else { return nil }
         let metadata = try decodeSummary(row)
         guard let body = try Row.fetchOne(db, sql: "SELECT input_json,report_json,ledger_basis_json,ledger_basis_hash FROM option_lab_documents WHERE snapshot_id = ?", arguments: [id.uuidString]) else {
@@ -198,8 +201,9 @@ public actor OptionLabStore: OptionLabStorage {
         } catch is CancellationError { throw CancellationError() }
         catch { throw OptionLabStoreError.corruptedStorage }
     }
-    private static func revision(_ db: Database) throws -> UUID {
-        guard let raw = try String.fetchOne(db, sql: "SELECT revision FROM option_lab_metadata WHERE singleton = 1"),
+    static func revision(_ db: Database) throws -> UUID {
+        guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM option_lab_metadata") == 1,
+              let raw = try String.fetchOne(db, sql: "SELECT revision FROM option_lab_metadata WHERE singleton = 1"),
               let value = UUID(uuidString: raw), value.uuidString == raw else { throw OptionLabStoreError.corruptedStorage }
         return value
     }

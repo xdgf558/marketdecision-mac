@@ -19,6 +19,7 @@ public struct AppEnvironment: Sendable {
     let secArchiveCoordinator: SECArchiveWorkspaceCoordinator
     let equityAcquisition: EquityResearchAcquisition
     let optionLabStoreFactory: OptionLabStoreFactory
+    let optionTransferCoordinator: OptionTransferCoordinator
     let ledgerStoreFactory: LedgerStoreFactory
     let ledgerTransferCoordinator: LedgerTransferCoordinator
     public init(quotes: any QuoteProvider, database: DatabaseStore, credentials: any CredentialStorage,
@@ -36,6 +37,7 @@ public struct AppEnvironment: Sendable {
         self.secArchiveCoordinator = SECArchiveWorkspaceCoordinator()
         self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData, workspaceLock: workspaceLock)
         self.ledgerTransferCoordinator = LedgerTransferCoordinator()
+        self.optionTransferCoordinator = OptionTransferCoordinator()
         self.optionLabStoreFactory = OptionLabStoreFactory(path: offlineResearchDatabasePath == ":memory:" ? ":memory:"
             : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
                 .appendingPathComponent("options-lab.sqlite").path)

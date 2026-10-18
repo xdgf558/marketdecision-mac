@@ -55,11 +55,13 @@ struct OptionLabContent: View {
             if let message = model.message { Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionLabMessage") }
             if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
             Picker("实验室内容", selection: $section) {
-                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("风险与情景").tag("风险与情景"); Text("已保存").tag("已保存")
+                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("风险与情景").tag("风险与情景"); Text("已保存").tag("已保存"); Text("波动率历史").tag("波动率历史"); Text("期权归档").tag("期权归档")
             }.pickerStyle(.segmented).accessibilityIdentifier("optionLabSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if section == "输入" { editor }
+                    if section == "波动率历史", let history = model.history { OptionHistoryContent(model: history) }
+                    else if section == "期权归档", let transfer = model.transfer { OptionArchiveTransferContent(model: transfer) }
+                    else if section == "输入" { editor }
                     else if section == "已保存" { history }
                     else if let report = model.report {
                         if section == "模型分析" { pricingAnalysis(report) }
@@ -71,7 +73,7 @@ struct OptionLabContent: View {
                             description: Text("填写完整输入并计算，或显式载入合成模板。修改输入后，旧结果立即失效。"))
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
-            }
+            }.id(section)
         }.padding(24)
         .onChange(of: draft) { _, _ in
             model.draftChanged(); inputError = nil
@@ -97,6 +99,7 @@ struct OptionLabContent: View {
                 Spacer()
                 if blocked { ProgressView().controlSize(.small) }
             }
+            if section != "波动率历史" && section != "期权归档" {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 125))], alignment: .leading, spacing: 8) {
                 Button("新建手工输入") { model.draftChanged(); draft = .init(); ledgerCandidate = nil; section = "输入" }.disabled(blocked).accessibilityIdentifier("optionLabNew")
                 Button("载入合成模板") {
@@ -122,6 +125,7 @@ struct OptionLabContent: View {
                     let session = visibleSession
                     Task { guard visibleSession == session else { return }; await model.load() }
                 }.disabled(blocked).accessibilityIdentifier("optionLabReload")
+            }
             }
         }
     }
