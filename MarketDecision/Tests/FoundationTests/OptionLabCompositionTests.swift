@@ -37,7 +37,7 @@ private actor OptionLabCredentialProbe: CredentialStorage {
         #expect(FileManager.default.fileExists(atPath: optionsPath))
         #expect(!FileManager.default.fileExists(atPath: ledgerPath))
         #expect(await credentials.calls == 0)
-        #expect(try DatabaseStore(path: optionsPath, purpose: .optionsLab).migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2"])
+        #expect(try DatabaseStore(path: optionsPath, purpose: .optionsLab).migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3"])
         #expect(throws: MigrationError.incompatiblePurpose) {
             try DatabaseStore(path: optionsPath, purpose: .portfolioLedger)
         }

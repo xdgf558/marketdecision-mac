@@ -34,6 +34,7 @@ public enum OptionLabEngine {
     public static func calculate(_ input: OptionLabInput) throws -> OptionLabReport {
         try Task.checkCancellation()
         try validate(input)
+        try OptionChainEvidence.validate(input)
         let dte = try dayDifference(input.asOf, input.expiry.date)
         let timeYears = try Money(exactInterval(input.expiry.settlementAt.timeIntervalSince(input.asOf))).divided(by: "31536000")
         let underlyingMid = try midpoint(input.underlying.bid, input.underlying.ask)
@@ -78,6 +79,7 @@ public enum OptionLabEngine {
     }
 
     private static func reportSchema(_ input: OptionLabInput) -> String {
+        if input.chainEvidence != nil { return "option-lab-report.v4.chain" }
         if input.risk != nil || input.scenario != nil { return riskSchemaVersion }
         return input.pricing == nil ? schemaVersion : pricingSchemaVersion
     }

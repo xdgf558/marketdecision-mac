@@ -183,5 +183,5 @@ struct OptionArchiveTransferContent: View {
     }
 }
 private func counts(_ value: OptionLabArchiveCounts) -> String {
-    "实验 \(value.experiments) · 日摘要 \(value.dailySummaries) · 历史报告 \(value.historyReports) · 嵌入账户依据 \(value.embeddedLedgerBases)"
+    "链采集 \(value.chainCaptures) · 实验 \(value.experiments) · 日摘要 \(value.dailySummaries) · 历史报告 \(value.historyReports) · 嵌入账户依据 \(value.embeddedLedgerBases)"
 }

@@ -29,7 +29,7 @@ public enum OptionDailyEngine {
         try p.validate(); try m.validate(); return (p, m)
     }
     public static func calculate(_ input: OptionDailyInput) throws -> OptionDailyReport {
-        try Task.checkCancellation(); try validate(input)
+        try Task.checkCancellation(); try validate(input); try OptionChainEvidence.validate(input)
         let s = validMid(input.underlying.bid, input.underlying.ask)
         let r = try number(input.rate), q = try number(input.dividendYield)
         let underlyingState = quoteState(bid: input.underlying.bid, ask: input.underlying.ask,
@@ -128,7 +128,7 @@ public enum OptionDailyEngine {
             rate: input.rate, dividendYield: input.dividendYield, iv30: value, put25DeltaIV: nil, call25DeltaIV: nil,
             delta25UnavailableReason: "25-Delta selection/interpolation not implemented; no proxy substituted")
         let (parameters, model) = try definitions(), (pricingParameters, pricingModel) = try OptionLabPricingEngine.definitions()
-        return .init(schemaVersion: "option-daily-report.v1", input: input, model: model, parameters: parameters,
+        return .init(schemaVersion: input.chainEvidence == nil ? "option-daily-report.v1" : "option-daily-report.v2.chain", input: input, model: model, parameters: parameters,
             pricingModel: pricingModel, pricingParameters: pricingParameters, chainSummary: chain, contractSummaries: summaries,
             expiries: expiries, iv30: value, state: state, iv30ExpiryInstants: used, containsSynthetic: synthetic(input), researchOnly: true, limitations: limitations)
     }

@@ -7,6 +7,7 @@ import Persistence
 /// A page-local calculation captures one immutable input. Editing, leaving, or
 /// opening another snapshot invalidates publication; a save keeps its original CAS.
 @MainActor @Observable public final class OptionLabWorkspaceModel: OptionTransferParticipant {
+    public private(set) var chain: OptionChainWorkspaceModel?
     public private(set) var history: OptionHistoryWorkspaceModel?
     public private(set) var transfer: OptionArchiveTransferModel?
     private var coordinator: OptionTransferCoordinator?
@@ -41,6 +42,19 @@ import Persistence
     }
     public var canSave: Bool { !isBusy && coordinator?.isTransferring != true && report != nil && savedID == nil && revision != nil }
     public var canReadLedger: Bool { ledgerReader != nil && !isBusy && coordinator?.isTransferring != true }
+
+    /// Explicit handoff starts a NEW draft baseline after a chain save. It never
+    /// rebases an old report, queued save or operation invalidated by clear/restore.
+    public func prepareChainDraft(_ draft: OptionLabInputDraft) async throws {
+        guard visible, !isBusy, coordinator?.isTransferring != true,
+              let evidence = draft.chainEvidence, chain?.capture == evidence.capture else { throw OptionLabStoreError.staleRevision }
+        try OptionChainEvidence.validateForLab(evidence.capture)
+        let token = begin(); clearReport(); revision = nil
+        defer { finish(token) }
+        let baseline = try await storage.revision()
+        guard owns(token), !Task.isCancelled, chain?.capture == evidence.capture else { throw CancellationError() }
+        revision = baseline
+    }
 
     public func load() async {
         visible = true
@@ -170,6 +184,7 @@ import Persistence
         message = nil; hasError = false; listError = nil; ledgerError = nil
         isBusy = committing != nil || transferOperation != nil
     }
+    public func installChain(_ model: OptionChainWorkspaceModel) { chain = model }
     public func install(history: OptionHistoryWorkspaceModel, transfer: OptionArchiveTransferModel,
                         coordinator: OptionTransferCoordinator) {
         self.history = history; self.transfer = transfer; self.coordinator = coordinator
