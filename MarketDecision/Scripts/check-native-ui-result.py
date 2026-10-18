@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 expected = {
+    'testOptionRiskScenarioExplicitEvidenceReplayAndInvalidation',
     'testOptionPricingExplicitAssumptionsReplayAndEditInvalidation',
     'testOptionsLabExplicitCalculationFrozenReplayAndDraftInvalidation',
     'testPortfolioSyntheticExampleNeverBecomesAnAccountReport',
