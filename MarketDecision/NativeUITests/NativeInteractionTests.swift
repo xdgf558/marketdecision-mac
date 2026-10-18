@@ -270,18 +270,25 @@ import XCTest
         waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
         researchTab("输入")
         let rate = mainWindow.textFields["optionLabPricingRate"]
-        XCTAssertTrue(rate.waitForExistence(timeout: 5))
-        waitEnabled(rate)
-        // Resolve the owning viewport once, then keep its structural index.
-        // A descendant-based query stops matching on macOS 15 if scrolling
-        // temporarily removes that descendant from the accessibility tree.
-        guard let editorIndex = mainWindow.scrollViews.allElementsBoundByIndex.firstIndex(where: {
-            $0.textFields["optionLabPricingRate"].exists
-        }) else {
-            XCTFail("Missing rate editor viewport: \(mainWindow.debugDescription)")
-            return
+        // Input and report tabs share this outer viewport and retain its offset.
+        // The rate belongs to a LazyVGrid: on macOS 15 it may not enter the AX
+        // tree until scrolled into view. Never locate the viewport through it.
+        let editor = mainWindow.scrollViews.element(boundBy: 0)
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let origin = mainWindow.staticTexts["optionLabOrigin"]
+        func originFullyVisible() -> Bool {
+            guard origin.exists else { return false }
+            let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !origin.frame.isEmpty && !viewport.isEmpty
+                && origin.frame.minY >= viewport.minY && origin.frame.maxY <= viewport.maxY
         }
-        let editor = mainWindow.scrollViews.element(boundBy: editorIndex)
+        // Establish a known top anchor before searching downwards. Both loops
+        // are bounded; missing controls remain failures rather than skips.
+        for _ in 0..<30 where !originFullyVisible() { editor.scroll(byDeltaX: 0, deltaY: 160) }
+        XCTAssertTrue(originFullyVisible(), "Missing input top anchor: \(mainWindow.debugDescription)")
+        for _ in 0..<24 where !rate.exists { editor.scroll(byDeltaX: 0, deltaY: -80) }
+        XCTAssertTrue(rate.waitForExistence(timeout: 5), "Missing rate after scrolling: \(mainWindow.debugDescription)")
+        waitEnabled(rate)
         func rateFullyVisible() -> Bool {
             guard rate.exists else { return false }
             let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
