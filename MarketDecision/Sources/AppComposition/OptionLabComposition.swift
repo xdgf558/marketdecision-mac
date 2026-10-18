@@ -33,6 +33,9 @@ extension AppEnvironment {
         let history = OptionHistoryWorkspaceModel(storage: daily, coordinator: optionTransferCoordinator)
         let transfer = OptionArchiveTransferModel(store: archive, coordinator: optionTransferCoordinator)
         model.install(history: history, transfer: transfer, coordinator: optionTransferCoordinator)
+        let chains = try await store.makeChainStore()
+        try Task.checkCancellation()
+        model.installChain(OptionChainWorkspaceModel(storage: chains, coordinator: optionTransferCoordinator))
         return model
     }
 }

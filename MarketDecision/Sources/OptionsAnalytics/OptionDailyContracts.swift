@@ -122,15 +122,17 @@ public struct OptionDailyInput: Codable, Equatable, Sendable {
     public let source: OptionLabSource
     public let calendar: OptionDailyCalendar?
     public let methodVersion: String
+    public let chainEvidence: OptionChainCapture?
     public init(id: UUID = UUID(), createdAt: Date, asOf: Date, session: MarketDate,
                 sessionTimeZoneID: String = "America/New_York", symbol: String, feedID: String,
                 coverage: OptionDailyCoverage, declaredScope: String, underlying: OptionDailyUnderlying,
                 contracts: [OptionDailyContractInput], rate: Money, dividendYield: Money, source: OptionLabSource,
-                calendar: OptionDailyCalendar? = nil, sessionCloseAt: Date? = nil, methodVersion: String = currentMethodVersion) {
+                calendar: OptionDailyCalendar? = nil, sessionCloseAt: Date? = nil, methodVersion: String = currentMethodVersion,
+                chainEvidence: OptionChainCapture? = nil) {
         self.id = id; self.createdAt = createdAt; self.asOf = asOf; self.sessionCloseAt = sessionCloseAt; self.session = session
         self.sessionTimeZoneID = sessionTimeZoneID; self.symbol = symbol; self.feedID = feedID; self.coverage = coverage
         self.declaredScope = declaredScope; self.underlying = underlying; self.contracts = contracts
-        self.rate = rate; self.dividendYield = dividendYield; self.source = source; self.calendar = calendar; self.methodVersion = methodVersion
+        self.rate = rate; self.dividendYield = dividendYield; self.source = source; self.calendar = calendar; self.methodVersion = methodVersion; self.chainEvidence = chainEvidence
     }
 }
 public struct OptionDailyContractSummary: Codable, Equatable, Sendable {

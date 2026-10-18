@@ -126,6 +126,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public var pricing = OptionLabPricingDraft()
     public var scenario = OptionLabScenarioDraft()
     public var risk = OptionLabRiskDraft()
+    public private(set) var chainEvidence: OptionChainSelectionEvidence?
     public private(set) var ledgerBasis: OptionLabLedgerBasis?
     private var originalAsOf: Date?
     private var originalSettlementAt: Date?
@@ -136,6 +137,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public var right: OptionLabRight { strategy == .coveredCall || strategy == .callCreditSpread ? .call : .put }
 
     public init(input: OptionLabInput) {
+        chainEvidence = input.chainEvidence
         strategy = input.strategy
         origin = input.underlying.source.origin == .synthetic || input.shortLeg.source.origin == .synthetic || input.longLeg?.source.origin == .synthetic
             || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
@@ -228,7 +230,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
                 source: .init(origin: origin, reference: expiryReference, enteredAt: createdAt)), scenarioPrices: prices,
             pricing: pricing.build(origin: origin, enteredAt: createdAt),
             risk: risk.build(short: short, long: long, origin: origin, enteredAt: createdAt),
-            scenario: scenario.build(origin: origin, enteredAt: createdAt))
+            scenario: scenario.build(origin: origin, enteredAt: createdAt), chainEvidence: chainEvidence)
     }
 }
 private func optionDraftTimestamp(_ date: Date) -> String {

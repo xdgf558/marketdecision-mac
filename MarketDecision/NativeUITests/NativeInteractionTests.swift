@@ -186,6 +186,54 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
         XCTAssertFalse(cash.exists)
     }
+    func testOptionChainExplicitSelectionReplayAndDraftHandoff() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
+        researchTab("期权链")
+        let load = mainWindow.buttons["optionChainLoadSynthetic"]
+        XCTAssertTrue(load.waitForExistence(timeout: 15)); waitEnabled(load); load.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionChainOrigin"])
+        waitText("声明范围完整", in: mainWindow.staticTexts["optionChainCoverage"])
+        let handoff = mainWindow.buttons["optionChainHandOff"]
+        XCTAssertTrue(handoff.waitForExistence(timeout: 5)); XCTAssertFalse(handoff.isEnabled)
+        let saveCapture = mainWindow.buttons["optionChainSave"]
+        waitEnabled(saveCapture); saveCapture.click(); waitEnabled(saveCapture, false)
+        waitText("已保存采集", in: mainWindow.staticTexts["optionChainSavedStatus"])
+        researchTab("采集目录")
+        let reload = mainWindow.buttons["optionChainReload"]
+        waitEnabled(reload); reload.click()
+        let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionChainOpen-")).firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 15)); waitEnabled(open); open.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionChainOrigin"])
+        waitText("当前来源已完整重放核对", in: mainWindow.staticTexts["optionChainSavedStatus"])
+        XCTAssertFalse(handoff.isEnabled) // Opening never silently chooses the first contract.
+        let scroll = mainWindow.scrollViews.element(boundBy: 0)
+        func reveal(_ element: XCUIElement, delta: CGFloat) {
+            for _ in 0..<24 where !element.exists || !element.isHittable { scroll.scroll(byDeltaX: 0, deltaY: delta) }
+            XCTAssertTrue(element.exists && element.isHittable, mainWindow.debugDescription)
+        }
+        let expiry = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionChainExpiry-")).firstMatch
+        reveal(expiry, delta: -80); expiry.click()
+        let short = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionChainShort-")).firstMatch
+        reveal(short, delta: -80); short.click()
+        reveal(handoff, delta: 80); waitEnabled(handoff); handoff.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionLabOrigin"])
+        let symbol = mainWindow.textFields["optionLabSymbol"]
+        XCTAssertTrue(symbol.waitForExistence(timeout: 5))
+        XCTAssertFalse((symbol.value as? String ?? "").isEmpty)
+        let settlement = mainWindow.textFields["optionLabSettlementAt"]
+        reveal(settlement, delta: -80)
+        XCTAssertEqual(settlement.value as? String, "") // No inferred 16:00 settlement.
+        let saveExperiment = mainWindow.buttons["optionLabSave"]
+        XCTAssertFalse(saveExperiment.isEnabled)
+        let calculate = mainWindow.buttons["optionLabCalculate"]
+        waitEnabled(calculate); calculate.click()
+        XCTAssertTrue(mainWindow.staticTexts["optionLabInputError"].waitForExistence(timeout: 5))
+        XCTAssertFalse(saveExperiment.isEnabled) // Missing assumptions do not produce a report.
+        // No provider request, account, Keychain or file importer/exporter is invoked.
+    }
     func testOptionDailySummaryReplayAndArchivePreviewCancellation() {
         configure(); app.launch()
         XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))

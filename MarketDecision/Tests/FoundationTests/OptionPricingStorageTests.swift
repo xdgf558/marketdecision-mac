@@ -63,7 +63,7 @@ struct OptionPricingStorageTests {
         #expect(saved.report == report)
         let stored = try database.read { try Data.fetchOne($0, sql: "SELECT report_json FROM option_lab_documents") }
         #expect(stored == bytes)
-        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2"])
+        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3"])
     }
 
     @Test func pricedSnapshotReopensFromDiskWithBothSigmaSourcesAndCompleteAssumptions() async throws {

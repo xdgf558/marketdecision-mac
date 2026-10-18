@@ -13,9 +13,11 @@ public struct OptionLabArchiveCounts: Codable, Equatable, Sendable {
     public let contractSummaries: Int
     /// Embedded read-only account/event evidence, not a backup of the ledger DB.
     public let embeddedLedgerBases: Int
-    public init(experiments: Int, dailySummaries: Int, historyReports: Int, contractSummaries: Int = 0, embeddedLedgerBases: Int = 0) {
+    public let chainCaptures: Int
+    public init(experiments: Int, dailySummaries: Int, historyReports: Int, contractSummaries: Int = 0, embeddedLedgerBases: Int = 0, chainCaptures: Int = 0) {
         self.experiments = experiments; self.dailySummaries = dailySummaries; self.historyReports = historyReports
         self.contractSummaries = contractSummaries; self.embeddedLedgerBases = embeddedLedgerBases
+        self.chainCaptures = chainCaptures
     }
 }
 public struct OptionLabArchiveStatus: Equatable, Sendable {
