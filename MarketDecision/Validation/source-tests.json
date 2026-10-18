@@ -222,6 +222,10 @@
     {"path": "App/OptionArchiveViews.swift", "kind": "build_only", "suites": [], "reason": "Native SwiftUI history/archive composition is built; synthetic interaction is separately recorded and actual file panels remain NOT EXECUTED."}
   ],
   "tests": [
+    {"selector": "FoundationTests.OptionProviderComparisonTests/observationCannotBeReceivedBeforeItsClaimedValuationTime()", "source": "Tests/FoundationTests/OptionProviderComparisonTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionProviderComparisonTests/sortedObjectFieldEncodingIsStableAcrossRepeatedDecode()", "source": "Tests/FoundationTests/OptionProviderComparisonTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionProviderComparisonTests/unknownProviderFieldCannotDecodeAsSilentlyIgnoredEvidence()", "source": "Tests/FoundationTests/OptionProviderComparisonTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionProviderComparisonTests/redecodedProviderDocumentRemainsIdempotentAfterDatabaseReopen()", "source": "Tests/FoundationTests/OptionProviderComparisonTests.swift", "execution": "required"},
     {"selector": "FoundationTests.TradeOptionAttributionTests/sharedIdentityCannotReferToConflictingSourceBytesOrReports()", "source": "Tests/FoundationTests/TradeOptionAttributionTests.swift", "execution": "required"},
     {"selector": "FoundationTests.TradeOptionAttributionTests/nonOptionOpeningRoundIsExplicitlyExcludedWithoutChangingOptionPnL()", "source": "Tests/FoundationTests/TradeOptionAttributionTests.swift", "execution": "required"},
     {"selector": "FoundationTests.TradeOptionAttributionTests/reversedOpeningCannotKeepAnObservationBinding()", "source": "Tests/FoundationTests/TradeOptionAttributionTests.swift", "execution": "required"},

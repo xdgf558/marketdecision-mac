@@ -89,6 +89,48 @@ public struct OptionProviderObservation: Codable, Equatable, Sendable {
         self.valuationAt = valuationAt; self.quoteTime = quoteTime; self.underlyingQuoteTime = underlyingQuoteTime
         self.receivedAt = receivedAt; self.source = source; self.model = model; self.values = values
     }
+    private enum CodingKeys: String, CodingKey {
+        case id, providerID, feedID, contract, valuationAt, quoteTime, underlyingQuoteTime, receivedAt, source, model, values
+    }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        providerID = try container.decode(String.self, forKey: .providerID)
+        feedID = try container.decode(String.self, forKey: .feedID)
+        contract = try container.decode(OptionProviderContract.self, forKey: .contract)
+        valuationAt = try container.decode(Date.self, forKey: .valuationAt)
+        quoteTime = try container.decode(Date.self, forKey: .quoteTime)
+        underlyingQuoteTime = try container.decode(Date.self, forKey: .underlyingQuoteTime)
+        receivedAt = try container.decode(Date.self, forKey: .receivedAt)
+        source = try container.decode(OptionLabSource.self, forKey: .source)
+        model = try container.decode(OptionProviderModel.self, forKey: .model)
+        let object = try container.decode([String: OptionProviderValue].self, forKey: .values)
+        var decoded: [OptionProviderField: OptionProviderValue] = [:]
+        for (key, value) in object {
+            guard let field = OptionProviderField(rawValue: key) else {
+                throw DecodingError.dataCorruptedError(forKey: .values, in: container,
+                    debugDescription: "Unknown provider comparison field")
+            }
+            decoded[field] = value
+        }
+        values = decoded
+    }
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(providerID, forKey: .providerID)
+        try container.encode(feedID, forKey: .feedID)
+        try container.encode(contract, forKey: .contract)
+        try container.encode(valuationAt, forKey: .valuationAt)
+        try container.encode(quoteTime, forKey: .quoteTime)
+        try container.encode(underlyingQuoteTime, forKey: .underlyingQuoteTime)
+        try container.encode(receivedAt, forKey: .receivedAt)
+        try container.encode(source, forKey: .source)
+        try container.encode(model, forKey: .model)
+        // Non-String enum dictionaries otherwise encode as nondeterministic arrays;
+        // an object lets sorted-key storage preserve hashes across decode/processes.
+        try container.encode(Dictionary(uniqueKeysWithValues: values.map { ($0.key.rawValue, $0.value) }), forKey: .values)
+    }
 }
 public struct OptionProviderComparisonInput: Codable, Equatable, Sendable {
     public let id: UUID

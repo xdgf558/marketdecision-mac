@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import CoreDomain
 import OptionsAnalytics
+import PortfolioEngine
+import Persistence
 
 @Suite("Offline provider IV and Greeks comparison")
 struct OptionProviderComparisonTests {
@@ -125,6 +127,27 @@ struct OptionProviderComparisonTests {
         }
     }
 
+    @Test func observationCannotBeReceivedBeforeItsClaimedValuationTime() throws {
+        let input = try OptionProviderComparisonDemo.input()
+        let localInput = try mutate(input.localReport.input) { json in
+            for key in ["shortLeg", "underlying"] {
+                var item = try #require(json[key] as? [String: Any])
+                item["quotedAt"] = try #require(item["quotedAt"] as? Double) - 5
+                item["receivedAt"] = try #require(item["receivedAt"] as? Double) - 5
+                json[key] = item
+            }
+        }
+        let local = try OptionLabEngine.calculate(localInput)
+        let observation = try mutate(input.observations[0]) { json in
+            for key in ["quoteTime", "underlyingQuoteTime", "receivedAt"] {
+                json[key] = try #require(json[key] as? Double) - 5
+            }
+        }
+        #expect(throws: OptionProviderComparisonError.mismatchedTime) {
+            try OptionProviderComparisonEngine.calculate(copy(input, localReport: local, observations: [observation]))
+        }
+    }
+
     @Test func wrongUnitsRejectWithoutImplicitScaling() throws {
         let input = try OptionProviderComparisonDemo.input(), item = input.observations[0]
         let wrong: [(OptionProviderField, OptionProviderUnit)] = [(.iv, .volatilityPercent), (.delta, .perContract),
@@ -239,6 +262,48 @@ struct OptionProviderComparisonTests {
             }
             #expect(throws: OptionProviderComparisonError.incompatibleReport) { try OptionProviderComparisonEngine.replay(changed) }
         }
+    }
+
+    @Test func sortedObjectFieldEncodingIsStableAcrossRepeatedDecode() throws {
+        let original = try OptionProviderComparisonDemo.input()
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let expected = try encoder.encode(original)
+        let object = try #require(JSONSerialization.jsonObject(with: expected) as? [String: Any])
+        let observations = try #require(object["observations"] as? [[String: Any]])
+        let values = try #require(observations[0]["values"] as? [String: Any])
+        #expect(Set(values.keys) == Set(OptionProviderField.allCases.map(\.rawValue)))
+        for _ in 0..<20 {
+            let decoded = try JSONDecoder().decode(OptionProviderComparisonInput.self, from: expected)
+            #expect(try encoder.encode(decoded) == expected)
+        }
+    }
+
+    @Test func unknownProviderFieldCannotDecodeAsSilentlyIgnoredEvidence() throws {
+        let item = try OptionProviderComparisonDemo.input().observations[0]
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        var values = try #require(object["values"] as? [String: Any])
+        values["unsupported"] = ["value": 1, "unit": "perShareDelta"]
+        object["values"] = values
+        let bytes = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(OptionProviderObservation.self, from: bytes) }
+    }
+
+    @Test func redecodedProviderDocumentRemainsIdempotentAfterDatabaseReopen() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent("options.sqlite").path
+        let store = try OptionEvidenceStore(path: path)
+        let input = OptionEvidenceInput.providerComparison(try OptionProviderComparisonDemo.input())
+        let initialRevision = try await store.revision()
+        let first = try await store.save(input, expectedRevision: initialRevision)
+        let decoded = try JSONDecoder().decode(OptionEvidenceInput.self, from: JSONEncoder().encode(first.report.input))
+        let reopened = try OptionEvidenceStore(path: path)
+        let revision = try await reopened.revision()
+        let second = try await reopened.save(decoded, expectedRevision: revision)
+        #expect(first.inputHash == second.inputHash && first.reportHash == second.reportHash)
+        #expect(first.report == second.report && second.replayMatched)
+        #expect(try await reopened.revision() == revision)
     }
 
     private func field(_ field: OptionProviderField, in report: OptionProviderComparisonReport) throws -> OptionProviderComparisonField {

@@ -110,6 +110,7 @@ public enum OptionProviderComparisonEngine {
               item.valuationAt == scenario.asOf, item.quoteTime == leg.quotedAt,
               item.underlyingQuoteTime == scenario.underlying.quotedAt,
               item.receivedAt >= item.quoteTime, item.receivedAt >= item.underlyingQuoteTime,
+              item.receivedAt >= item.valuationAt,
               item.receivedAt <= scenario.asOf else { throw OptionProviderComparisonError.mismatchedTime }
         for (field, observation) in item.values {
             guard observation.unit == field.unit else { throw OptionProviderComparisonError.invalidUnit }
