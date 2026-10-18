@@ -112,7 +112,7 @@ struct OptionEvidenceContent: View {
             case .delta25(let value): deltaResult(value)
             case .tradeAttribution(let value): attributionResult(value)
             }
-        }.accessibilityIdentifier("optionEvidenceResult")
+        }
     }
     private func providerResult(_ report: OptionProviderComparisonReport) -> some View {
         VStack(alignment: .leading, spacing: 12) {
