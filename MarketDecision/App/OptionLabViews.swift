@@ -994,11 +994,16 @@ struct OptionLabContent: View {
         }
     }
     private func containsSynthetic(_ report: OptionLabReport) -> Bool {
-        report.input.underlying.source.origin == .synthetic || report.input.shortLeg.source.origin == .synthetic
-            || report.input.longLeg?.source.origin == .synthetic || report.input.expiry.source.origin == .synthetic
-            || report.input.capital.origin == .synthetic || report.input.pricing?.source.origin == .synthetic
-            || report.input.scenario?.source.origin == .synthetic
-            || report.input.risk?.containsSyntheticInput == true
+        let input = report.input
+        // Keep the same provenance rule with bounded Swift 6.1 type inference.
+        let primarySynthetic: Bool = input.underlying.source.origin == .synthetic
+            || input.shortLeg.source.origin == .synthetic
+        let contractSynthetic: Bool = input.longLeg?.source.origin == .synthetic
+            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
+        let pricingSynthetic: Bool = input.pricing?.source.origin == .synthetic
+        let riskSynthetic: Bool = input.risk?.containsSyntheticInput == true
+        let scenarioSynthetic: Bool = input.scenario?.source.origin == .synthetic
+        return primarySynthetic || contractSynthetic || pricingSynthetic || riskSynthetic || scenarioSynthetic
     }
     private func strategyName(_ strategy: OptionLabStrategy) -> String {
         switch strategy { case .cashSecuredPut: "现金担保卖 Put"; case .coveredCall: "备兑 Call"; case .putCreditSpread: "Put 信用价差"; case .callCreditSpread: "Call 信用价差" }
