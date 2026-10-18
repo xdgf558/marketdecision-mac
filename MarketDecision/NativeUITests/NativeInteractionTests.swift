@@ -186,6 +186,51 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
         XCTAssertFalse(cash.exists)
     }
+    func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
+        researchTab("数据对照")
+        let template = mainWindow.buttons["optionEvidenceTemplate"]
+        let calculate = mainWindow.buttons["optionEvidenceCalculate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        template.click(); waitEnabled(calculate); calculate.click()
+        XCTAssertTrue(mainWindow.staticTexts["optionEvidenceProviderTitle"].waitForExistence(timeout: 15))
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionEvidenceOrigin"])
+        let save = mainWindow.buttons["optionEvidenceSave"]
+        waitEnabled(save); save.click(); waitEnabled(save, false)
+        waitText("完整重放核对", in: mainWindow.staticTexts["optionEvidenceReplay"])
+        researchTab("25-Delta 波动率")
+        XCTAssertFalse(mainWindow.staticTexts["optionEvidenceProviderTitle"].exists)
+        waitEnabled(calculate, false)
+        waitEnabled(template); template.click(); waitEnabled(calculate); calculate.click()
+        XCTAssertTrue(mainWindow.staticTexts["optionEvidenceDeltaTitle"].waitForExistence(timeout: 15))
+        waitText("Call IV", in: mainWindow.staticTexts["optionEvidenceDeltaValues"])
+        researchTab("交易时点归因")
+        XCTAssertFalse(mainWindow.staticTexts["optionEvidenceDeltaTitle"].exists)
+        waitEnabled(template); template.click(); waitEnabled(calculate); calculate.click()
+        XCTAssertTrue(mainWindow.staticTexts["optionEvidenceAttributionTitle"].waitForExistence(timeout: 15))
+        // Reload clears unsaved numbers; catalog rows alone cannot publish cached results.
+        let scroll = mainWindow.scrollViews.firstMatch
+        let reload = mainWindow.buttons["optionEvidenceReload"]
+        for _ in 0..<24 where !reload.exists || !reload.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -150) }
+        XCTAssertTrue(reload.exists && reload.isHittable, mainWindow.debugDescription)
+        waitEnabled(reload); reload.click()
+        let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionEvidenceOpen-")).firstMatch
+        for _ in 0..<24 where !open.exists || !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -100) }
+        XCTAssertTrue(open.exists && open.isHittable, mainWindow.debugDescription)
+        waitEnabled(open); open.click()
+        let status = mainWindow.staticTexts["optionEvidenceReplay"]
+        for _ in 0..<24 where !status.exists || !status.isHittable { scroll.scroll(byDeltaX: 0, deltaY: 150) }
+        waitText("完整重放核对", in: status)
+        XCTAssertTrue(mainWindow.staticTexts["optionEvidenceProviderTitle"].exists)
+        // Opening the provider report also synchronizes the kind picker. A deliberate
+        // switch invalidates that reopened result and leaves no enabled save action.
+        researchTab("25-Delta 波动率")
+        XCTAssertFalse(mainWindow.staticTexts["optionEvidenceProviderTitle"].exists)
+        waitEnabled(save, false)
+    }
     func testPortfolioGreeksCoverageFrozenReplayAndSyntheticIsolation() {
         configure(); app.launch()
         XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))

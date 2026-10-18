@@ -43,6 +43,9 @@ extension AppEnvironment {
             try Task.checkCancellation()
             return try await ledger.snapshot()
         }, coordinator: optionTransferCoordinator))
+        let evidenceStore = try await store.makeEvidenceStore()
+        try Task.checkCancellation()
+        model.installEvidence(OptionEvidenceWorkspaceModel(storage: evidenceStore, coordinator: optionTransferCoordinator))
         return model
     }
 }
