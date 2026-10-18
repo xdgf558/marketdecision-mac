@@ -134,10 +134,10 @@ struct OptionDailyStorageTests {
         let saved = try await store.save(id: input.id, input: input, expectedRevision: store.revision())
         let oldBytes = try db.read { try Row.fetchAll($0, sql: "SELECT * FROM option_lab_documents") }, oldRevision = try await store.revision()
         try db.transaction { connection in
-            for table in ["option_chain_documents", "option_chain_catalog", "option_history_documents", "option_history_catalog", "option_daily_contracts", "option_daily_chains", "option_daily_documents", "option_daily_catalog"] {
+            for table in ["portfolio_greeks_documents", "portfolio_greeks_catalog", "option_chain_documents", "option_chain_catalog", "option_history_documents", "option_history_catalog", "option_daily_contracts", "option_daily_chains", "option_daily_documents", "option_daily_catalog"] {
                 try connection.execute(sql: "DROP TABLE " + table)
             }
-            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('options-lab.v2','options-lab.v3')")
+            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('options-lab.v2','options-lab.v3','options-lab.v4')")
         }
         let upgraded = try DatabaseStore(path: path.path, purpose: .optionsLab), reopened = try OptionLabStore(database: upgraded)
         #expect(try upgraded.read { try Row.fetchAll($0, sql: "SELECT * FROM option_lab_documents") } == oldBytes)

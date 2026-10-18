@@ -36,7 +36,7 @@ public struct DatabaseStore: Sendable {
         case .portfolioLedger:
             coreMigrations = [Self.portfolioLedgerMigration, Self.portfolioPerformanceMigration, Self.portfolioArchiveMigration]
         case .optionsLab:
-            coreMigrations = [Self.optionsLabMigration, Self.optionDailyMigration, Self.optionChainMigration]
+            coreMigrations = [Self.optionsLabMigration, Self.optionDailyMigration, Self.optionChainMigration, Self.portfolioGreeksMigration]
         default:
             coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
                 + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration, Self.secValuationSupplementMigration] : [])

@@ -153,7 +153,7 @@ struct OptionChainStorageTests {
         let saved = try await source.save(capture, expectedRevision: source.revision())
         let raw = try await OptionLabArchiveStore(database: db).exportArchive(), files = try ResearchZIP.decode(raw)
         let manifest = try JSONDecoder().decode(OptionLabArchiveCodec.Manifest.self, from: #require(files["manifest.json"]))
-        #expect(manifest.format == "options-lab-archive.v2" && !manifest.encrypted)
+        #expect(manifest.format == "options-lab-archive.v3" && !manifest.encrypted)
         let target = try odsDB(), restore = try OptionLabArchiveStore(database: target)
         let plan = try await restore.prepareRestore(raw, mode: .replace, expectedRevision: restore.status().revision)
         #expect(plan.result.chainCaptures == 1)
@@ -203,7 +203,7 @@ struct OptionChainStorageTests {
         let source = try odsDB(), lab = try OptionLabStore(database: source), input = try OptionLabDemo.input()
         let saved = try await lab.save(id: input.id, input: input, expectedRevision: lab.revision())
         let raw = try ocsLegacyArchive(source), decoded = try OptionLabArchiveCodec.decode(raw)
-        #expect(decoded.format == "options-lab-state.v2" && decoded.counts.chainCaptures == 0)
+        #expect(decoded.format == "options-lab-state.v3" && decoded.counts.chainCaptures == 0)
         #expect(try decoded.rows("option_chain_catalog").isEmpty && decoded.rows("option_chain_documents").isEmpty)
         for mode in [OptionLabRestoreMode.merge, .replace] {
             let target = try odsDB(), chain = try OptionChainStore(database: target), restore = try OptionLabArchiveStore(database: target)
@@ -299,13 +299,13 @@ struct OptionChainStorageTests {
         _ = try await daily.saveHistory(odsHistory(), expectedRevision: daily.revision())
         let before = try db.read(OptionLabArchiveState.capture)
         try db.transaction { connection in
-            try connection.execute(sql: "DROP TABLE option_chain_documents; DROP TABLE option_chain_catalog;")
-            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier='options-lab.v3'")
+            try connection.execute(sql: "DROP TABLE portfolio_greeks_documents; DROP TABLE portfolio_greeks_catalog; DROP TABLE option_chain_documents; DROP TABLE option_chain_catalog;")
+            try connection.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN ('options-lab.v3','options-lab.v4')")
         }
         let upgraded = try DatabaseStore(path: path.path, purpose: .optionsLab)
         #expect(try upgraded.read(OptionLabArchiveState.capture) == before)
         #expect(try await OptionLabStore(database: upgraded).makeChainStore().summaries().isEmpty)
-        #expect(try upgraded.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3"])
+        #expect(try upgraded.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2", "options-lab.v3", "options-lab.v4"])
     }
     @Test func chainStoreCannotUseResearchOrLedgerDatabaseAndCancelledSaveDoesNotWrite() async throws {
         for purpose in [DatabasePurpose.business, .offlineIssuerResearch, .secResearch, .portfolioLedger] {
