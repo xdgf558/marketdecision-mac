@@ -175,7 +175,7 @@ struct PortfolioGreeksContent: View {
             Text("覆盖 \(report.coverage.coveredPositions) / \(report.coverage.totalPositions) 个批次 · 缺口 \(report.coverage.missingPositions)")
                 .font(.headline).accessibilityIdentifier("portfolioGreeksCoverage")
             Text(report.coverage.isComplete ? "声明持仓范围完整覆盖" : "覆盖不完整：以下数值仅属于已覆盖部分，完整组合汇总不可用。")
-                .foregroundStyle(report.coverage.isComplete ? .secondary : .orange)
+                .foregroundStyle(report.coverage.isComplete ? Color.secondary : Color.orange)
                 .accessibilityIdentifier("portfolioGreeksCompleteness")
             Text("账户 \(report.input.accountID) · 评估 \(dateText(report.input.asOf))\n冻结账本版本：\(report.input.ledgerRevision.uuidString)")
                 .font(.caption).textSelection(.enabled)
