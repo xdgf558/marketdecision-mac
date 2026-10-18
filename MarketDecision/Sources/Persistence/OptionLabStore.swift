@@ -137,9 +137,15 @@ public actor OptionLabStore: OptionLabStorage {
         """
     private static func summary(report: OptionLabReport, inputHash: String, reportHash: String) -> OptionLabSummary {
         let input = report.input
-        let synthetic = input.underlying.source.origin == .synthetic || input.shortLeg.source.origin == .synthetic
-            || input.longLeg?.source.origin == .synthetic || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
-            || input.pricing?.source.origin == .synthetic
+        // Bound inference work for Swift 6.1 without dropping any nested source.
+        let primarySynthetic: Bool = input.underlying.source.origin == .synthetic
+            || input.shortLeg.source.origin == .synthetic
+        let contractSynthetic: Bool = input.longLeg?.source.origin == .synthetic
+            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
+        let pricingSynthetic: Bool = input.pricing?.source.origin == .synthetic
+        let riskSynthetic: Bool = input.risk?.containsSyntheticInput == true
+        let scenarioSynthetic: Bool = input.scenario?.source.origin == .synthetic
+        let synthetic = primarySynthetic || contractSynthetic || pricingSynthetic || riskSynthetic || scenarioSynthetic
         return .init(id: input.id, createdAt: input.createdAt, asOf: input.asOf,
             strategy: input.strategy, origin: synthetic ? .synthetic : .manual,
             underlyingSymbol: report.input.underlying.symbol, inputHash: inputHash, reportHash: reportHash)

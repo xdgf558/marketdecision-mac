@@ -31,6 +31,35 @@ public struct OptionLabPricingDraft: Equatable, Sendable {
     }
 }
 
+/// Optional instantaneous scenario axes. Percent-of-spot shocks and absolute
+/// volatility percentage points have deliberately different input units.
+public struct OptionLabScenarioDraft: Equatable, Sendable {
+    public var enabled = false
+    public var spotShocks = ""
+    public var volatilityPointShocks = ""
+    public var sourceReference = ""
+    public private(set) var methodVersion = "options.scenario-matrix.v1"
+    public init() {}
+    init(_ input: OptionLabScenarioInput) {
+        enabled = true
+        spotShocks = input.spotShocks.map(\.decimalString).joined(separator: ", ")
+        volatilityPointShocks = input.volatilityPointShocks.map(\.decimalString).joined(separator: ", ")
+        sourceReference = input.source.reference; methodVersion = input.methodVersion
+    }
+    func build(origin: OptionLabOrigin, enteredAt: Date) throws -> OptionLabScenarioInput? {
+        guard enabled else { return nil }
+        guard !sourceReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw OptionLabDraftError.missingField }
+        func axis(_ text: String) throws -> [Money] {
+            let values = text.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            guard !values.isEmpty, values.allSatisfy({ !$0.isEmpty }) else { throw OptionLabDraftError.missingField }
+            return try values.map { try Money($0) }
+        }
+        return try .init(source: .init(origin: origin, reference: sourceReference, enteredAt: enteredAt),
+            spotShocks: axis(spotShocks), volatilityPointShocks: axis(volatilityPointShocks), methodVersion: methodVersion)
+    }
+}
+
 public struct OptionLabLegDraft: Equatable, Sendable {
     public var contractID = ""
     public var strike = ""
@@ -95,6 +124,8 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public var capitalReference = ""
     public var scenarioPrices = ""
     public var pricing = OptionLabPricingDraft()
+    public var scenario = OptionLabScenarioDraft()
+    public var risk = OptionLabRiskDraft()
     public private(set) var ledgerBasis: OptionLabLedgerBasis?
     private var originalAsOf: Date?
     private var originalSettlementAt: Date?
@@ -108,7 +139,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         strategy = input.strategy
         origin = input.underlying.source.origin == .synthetic || input.shortLeg.source.origin == .synthetic || input.longLeg?.source.origin == .synthetic
             || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
-            || input.pricing?.source.origin == .synthetic ? .synthetic : .manual
+            || input.pricing?.source.origin == .synthetic || input.scenario?.source.origin == .synthetic || input.risk?.containsSyntheticInput == true ? .synthetic : .manual
         originalAsOf = input.asOf; originalSettlementAt = input.expiry.settlementAt
         originalUnderlyingQuotedAt = input.underlying.quotedAt; originalUnderlyingReceivedAt = input.underlying.receivedAt
         symbol = input.underlying.symbol; asset = input.underlying.asset; asOf = optionDraftTimestamp(input.asOf)
@@ -126,6 +157,8 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         capitalReference = input.capital.origin == .ledger ? "" : input.capital.reference
         scenarioPrices = input.scenarioPrices.map(\.decimalString).joined(separator: "\n")
         pricing = input.pricing.map(OptionLabPricingDraft.init) ?? .init()
+        scenario = input.scenario.map(OptionLabScenarioDraft.init) ?? .init()
+        risk = input.risk.map { .init($0, shortID: input.shortLeg.contractID, longID: input.longLeg?.contractID) } ?? .init()
     }
     public static func synthetic(strategy: OptionLabStrategy) throws -> Self { try .init(input: OptionLabDemo.input(strategy: strategy)) }
     /// Explicit example values only; this method cannot populate a manual draft.
@@ -133,6 +166,24 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         guard origin == .synthetic else { throw OptionLabDraftError.missingField }
         pricing.enabled = true; pricing.rate = "0.05"; pricing.dividendYield = "0.01"; pricing.volatility = "0.25"
         pricing.sourceReference = "SYNTHETIC-OPTION-PRICING; r=5%, continuous q=1%, theoretical sigma=25%; not market data"
+    }
+    /// A single explicit example action fills all optional research assumptions.
+    /// The operation is atomic for the draft and cannot relabel manual input.
+    public mutating func useSyntheticRiskScenarioAssumptions() throws {
+        guard origin == .synthetic else { throw OptionLabDraftError.missingField }
+        var replacement = self
+        try replacement.useSyntheticPricingAssumptions()
+        replacement.risk.enabled = false; replacement.scenario.enabled = false
+        let base = try replacement.build(createdAt: replacement.evaluationDate())
+        let assumptions = try OptionLabRiskDemo.input(for: base)
+        replacement.risk = .init(assumptions, shortID: base.shortLeg.contractID, longID: base.longLeg?.contractID)
+        try replacement.useSyntheticScenarioAssumptions()
+        self = replacement
+    }
+    public mutating func useSyntheticScenarioAssumptions() throws {
+        guard origin == .synthetic else { throw OptionLabDraftError.missingField }
+        scenario.enabled = true; scenario.spotShocks = "-0.1, 0, 0.1"; scenario.volatilityPointShocks = "-10, 0, 10"
+        scenario.sourceReference = "SYNTHETIC-OPTION-SCENARIO; instantaneous spot and absolute IV-point shocks; not a forecast"
     }
     public mutating func useLedgerBasis(_ basis: OptionLabLedgerBasis) throws {
         guard let capital = basis.capital, basis.underlying.symbol == symbol, basis.asOf == (try evaluationDate()),
@@ -167,14 +218,17 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         }
         let prices = try scenarioPrices.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.map { try Money($0) }
+        let short = try shortLeg.build(symbol: symbol, right: right, expiry: expiry, source: source)
+        let long = try hasLongLeg ? longLeg.build(symbol: symbol, right: right, expiry: expiry, source: source) : nil
         return try .init(createdAt: createdAt, asOf: evaluation, strategy: strategy,
-            shortLeg: shortLeg.build(symbol: symbol, right: right, expiry: expiry, source: source),
-            longLeg: hasLongLeg ? longLeg.build(symbol: symbol, right: right, expiry: expiry, source: source) : nil,
+            shortLeg: short, longLeg: long,
             underlying: underlying, capital: capital,
             policy: .init(lambda: Money(lambda), openingFeePerContract: Money(openingFeePerContract), ticketFee: Money(ticketFee), terminalFeeTotal: Money(terminalFeeTotal)),
             expiry: .init(date: expiry, settlementAt: optionDraftDate(settlementAt, original: originalSettlementAt),
                 source: .init(origin: origin, reference: expiryReference, enteredAt: createdAt)), scenarioPrices: prices,
-            pricing: pricing.build(origin: origin, enteredAt: createdAt))
+            pricing: pricing.build(origin: origin, enteredAt: createdAt),
+            risk: risk.build(short: short, long: long, origin: origin, enteredAt: createdAt),
+            scenario: scenario.build(origin: origin, enteredAt: createdAt))
     }
 }
 private func optionDraftTimestamp(_ date: Date) -> String {

@@ -143,13 +143,16 @@ public struct OptionLabInput: Sendable, Codable, Equatable {
     public let expiry: OptionLabExpiry
     public let scenarioPrices: [Money]
     public let pricing: OptionLabPricingInput?
+    public let risk: OptionLabRiskInput?
+    public let scenario: OptionLabScenarioInput?
     public init(id: UUID = UUID(), createdAt: Date, asOf: Date, strategy: OptionLabStrategy,
                 shortLeg: OptionLabLeg, longLeg: OptionLabLeg?, underlying: OptionLabUnderlying,
                 capital: OptionLabCapital, policy: OptionLabPolicy, expiry: OptionLabExpiry, scenarioPrices: [Money],
-                pricing: OptionLabPricingInput? = nil) {
+                pricing: OptionLabPricingInput? = nil, risk: OptionLabRiskInput? = nil, scenario: OptionLabScenarioInput? = nil) {
         self.id = id; self.createdAt = createdAt; self.asOf = asOf; self.strategy = strategy
         self.shortLeg = shortLeg; self.longLeg = longLeg; self.underlying = underlying
         self.capital = capital; self.policy = policy; self.expiry = expiry; self.scenarioPrices = scenarioPrices; self.pricing = pricing
+        self.risk = risk; self.scenario = scenario
     }
 }
 
@@ -205,6 +208,8 @@ public struct OptionLabReport: Sendable, Codable, Equatable {
     public let researchOnly: Bool
     public let limitations: [String]
     public let pricing: OptionLabPricingReport?
+    public let risk: OptionLabRiskReport?
+    public let scenario: OptionLabScenarioReport?
 }
 
 public enum OptionLabError: Error, Equatable, LocalizedError {

@@ -270,18 +270,25 @@ import XCTest
         waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
         researchTab("输入")
         let rate = mainWindow.textFields["optionLabPricingRate"]
-        XCTAssertTrue(rate.waitForExistence(timeout: 5))
-        waitEnabled(rate)
-        // Resolve the owning viewport once, then keep its structural index.
-        // A descendant-based query stops matching on macOS 15 if scrolling
-        // temporarily removes that descendant from the accessibility tree.
-        guard let editorIndex = mainWindow.scrollViews.allElementsBoundByIndex.firstIndex(where: {
-            $0.textFields["optionLabPricingRate"].exists
-        }) else {
-            XCTFail("Missing rate editor viewport: \(mainWindow.debugDescription)")
-            return
+        // Input and report tabs share this outer viewport and retain its offset.
+        // The rate belongs to a LazyVGrid: on macOS 15 it may not enter the AX
+        // tree until scrolled into view. Never locate the viewport through it.
+        let editor = mainWindow.scrollViews.element(boundBy: 0)
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let origin = mainWindow.staticTexts["optionLabOrigin"]
+        func originFullyVisible() -> Bool {
+            guard origin.exists else { return false }
+            let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !origin.frame.isEmpty && !viewport.isEmpty
+                && origin.frame.minY >= viewport.minY && origin.frame.maxY <= viewport.maxY
         }
-        let editor = mainWindow.scrollViews.element(boundBy: editorIndex)
+        // Establish a known top anchor before searching downwards. Both loops
+        // are bounded; missing controls remain failures rather than skips.
+        for _ in 0..<30 where !originFullyVisible() { editor.scroll(byDeltaX: 0, deltaY: 160) }
+        XCTAssertTrue(originFullyVisible(), "Missing input top anchor: \(mainWindow.debugDescription)")
+        for _ in 0..<24 where !rate.exists { editor.scroll(byDeltaX: 0, deltaY: -80) }
+        XCTAssertTrue(rate.waitForExistence(timeout: 5), "Missing rate after scrolling: \(mainWindow.debugDescription)")
+        waitEnabled(rate)
         func rateFullyVisible() -> Bool {
             guard rate.exists else { return false }
             let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
@@ -322,6 +329,60 @@ import XCTest
         waitEnabled(saveSnapshot, false)
         researchTab("模型分析"); XCTAssertFalse(status.exists)
         // In-app synthetic controls only: no file panel, provider or Keychain.
+    }
+
+    func testOptionRiskScenarioExplicitEvidenceReplayAndInvalidation() {
+        configure(); app.launch()
+        XCTAssertTrue(app.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        let template = mainWindow.buttons["optionLabTemplate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let example = mainWindow.buttons["optionLabRiskScenarioSynthetic"]
+        XCTAssertTrue(example.waitForExistence(timeout: 5)); waitEnabled(example); example.click()
+        let calculate = mainWindow.buttons["optionLabCalculate"], saveSnapshot = mainWindow.buttons["optionLabSave"]
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot)
+        researchTab("风险与情景")
+        let status = mainWindow.staticTexts["optionLabRiskScenarioStatus"]
+        waitText("SYNTHETIC", in: status)
+        waitText("Acceptable", in: mainWindow.staticTexts["optionLabLiquidityGrade"])
+        waitText("已核对", in: mainWindow.staticTexts["optionLabEarningsState"])
+        let riskShot = XCTAttachment(screenshot: mainWindow.screenshot())
+        riskShot.name = "Options-offline-risk-synthetic-evidence"; riskShot.lifetime = .keepAlways; add(riskShot)
+        // The matrix is an actual displayed price-major grid, not only a stored
+        // input flag. Every one of the nine selected cells must expose a number.
+        for spot in ["-0.1", "0", "0.1"] {
+            for iv in ["-10", "0", "10"] {
+                let cell = mainWindow.staticTexts["optionLabScenarioCell-" + spot + "-" + iv]
+                XCTAssertTrue(cell.waitForExistence(timeout: 5))
+                let displayed = (cell.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? cell.label
+                XCTAssertNotNil(Double(displayed), cell.debugDescription)
+            }
+        }
+        waitText("INSTANTANEOUS", in: mainWindow.staticTexts["optionLabScenarioBoundary"])
+        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
+        waitText("已按完整输入重算", in: status)
+        app.typeKey("1", modifierFlags: .command); app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        researchTab("已保存")
+        let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
+        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
+        researchTab("风险与情景"); waitText("已按完整输入重算", in: status)
+        XCTAssertFalse(saveSnapshot.isEnabled)
+        let copy = mainWindow.buttons["optionLabCopy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5)); XCTAssertTrue(copy.isHittable); copy.click()
+        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot)
+        researchTab("风险与情景"); waitText("SYNTHETIC", in: status)
+        researchTab("输入")
+        let symbol = mainWindow.textFields["optionLabSymbol"]
+        XCTAssertTrue(symbol.waitForExistence(timeout: 5)); XCTAssertTrue(symbol.isHittable)
+        symbol.click(); symbol.typeKey("a", modifierFlags: .command); symbol.typeText("OTHER")
+        XCTAssertEqual(symbol.value as? String, "OTHER")
+        waitEnabled(saveSnapshot, false)
+        researchTab("风险与情景"); XCTAssertFalse(status.exists)
+        XCTAssertFalse(mainWindow.staticTexts["optionLabScenarioCell-0-0"].exists)
+        // No system file panel, network, real account, or Keychain is used.
     }
 
     func testResearchSnapshotInspectorAndReplay() {

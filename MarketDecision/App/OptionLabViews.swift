@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 import AppComposition
 import CoreDomain
+import DataContracts
 import OptionsAnalytics
 import PortfolioEngine
 import Persistence
@@ -54,7 +55,7 @@ struct OptionLabContent: View {
             if let message = model.message { Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionLabMessage") }
             if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
             Picker("实验室内容", selection: $section) {
-                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("已保存").tag("已保存")
+                Text("输入").tag("输入"); Text("结果").tag("结果"); Text("模型分析").tag("模型分析"); Text("风险与情景").tag("风险与情景"); Text("已保存").tag("已保存")
             }.pickerStyle(.segmented).accessibilityIdentifier("optionLabSections")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
@@ -62,6 +63,7 @@ struct OptionLabContent: View {
                     else if section == "已保存" { history }
                     else if let report = model.report {
                         if section == "模型分析" { pricingAnalysis(report) }
+                        else if section == "风险与情景" { riskAndScenarioAnalysis(report) }
                         else { result(report) }
                     }
                     else {
@@ -101,6 +103,13 @@ struct OptionLabContent: View {
                     do { model.draftChanged(); draft = try .synthetic(strategy: draft.strategy); section = "输入" }
                     catch { inputError = "合成模板未能建立，没有填入替代值。" }
                 }.disabled(blocked).accessibilityIdentifier("optionLabTemplate")
+                if draft.origin == .synthetic {
+                    Button("合成风险与情景示例") {
+                        do { try draft.useSyntheticRiskScenarioAssumptions(); section = "输入" }
+                        catch { inputError = "请先载入完整合成模板；未改动现有输入。" }
+                    }.disabled(blocked).help("明确填入合成流动性、事件与日历，r=5%、q=1%、理论 σ=25%，以及 3×3 价格/IV 情景；不是市场数据。")
+                        .accessibilityIdentifier("optionLabRiskScenarioSynthetic")
+                }
                 Button("计算") { calculate() }.disabled(blocked).keyboardShortcut("r", modifiers: [.command, .shift]).accessibilityIdentifier("optionLabCalculate")
                 Button("保存快照") {
                     let session = visibleSession, inputID = model.report?.input.id
@@ -138,6 +147,8 @@ struct OptionLabContent: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             pricingEditor
+            riskEditor
+            scenarioEditor
             GroupBox("标的报价（USD / 股）") {
                 fields {
                     field("买价 Bid", $draft.underlyingBid); field("卖价 Ask", $draft.underlyingAsk)
@@ -191,6 +202,161 @@ struct OptionLabContent: View {
             }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+    private var riskEditor: some View {
+        GroupBox("可选：流动性、财报与提前指派提示") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("显式启用离线风险核对", isOn: $draft.risk.enabled).accessibilityIdentifier("optionLabRiskEnabled")
+                Text("只核对这份手工或合成证据。没有填事件不等于没有事件；缺邻点、OI、可比成交量或完整日历时保留不足状态。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if draft.risk.enabled {
+                    field("风险证据来源／假设说明", $draft.risk.sourceReference, id: "optionLabRiskSource")
+                    liquidityEditor("卖出腿流动性", $draft.risk.shortLeg)
+                    if draft.hasLongLeg { liquidityEditor("买入保护腿流动性", $draft.risk.longLeg) }
+                    earningsEditor
+                    dividendEditor
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    private func liquidityEditor(_ title: String, _ value: Binding<OptionLabLiquidityDraft>) -> some View {
+        DisclosureGroup(title) {
+            VStack(alignment: .leading, spacing: 10) {
+                fields {
+                    field("OI 张数（可空，不是股数）", value.openInterest)
+                    field("OI 距当前发布会话数（可空）", value.oiSessionsAgo)
+                    field("成交量张数（可空）", value.volume)
+                    Picker("成交量比较口径", selection: value.volumeBasis) {
+                        Text("未核对").tag(OptionLabVolumeBasis.unverified)
+                        Text("完整会话").tag(OptionLabVolumeBasis.fullSession)
+                        Text("相同已过交易时长").tag(OptionLabVolumeBasis.sameElapsedTime)
+                    }
+                }
+                Toggle("确认 OI 是最新已发布版本", isOn: value.oiIsLatestPublished)
+                DisclosureGroup("相邻行权价报价（同标的、同到期、同 Put / Call）") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("每行以 | 分隔：合约标识 | 行权价 | Bid | Ask | Bid 张数 | Ask 张数 | tick | 报价时刻 | 接收时刻。时间须含时区；字段不自动从中心腿复制。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        TextEditor(text: value.neighbors).font(.system(.caption, design: .monospaced)).frame(minHeight: 100)
+                            .accessibilityLabel(title + "相邻报价")
+                        Toggle("明确声明这份邻点候选集合完整", isOn: value.neighborsComplete)
+                        Text("先固定完整候选集合中两侧最近邻点；任一无效则连续性不可用，不改用更远报价。未提供或未确认完整时同样保留缺失。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }.padding(.vertical, 8)
+        }
+    }
+    private var earningsEditor: some View {
+        DisclosureGroup("财报事件与 Expected Move") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("提供一份明确财报事件证据", isOn: $draft.risk.earnings.enabled)
+                if draft.risk.earnings.enabled {
+                    fields {
+                        field("事件版本", $draft.risk.earnings.eventVersion)
+                        field("事件来源／假设", $draft.risk.earnings.sourceReference)
+                        field("事件公告时刻（含时区）", $draft.risk.earnings.announcedAt)
+                        field("财报日期（纽约 YYYY-MM-DD）", $draft.risk.earnings.eventDate)
+                        Picker("财报时段", selection: $draft.risk.earnings.timing) {
+                            Text("未知").tag(CorporateEventTiming.unknown)
+                            Text("盘前").tag(CorporateEventTiming.beforeMarket)
+                            Text("盘中").tag(CorporateEventTiming.duringMarket)
+                            Text("盘后").tag(CorporateEventTiming.afterMarket)
+                        }
+                        certaintyPicker($draft.risk.earnings.certainty)
+                        Picker("是否允许跨财报持有", selection: $draft.risk.earnings.holdingChoice) {
+                            Text("未决定").tag(""); Text("允许").tag("allow"); Text("不允许").tag("deny")
+                        }
+                    }
+                    calendarEditor("财报窗口日历", $draft.risk.earnings.calendar)
+                    DisclosureGroup("事件后到期的 ATM 跨式候选") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("每行以 | 分隔：行权价 | 到期时刻 | Call Bid | Call Ask | Put Bid | Put Ask | 报价时刻。价格为 USD / 股，时间含时区。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            TextEditor(text: $draft.risk.earnings.straddles).font(.system(.caption, design: .monospaced)).frame(minHeight: 100)
+                                .accessibilityLabel("财报跨式候选")
+                            Toggle("明确声明到期与行权价候选集合完整", isOn: $draft.risk.earnings.straddleCoverageComplete)
+                        }
+                    }
+                }
+            }.padding(.vertical, 8)
+        }
+    }
+    private var dividendEditor: some View {
+        DisclosureGroup("除息与短腿提前指派提示") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("提供一份明确除息事件证据", isOn: $draft.risk.dividend.enabled)
+                if draft.risk.dividend.enabled {
+                    fields {
+                        field("除息事件版本", $draft.risk.dividend.eventVersion)
+                        field("除息来源／假设", $draft.risk.dividend.sourceReference)
+                        field("除息公告时刻（含时区）", $draft.risk.dividend.announcedAt)
+                        field("除息日期（纽约 YYYY-MM-DD）", $draft.risk.dividend.exDate)
+                        field("明确支付时刻（可空）", $draft.risk.dividend.paymentAt)
+                        field("每股现金股息（可空）", $draft.risk.dividend.amountPerShare)
+                        field("币种（仅 USD）", $draft.risk.dividend.currency)
+                        certaintyPicker($draft.risk.dividend.certainty)
+                    }
+                    calendarEditor("除息前会话日历", $draft.risk.dividend.calendar)
+                    Text("提前指派是启发式提示，不是美式 CRR 或离散股息定价。未满足提示条件也不表示安全或指派概率为零。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.vertical, 8)
+        }
+    }
+    private func certaintyPicker(_ certainty: Binding<CorporateEventCertainty>) -> some View {
+        Picker("证据确定性", selection: certainty) {
+            Text("未知").tag(CorporateEventCertainty.unknown)
+            Text("估计").tag(CorporateEventCertainty.estimated)
+            Text("已确认（仍为所填来源）").tag(CorporateEventCertainty.confirmed)
+        }
+    }
+    private func calendarEditor(_ title: String, _ value: Binding<OptionLabCalendarDraft>) -> some View {
+        DisclosureGroup(title) {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("提供逐日完整日历", isOn: value.enabled)
+                if value.enabled.wrappedValue {
+                    fields {
+                        field("日历版本", value.version); field("日历来源／假设", value.sourceReference)
+                        field("覆盖开始 YYYY-MM-DD", value.from); field("覆盖结束 YYYY-MM-DD", value.through)
+                    }
+                    Text("覆盖内每个日期都须一行，含休市日：日期 | regular / earlyClose / closed / unknown | 开盘时刻 | 收盘时刻。休市行形如 2026-10-18|closed||；交易时刻须含时区。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextEditor(text: value.sessions).font(.system(.caption, design: .monospaced)).frame(minHeight: 120)
+                        .accessibilityLabel(title + "逐日会话")
+                    Text("空白不当作普通交易日，不通过周一至周五推定节假日或提前收盘。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(.vertical, 6)
+        }
+    }
+
+    private var scenarioEditor: some View {
+        GroupBox("可选：价格 × IV 瞬时情景") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("显式启用情景矩阵", isOn: $draft.scenario.enabled).accessibilityIdentifier("optionLabScenarioEnabled")
+                Text("价格变动使用比例，IV 使用绝对百分点。矩阵停留在当前评估时刻，不模拟时间流逝，不代表收益预测。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if draft.scenario.enabled {
+                    fields {
+                        field("价格变化（-0.1 = -10%，逗号分隔）", $draft.scenario.spotShocks, id: "optionLabScenarioSpotAxis")
+                        field("IV 变化（-10 = -10 个百分点，逗号分隔）", $draft.scenario.volatilityPointShocks, id: "optionLabScenarioIVAxis")
+                        field("情景来源／假设说明", $draft.scenario.sourceReference, id: "optionLabScenarioSource")
+                    }
+                    Text("先从每条腿的 Mid 本地反解 IV，再施加同一百分点变化。未开启模型或必需腿缺 IV 时保留不可用原因，不改用理论 σ。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if draft.origin == .synthetic {
+                    Button("填入合成情景轴") {
+                        do { try draft.useSyntheticScenarioAssumptions() }
+                        catch { inputError = "合成情景只能填入显式合成草稿。" }
+                    }.accessibilityIdentifier("optionLabScenarioSynthetic")
+                    Text("显式示例：价格 -10% / 0 / +10%，IV -10 / 0 / +10 个百分点；不会自动开启定价模型。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private func legEditor(_ title: String, _ leg: Binding<OptionLabLegDraft>, id: String) -> some View {
         GroupBox("\(title) · \(draft.right == .put ? "Put" : "Call")") {
             fields {
@@ -343,6 +509,205 @@ struct OptionLabContent: View {
                 .accessibilityIdentifier("optionLabPricingNotEnabled")
         }
     }
+    private func riskAndScenarioAnalysis(_ report: OptionLabReport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("风险提示与瞬时情景 · 仅供离线研究") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("\(containsSynthetic(report) ? "SYNTHETIC 合成" : "MANUAL 手工假设") · \(model.savedID == nil ? "未保存预览" : "已按完整输入重算")")
+                        .font(.headline).accessibilityIdentifier("optionLabRiskScenarioStatus")
+                    Text("缺少证据时显示不足，不把未知当作零、无事件或安全。分数和情景结果都不授予交易许可。")
+                        .foregroundStyle(.secondary)
+                    Button("复制为新草稿") { copyToDraft(report) }.disabled(blocked).accessibilityIdentifier("optionLabCopy")
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let risk = report.risk { riskAnalysis(risk) }
+            else { Text("未启用离线风险核对；没有风险结论。").foregroundStyle(.secondary).accessibilityIdentifier("optionLabRiskNotEnabled") }
+            if let scenario = report.scenario { scenarioAnalysis(scenario) }
+            else {
+                Text("未启用价格 × IV 矩阵；旧快照不会自动补入情景假设。")
+                    .foregroundStyle(.secondary).accessibilityIdentifier("optionLabScenarioNotEnabled")
+            }
+        }
+    }
+    private func riskAnalysis(_ risk: OptionLabRiskReport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("流动性 · 六项证据与最弱腿") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("综合等级：" + liquidityGrade(risk.liquidity.grade))
+                        .font(.headline).foregroundStyle(risk.liquidity.grade == .avoid ? Color.red : Color.primary)
+                        .accessibilityIdentifier("optionLabLiquidityGrade")
+                    Text("综合分数：" + (risk.liquidity.score?.decimalString ?? "数据不足"))
+                        .accessibilityIdentifier("optionLabLiquidityScore")
+                    Text("只有六项齐备才给分；缺失不填零、不重新分配权重。存在硬性降级时仍保留 Avoid；价差策略按最弱腿。仅在所填情景下研究，不代表实时可成交性。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(risk.liquidity.legs, id: \.contractID) { leg in
+                        DisclosureGroup("\(leg.contractID) · \(liquidityGrade(leg.grade)) · 覆盖 \(String(format: "%.0f", Double(leg.coverageBasisPoints) / 100))%") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(leg.components, id: \.factor) { component in
+                                    Text("\(liquidityFactor(component.factor))（权重 \(component.weightBasisPoints / 100)%）：\(component.value?.decimalString ?? "不可用") · \(liquidityGrade(component.grade))")
+                                    if let reason = component.reason { Text(reason).font(.caption).foregroundStyle(.orange) }
+                                }
+                                ForEach(leg.hardDowngrades, id: \.self) { Text($0).foregroundStyle(.orange) }
+                            }.font(.callout).padding(.vertical, 8)
+                        }
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            GroupBox("财报事件窗口") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("证据状态：" + riskEvidenceState(risk.earnings.state)).font(.headline)
+                        .accessibilityIdentifier("optionLabEarningsState")
+                    Text("持有期与所填事件窗口：" + (risk.earnings.holdingOverlaps.map { $0 ? "重叠" : "不重叠" } ?? "证据不足"))
+                    Text("跨事件持有偏好：" + (risk.earnings.allowsHoldingAcrossEvent.map { $0 ? "允许" : "不允许" } ?? "未决定"))
+                    if let start = risk.earnings.windowStart, let end = risk.earnings.windowEnd {
+                        Text("窗口 \(start.formatted(.iso8601)) 至 \(end.formatted(.iso8601))").font(.caption)
+                    }
+                    Text("Expected Move：\(risk.earnings.expectedMove?.decimalString ?? "不可用") USD / 股 · \(risk.earnings.expectedMoveFraction.map(scenarioPercent) ?? "不可用")")
+                    Text("这是所选事件后 ATM 跨式 Mid 之和，不是置信区间。没有历史事件样本，不显示历史胜率、IV 溢价或 IV Crush 统计。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let selected = risk.earnings.selectedStraddle {
+                        Text("跨式选择：K \(selected.strike.decimalString) · 到期 \(selected.settlementAt.formatted(.iso8601))").font(.caption)
+                    }
+                    ForEach(risk.earnings.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            GroupBox("短腿提前指派 · 启发式提示") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(assignmentLevel(risk.assignment.level)).font(.headline).accessibilityIdentifier("optionLabAssignmentLevel")
+                    Text("内在价值 \(risk.assignment.intrinsicValue.decimalString) · 带符号时间价值 \(risk.assignment.extrinsicValue.decimalString) USD / 股")
+                    Text("阈值 \(pricingNumber(risk.assignment.threshold)) · 股息现值 \(pricingNumber(risk.assignment.dividendPresentValue)) USD / 股")
+                    if let date = risk.assignment.priorExDividendSession { Text("除息前交易日：" + date.iso8601) }
+                    Text("近到期：\(risk.assignment.nearExpiry ? "是" : "否") · 深度价内：\(risk.assignment.deepInTheMoney ? "是" : "否")")
+                    ForEach(risk.assignment.reasons, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                    Text("没有触发这份启发式也不能推断安全。本批不提供提前指派概率、美式定价或订单执行。")
+                        .font(.caption).foregroundStyle(.orange)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            DisclosureGroup("风险依据与版本") {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("来源：" + risk.input.source.reference)
+                    Text("模型：\(risk.modelReference.id) · \(risk.modelReference.version) · \(risk.modelReference.contentHash)")
+                    Text("参数：\(risk.parameterReference.id) · \(risk.parameterReference.version) · \(risk.parameterReference.contentHash)")
+                    Text("财报版本：\(risk.earnings.eventVersion ?? "未提供") · 日历版本：\(risk.earnings.calendarVersion ?? "未提供")")
+                }.font(.caption).textSelection(.enabled)
+            }
+            ForEach(risk.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func liquidityGrade(_ grade: OptionLabLiquidityGrade) -> String {
+        switch grade {
+        case .excellent: "Excellent · 优"
+        case .acceptable: "Acceptable · 可接受"
+        case .weak: "Weak · 弱"
+        case .avoid: "Avoid · 回避"
+        case .dataInsufficient: "Data Insufficient · 数据不足"
+        }
+    }
+    private func liquidityFactor(_ factor: OptionLabLiquidityFactor) -> String {
+        switch factor {
+        case .relativeSpread: "相对价差 ratio"
+        case .openInterest: "OI 张数"
+        case .volume: "可比成交量张数"
+        case .quoteAge: "报价年龄秒"
+        case .size: "双边最小张数"
+        case .neighborContinuity: "相邻报价违例比例"
+        }
+    }
+    private func riskEvidenceState(_ state: OptionLabRiskEvidenceState) -> String {
+        switch state {
+        case .available: "已核对所填证据"
+        case .dataInsufficient: "数据不足"
+        case .outsideHoldingWindow: "不在持有窗口内"
+        case .notApplicable: "不适用"
+        }
+    }
+    private func assignmentLevel(_ level: OptionLabAssignmentLevel) -> String {
+        switch level {
+        case .high: "高风险启发式触发"
+        case .elevated: "需关注的启发式触发"
+        case .noTrigger: "本次条件未触发（不代表安全）"
+        case .dataInsufficient: "证据不足，不给安全结论"
+        case .notApplicable: "本次提示不适用"
+        }
+    }
+
+    private func scenarioAnalysis(_ scenario: OptionLabScenarioReport) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox("价格 × IV 瞬时情景 · 保守开仓假设下的理论平仓损益 USD") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("INSTANTANEOUS · 常规模型格停留在 \(scenario.valuationAt.formatted(.iso8601))；不是到期分布或未来胜率。")
+                        .foregroundStyle(.orange).accessibilityIdentifier("optionLabScenarioBoundary")
+                    Text("基准标的 \(scenario.baseSpot.decimalString) USD / 股。每腿使用各自本地 IV；连续股息欧式 BSM 不包含美式提前行权或离散股息。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ScrollView(.horizontal) {
+                        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+                            GridRow {
+                                Text("价格变化 / IV 变化").bold()
+                                ForEach(scenario.input.volatilityPointShocks, id: \.decimalString) { shock in
+                                    Text(shock.decimalString + " 个百分点").bold()
+                                }
+                            }
+                            ForEach(scenario.input.spotShocks, id: \.decimalString) { shock in
+                                GridRow {
+                                    Text(scenarioPercent(shock)).bold()
+                                    ForEach(scenario.input.volatilityPointShocks, id: \.decimalString) { iv in
+                                        if let cell = scenario.cells.first(where: { $0.spotShock == shock && $0.volatilityPointShock == iv }) {
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(pricingNumber(cell.conservative?.closeoutPnL))
+                                                    .font(.system(.body, design: .monospaced))
+                                                    .accessibilityIdentifier("optionLabScenarioCell-" + shock.decimalString + "-" + iv.decimalString)
+                                                if cell.state != .available { Text(scenarioState(cell.state)).font(.caption).foregroundStyle(.orange) }
+                                            }
+                                        } else { Text("数据不足").foregroundStyle(.orange) }
+                                    }
+                                }
+                            }
+                        }.padding(.vertical, 4)
+                    }.accessibilityIdentifier("optionLabScenarioMatrix")
+                    Text("理论退出价不包含新的退出价差或费用。每格沿用原开仓成交假设和完整费用额度，包含覆盖股票的价格变化；费用只计一次。零 IV、零价格 payoff 边界会单独标注，不伪装成常规模型格。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("来源：\(scenario.input.source.reference)").font(.caption).textSelection(.enabled)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            DisclosureGroup("逐格 Mid / 保守开仓的理论平仓损益与腿输入") {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(scenario.cells.enumerated()), id: \.offset) { _, cell in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("价格 \(scenarioPercent(cell.spotShock)) · IV \(cell.volatilityPointShock.decimalString) 个百分点 · \(scenarioState(cell.state))").font(.headline)
+                            Text("情景标的：\(cell.spot?.decimalString ?? "不可用") USD / 股")
+                            Text("Mid 开仓理论平仓损益：\(pricingNumber(cell.mid?.closeoutPnL)) USD · 保守开仓：\(pricingNumber(cell.conservative?.closeoutPnL)) USD")
+                            if let value = cell.conservative {
+                                Text("保守开仓净权利金 \(value.netCreditTotal.decimalString) USD · 总费用 \(value.totalFees.decimalString) USD · 股票损益 \(pricingNumber(value.stockPnL)) USD")
+                            }
+                            ForEach(cell.legs, id: \.contractID) { leg in
+                                Text("\(leg.contractID) · 原 IV \(pricingNumber(leg.baseIV.map { $0 * 100 }, suffix: "%")) → 情景 IV \(pricingNumber(leg.shockedIV.map { $0 * 100 }, suffix: "%")) · 理论价 \(pricingNumber(leg.theoreticalUnitPrice)) USD / 股")
+                            }
+                        }.font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                    Text("方法：\(scenario.input.methodVersion) · 结果显示保留 8 位有效数字，完整模型输入与数值保存在快照中。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(.vertical, 8)
+            }
+            ForEach(scenario.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func scenarioPercent(_ value: Money) -> String {
+        guard let percent = try? value.multiplied(by: "100") else { return "不可表示" }
+        return percent.decimalString + "%"
+    }
+    private func scenarioState(_ state: OptionLabScenarioState) -> String {
+        switch state {
+        case .available: "本模型内可用"
+        case .zeroVolatilityBoundary: "零波动率边界"
+        case .zeroSpotPayoffBoundary: "零价格 payoff 边界"
+        case .missingPricing: "未启用定价模型"
+        case .missingLegIV: "必需腿缺少本地 IV"
+        case .negativeVolatility: "IV 调整后为负，拒绝计算"
+        case .numericFailure: "数值不可用"
+        }
+    }
+
     private func legPricing(_ leg: OptionLabLegPricing, in report: OptionLabReport) -> some View {
         let isPut = ([report.input.shortLeg] + (report.input.longLeg.map { [$0] } ?? [])).first { $0.contractID == leg.contractID }?.right == .put
         return GroupBox("\(leg.direction == .sell ? "卖出腿" : "买入腿") · \(leg.contractID)") {
@@ -587,7 +952,7 @@ struct OptionLabContent: View {
                 section = "结果"
             }
         } catch {
-            inputError = "请补齐输入：金额和 r/q/σ 用十进制，张数用整数，时间含明确时区；启用模型后不得留空利率、股息率、理论 σ 或来源。账本依据须与标的和评估时刻一致。"
+            inputError = "请补齐输入：金额和 r/q/σ 用十进制，张数用整数，时间含明确时区；启用项须有来源，模型 r/q/σ 与情景轴不得空白。邻点、日历和跨式按列格式填写，未知证据留空。账本依据须与标的和评估时刻一致。"
         }
     }
     private func inspectLedger(_ snapshot: LedgerSnapshot) {
@@ -629,9 +994,16 @@ struct OptionLabContent: View {
         }
     }
     private func containsSynthetic(_ report: OptionLabReport) -> Bool {
-        report.input.underlying.source.origin == .synthetic || report.input.shortLeg.source.origin == .synthetic
-            || report.input.longLeg?.source.origin == .synthetic || report.input.expiry.source.origin == .synthetic
-            || report.input.capital.origin == .synthetic || report.input.pricing?.source.origin == .synthetic
+        let input = report.input
+        // Keep the same provenance rule with bounded Swift 6.1 type inference.
+        let primarySynthetic: Bool = input.underlying.source.origin == .synthetic
+            || input.shortLeg.source.origin == .synthetic
+        let contractSynthetic: Bool = input.longLeg?.source.origin == .synthetic
+            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
+        let pricingSynthetic: Bool = input.pricing?.source.origin == .synthetic
+        let riskSynthetic: Bool = input.risk?.containsSyntheticInput == true
+        let scenarioSynthetic: Bool = input.scenario?.source.origin == .synthetic
+        return primarySynthetic || contractSynthetic || pricingSynthetic || riskSynthetic || scenarioSynthetic
     }
     private func strategyName(_ strategy: OptionLabStrategy) -> String {
         switch strategy { case .cashSecuredPut: "现金担保卖 Put"; case .coveredCall: "备兑 Call"; case .putCreditSpread: "Put 信用价差"; case .callCreditSpread: "Call 信用价差" }
