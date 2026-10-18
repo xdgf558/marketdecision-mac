@@ -101,7 +101,7 @@ public actor OptionLabArchiveStore: OptionLabArchiveStorage {
             LedgerCSV.hash(try OptionLabArchiveCodec.canonical(baseline.counts)), LedgerCSV.hash(bytes), existingHash ?? "replaceable-bodies"]
         let digest = LedgerCSV.hash(try OptionLabArchiveCodec.canonical(digestFields))
         let details = [
-            operation == .clear ? "清空独立期权库的实验、日链与合约摘要、历史报告和期权链来源；研究库、账本库和 Keychain 不变。" : "恢复独立期权库；保留输入、报告、期权链来源和嵌入证明的原字节，打开前仍须完整重算核对。",
+            operation == .clear ? "清空独立期权库的实验、日链与合约摘要、历史报告、期权链来源和组合 Greeks；研究库、账本库和 Keychain 不变。" : "恢复独立期权库；保留输入、报告、期权链来源、组合 Greeks 和嵌入证明的原字节，打开前仍须完整重算核对。",
             "ZIP 未加密。可能包含实验引用的只读账户和历史事件证明（本次结果 \(candidate.counts.embeddedLedgerBases) 份），不备份或恢复 portfolio-ledger.sqlite。",
             "相同身份不同内容明确拒绝合并，不覆盖、不改名。确认只在本进程有效；输入预算不是进程内存上限。"
         ]
@@ -123,7 +123,7 @@ public actor OptionLabArchiveStore: OptionLabArchiveStorage {
         func count(_ table: String) throws -> Int { try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM " + table) ?? 0 }
         let bases = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM option_lab_documents WHERE ledger_basis_json IS NOT NULL") ?? 0
         return try .init(revision: revision, counts: .init(experiments: count("option_lab_catalog"), dailySummaries: count("option_daily_catalog"),
-            historyReports: count("option_history_catalog"), contractSummaries: count("option_daily_contracts"), embeddedLedgerBases: bases,
-            chainCaptures: count("option_chain_catalog")))
+            historyReports: count("option_history_catalog"), contractSummaries: count("option_daily_contracts"), embeddedLedgerBases: bases + count("portfolio_greeks_catalog"),
+            chainCaptures: count("option_chain_catalog"), portfolioReports: count("portfolio_greeks_catalog")))
     }
 }

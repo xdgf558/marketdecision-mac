@@ -21,7 +21,7 @@ let package = Package(
         .target(name: "FundamentalsEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/FundamentalsEngine"),
         .target(name: "OptionsAnalytics", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/OptionsAnalytics"),
         .target(name: "BacktestEngine", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/BacktestEngine"),
-        .target(name: "PortfolioEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/PortfolioEngine"),
+        .target(name: "PortfolioEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "OptionsAnalytics"], path: "Sources/PortfolioEngine"),
         .target(name: "DecisionJournal", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/DecisionJournal"),
         .target(name: "AlertEngine", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AlertEngine"),
         .target(name: "Persistence", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),

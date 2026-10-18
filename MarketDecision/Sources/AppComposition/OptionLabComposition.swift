@@ -36,6 +36,13 @@ extension AppEnvironment {
         let chains = try await store.makeChainStore()
         try Task.checkCancellation()
         model.installChain(OptionChainWorkspaceModel(storage: chains, coordinator: optionTransferCoordinator))
+        let portfolio = try await store.makePortfolioGreeksStore()
+        try Task.checkCancellation()
+        model.installPortfolioGreeks(PortfolioGreeksWorkspaceModel(storage: portfolio, experiments: store, ledgerReader: {
+            let ledger = try await ledgerFactory.store()
+            try Task.checkCancellation()
+            return try await ledger.snapshot()
+        }, coordinator: optionTransferCoordinator))
         return model
     }
 }

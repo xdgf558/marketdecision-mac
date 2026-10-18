@@ -7,6 +7,7 @@ import Persistence
 /// A page-local calculation captures one immutable input. Editing, leaving, or
 /// opening another snapshot invalidates publication; a save keeps its original CAS.
 @MainActor @Observable public final class OptionLabWorkspaceModel: OptionTransferParticipant {
+    public private(set) var portfolioGreeks: PortfolioGreeksWorkspaceModel?
     public private(set) var chain: OptionChainWorkspaceModel?
     public private(set) var history: OptionHistoryWorkspaceModel?
     public private(set) var transfer: OptionArchiveTransferModel?
@@ -184,6 +185,7 @@ import Persistence
         message = nil; hasError = false; listError = nil; ledgerError = nil
         isBusy = committing != nil || transferOperation != nil
     }
+    public func installPortfolioGreeks(_ model: PortfolioGreeksWorkspaceModel) { portfolioGreeks = model }
     public func installChain(_ model: OptionChainWorkspaceModel) { chain = model }
     public func install(history: OptionHistoryWorkspaceModel, transfer: OptionArchiveTransferModel,
                         coordinator: OptionTransferCoordinator) {

@@ -186,6 +186,42 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
         XCTAssertFalse(cash.exists)
     }
+    func testPortfolioGreeksCoverageFrozenReplayAndSyntheticIsolation() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
+        researchTab("组合风险")
+        let complete = mainWindow.buttons["portfolioGreeksSyntheticComplete"]
+        XCTAssertTrue(complete.waitForExistence(timeout: 15)); waitEnabled(complete); complete.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["portfolioGreeksOrigin"])
+        waitText("声明持仓范围完整覆盖", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
+        let save = mainWindow.buttons["portfolioGreeksSave"]
+        waitEnabled(save); save.click(); waitEnabled(save, false)
+        waitText("完整重放核对", in: mainWindow.staticTexts["portfolioGreeksReplayStatus"])
+        let missing = mainWindow.buttons["portfolioGreeksSyntheticMissing"]
+        waitEnabled(missing); missing.click()
+        waitText("覆盖不完整", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
+        waitText("缺口 1", in: mainWindow.staticTexts["portfolioGreeksCoverage"])
+        waitEnabled(save)
+        // Leaving invalidates this unsaved example. Reopening cannot publish catalog values.
+        app.typeKey("1", modifierFlags: .command); app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
+        researchTab("组合风险")
+        XCTAssertTrue(complete.waitForExistence(timeout: 15)); waitEnabled(complete)
+        XCTAssertFalse(mainWindow.staticTexts["portfolioGreeksNetDelta"].exists)
+        let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "portfolioGreeksOpen-")).firstMatch
+        let scroll = mainWindow.scrollViews.firstMatch
+        for _ in 0..<18 where !open.exists || !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
+        XCTAssertTrue(open.exists && open.isHittable, mainWindow.debugDescription)
+        waitEnabled(open); open.click()
+        let status = mainWindow.staticTexts["portfolioGreeksReplayStatus"]
+        for _ in 0..<18 where !status.exists || !status.isHittable { scroll.scroll(byDeltaX: 0, deltaY: 80) }
+        waitText("完整重放核对", in: status)
+        waitText("声明持仓范围完整覆盖", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
+        XCTAssertFalse(save.isEnabled)
+        // Explicit source reports and synthetic ledger evidence only; no file panel, real ledger mutation or network.
+    }
     func testOptionChainExplicitSelectionReplayAndDraftHandoff() {
         configure(); app.launch()
         XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))
