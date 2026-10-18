@@ -16,7 +16,11 @@ struct PortfolioGreeksEngineTests {
         // Independent portfolio vector: +200 call shares, -100 call shares, -100 put shares,
         // +12.5 DEMO stock, +3.25 ALT stock. Source strategy has N=900 and must not be reused.
         #expect(abs(values.netDeltaDollars - ((100 * call.delta + 12.5) * 100 + (-100 * put.delta + 3.25) * 50)) < 1e-8)
-        #expect(abs(values.grossDeltaDollars - (abs(200 * call.delta * 100) + abs(-100 * call.delta * 100) + abs(-100 * put.delta * 50) + 1250 + 162.5)) < 1e-8)
+        let longCallDeltaDollars: Double = 200 * call.delta * 100
+        let shortCallDeltaDollars: Double = -100 * call.delta * 100
+        let shortPutDeltaDollars: Double = -100 * put.delta * 50
+        let expectedGrossDeltaDollars: Double = abs(longCallDeltaDollars) + abs(shortCallDeltaDollars) + abs(shortPutDeltaDollars) + 1250 + 162.5
+        #expect(abs(values.grossDeltaDollars - expectedGrossDeltaDollars) < 1e-8)
         #expect(abs(values.thetaDollarsPerDay - (100 * call.thetaPerDay - 100 * put.thetaPerDay)) < 1e-10)
         #expect(abs(values.vegaDollarsPerPercentagePoint - (100 * call.vegaPerPercentagePoint - 100 * put.vegaPerPercentagePoint)) < 1e-10)
         #expect(abs(values.rhoDollarsPerPercentagePoint - (100 * call.rhoPerPercentagePoint - 100 * put.rhoPerPercentagePoint)) < 1e-10)
