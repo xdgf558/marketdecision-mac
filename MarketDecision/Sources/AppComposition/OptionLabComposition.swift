@@ -22,10 +22,17 @@ extension AppEnvironment {
         let store = try await optionLabStoreFactory.store()
         try Task.checkCancellation()
         let ledgerFactory = ledgerStoreFactory
-        return OptionLabWorkspaceModel(storage: store, ledgerReader: {
+        let model = OptionLabWorkspaceModel(storage: store, ledgerReader: {
             let ledger = try await ledgerFactory.store()
             try Task.checkCancellation()
             return try await ledger.snapshot()
         })
+        let daily = try await store.makeDailyStore()
+        let archive = try await store.makeArchiveStore()
+        try Task.checkCancellation()
+        let history = OptionHistoryWorkspaceModel(storage: daily, coordinator: optionTransferCoordinator)
+        let transfer = OptionArchiveTransferModel(store: archive, coordinator: optionTransferCoordinator)
+        model.install(history: history, transfer: transfer, coordinator: optionTransferCoordinator)
+        return model
     }
 }

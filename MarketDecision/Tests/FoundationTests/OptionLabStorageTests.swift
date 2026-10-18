@@ -68,7 +68,7 @@ struct OptionLabStorageTests {
     @Test func purposeMarkerKeepsLedgerResearchAndOptionsSchemasSeparate() async throws {
         let path = olPath(); defer { try? FileManager.default.removeItem(at: path) }
         let database = try DatabaseStore(path: path.path, purpose: .optionsLab)
-        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1"])
+        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2"])
         #expect(try database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'p1_%' OR name LIKE 'ledger_%' OR name LIKE 'performance_%'") } == 0)
         for purpose in [DatabasePurpose.business, .offlineIssuerResearch, .secResearch, .portfolioLedger] {
             #expect(throws: MigrationError.incompatiblePurpose) { try DatabaseStore(path: path.path, purpose: purpose) }

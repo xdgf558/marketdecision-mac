@@ -71,7 +71,7 @@ private func orsTamper(_ database: DatabaseStore, id: UUID, field: String) throw
         #expect(saved.report == report)
         let stored = try database.read { try Data.fetchOne($0, sql: "SELECT report_json FROM option_lab_documents") }
         #expect(stored == bytes)
-        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1"])
+        #expect(try database.migrationVersions() == ["foundation.v1", "options-lab.v1", "options-lab.v2"])
     }
 
     @Test func fullRiskAndGridReopenFromDiskUsingOnlyFrozenInputs() async throws {

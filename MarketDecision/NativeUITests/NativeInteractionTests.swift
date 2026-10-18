@@ -186,6 +186,49 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 10))
         XCTAssertFalse(cash.exists)
     }
+    func testOptionDailySummaryReplayAndArchivePreviewCancellation() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))
+        app.typeKey("8", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
+        researchTab("波动率历史")
+        let template = mainWindow.buttons["optionDailyTemplate"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionDailyOrigin"])
+        let calculate = mainWindow.buttons["optionDailyCalculate"]
+        waitEnabled(calculate); calculate.click()
+        waitText("25.00%", in: mainWindow.staticTexts["optionDailyResult"])
+        let saveDaily = mainWindow.buttons["optionDailySave"]
+        waitEnabled(saveDaily); saveDaily.click()
+        waitText("日摘要已保存", in: mainWindow.staticTexts["optionHistoryMessage"])
+        waitEnabled(saveDaily, false)
+        researchTab("摘要目录")
+        let reload = mainWindow.buttons["optionHistoryReload"]
+        waitEnabled(reload); reload.click()
+        let openDaily = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionDailyOpen-")).firstMatch
+        XCTAssertTrue(openDaily.waitForExistence(timeout: 15)); waitEnabled(openDaily); openDaily.click()
+        waitText("完整输入重算并核对", in: mainWindow.staticTexts["optionHistoryMessage"])
+        waitText("25.00%", in: mainWindow.staticTexts["optionDailyResult"])
+        researchTab("期权归档")
+        waitText("日摘要 1", in: mainWindow.staticTexts["optionArchiveCounts"])
+        let preview = mainWindow.buttons["optionArchiveClearPreview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10)); waitEnabled(preview)
+        let scroll = mainWindow.scrollViews.element(boundBy: 0)
+        for _ in 0..<20 where !preview.isHittable {
+            scroll.scroll(byDeltaX: 0, deltaY: -80)
+        }
+        XCTAssertTrue(preview.isHittable); preview.click()
+        let confirmation = sheet(in: mainWindow)
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
+        let commit = confirmation.buttons["optionArchiveCommit"]
+        XCTAssertTrue(commit.waitForExistence(timeout: 5)); XCTAssertFalse(commit.isEnabled)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(confirmation.exists)
+        confirmation.buttons["optionArchiveCancel"].click(); waitNoSheet(in: mainWindow)
+        waitText("预检已取消", in: mainWindow.staticTexts["optionArchiveMessage"])
+        waitText("日摘要 1", in: mainWindow.staticTexts["optionArchiveCounts"])
+        // No exporter/importer or actual file panel is invoked by this test.
+    }
     func testOptionsLabExplicitCalculationFrozenReplayAndDraftInvalidation() {
         configure(); app.launch()
         let navigation = app.buttons["pageOptions"]

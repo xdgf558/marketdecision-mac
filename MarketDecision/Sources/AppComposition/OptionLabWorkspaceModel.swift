@@ -6,7 +6,12 @@ import Persistence
 
 /// A page-local calculation captures one immutable input. Editing, leaving, or
 /// opening another snapshot invalidates publication; a save keeps its original CAS.
-@MainActor @Observable public final class OptionLabWorkspaceModel {
+@MainActor @Observable public final class OptionLabWorkspaceModel: OptionTransferParticipant {
+    public private(set) var history: OptionHistoryWorkspaceModel?
+    public private(set) var transfer: OptionArchiveTransferModel?
+    private var coordinator: OptionTransferCoordinator?
+    private var transferOperation: UUID?
+    private var refreshedGeneration: UUID?
     public private(set) var report: OptionLabReport?
     public private(set) var savedID: UUID?
     public private(set) var reportLedgerBasis: OptionLabLedgerBasis?
@@ -34,13 +39,14 @@ import Persistence
                 }) {
         self.storage = storage; self.ledgerReader = ledgerReader; self.calculator = calculator
     }
-    public var canSave: Bool { !isBusy && report != nil && savedID == nil && revision != nil }
-    public var canReadLedger: Bool { ledgerReader != nil && !isBusy }
+    public var canSave: Bool { !isBusy && coordinator?.isTransferring != true && report != nil && savedID == nil && revision != nil }
+    public var canReadLedger: Bool { ledgerReader != nil && !isBusy && coordinator?.isTransferring != true }
 
     public func load() async {
         visible = true
+        if coordinator?.isTransferring == true { return }
         if committing != nil { pendingReload = true; return }
-        guard !isBusy else { return }
+        guard !isBusy, coordinator?.isTransferring != true else { return }
         let token = begin(); clearReport(); revision = nil; saved = []; listError = nil
         defer { finish(token) }
         do {
@@ -56,7 +62,7 @@ import Persistence
     }
 
     public func calculate(_ input: OptionLabInput, ledgerBasis: OptionLabLedgerBasis? = nil) async {
-        guard !isBusy else { return }
+        guard !isBusy, coordinator?.isTransferring != true else { return }
         let token = begin(); clearReport()
         defer { finish(token) }
         do {
@@ -117,7 +123,7 @@ import Persistence
     }
 
     public func open(_ id: UUID) async {
-        guard !isBusy else { return }
+        guard !isBusy, coordinator?.isTransferring != true else { return }
         let token = begin(); clearReport()
         defer { finish(token) }
         do {
@@ -133,7 +139,7 @@ import Persistence
     }
 
     public func reloadSaved() async {
-        guard !isBusy else { return }
+        guard !isBusy, coordinator?.isTransferring != true else { return }
         let token = begin(); defer { finish(token) }
         await readSummaries(token)
     }
@@ -155,14 +161,43 @@ import Persistence
     }
 
     public func draftChanged() {
-        guard committing == nil else { return }
+        guard committing == nil, transferOperation == nil else { return }
         generation = UUID(); operation = nil; isBusy = false; clearReport(); message = nil; hasError = false
     }
     public func disappear() {
         visible = false; pendingReload = false; generation = UUID(); operation = nil
         clearReport(); revision = nil; saved = []; ledgerSnapshot = nil
         message = nil; hasError = false; listError = nil; ledgerError = nil
-        isBusy = committing != nil
+        isBusy = committing != nil || transferOperation != nil
+    }
+    public func install(history: OptionHistoryWorkspaceModel, transfer: OptionArchiveTransferModel,
+                        coordinator: OptionTransferCoordinator) {
+        self.history = history; self.transfer = transfer; self.coordinator = coordinator
+        coordinator.register(self)
+    }
+    var optionTransferRefreshNeeded: Bool { transferOperation != nil && visible && refreshedGeneration != generation }
+    func beginOptionTransfer(_ id: UUID) {
+        transferOperation = id; refreshedGeneration = nil; generation = UUID(); operation = nil
+        clearReport(); revision = nil; saved = []; message = nil; listError = nil; isBusy = true
+    }
+    func refreshOptionTransfer(_ id: UUID) async {
+        guard transferOperation == id, visible else { return }
+        let token = begin()
+        do {
+            let value = try await storage.revision()
+            guard owns(token) else { return }
+            revision = value
+        } catch {
+            guard owns(token) else { return }
+            revision = nil; hasError = true; message = "期权库版本未能读取，请重新载入。"
+        }
+        await readSummaries(token)
+        if owns(token) { refreshedGeneration = generation }
+        finish(token)
+    }
+    func endOptionTransfer(_ id: UUID) {
+        guard transferOperation == id else { return }
+        transferOperation = nil; refreshedGeneration = nil; isBusy = committing != nil || operation != nil
     }
     private func begin() -> UUID {
         let token = UUID(); generation = token; operation = token; isBusy = true; hasError = false; message = nil
@@ -171,13 +206,13 @@ import Persistence
     private func owns(_ token: UUID) -> Bool { visible && generation == token && operation == token }
     private func finish(_ token: UUID) {
         guard operation == token else { return }
-        operation = nil; isBusy = committing != nil
+        operation = nil; isBusy = committing != nil || transferOperation != nil
     }
     private func clearReport() { report = nil; savedID = nil; reportLedgerBasis = nil }
     private func finishSave(_ token: UUID, _ commit: UUID) async {
         guard committing == commit else { return }
         committing = nil; finish(token)
-        if operation == nil { isBusy = false }
+        if operation == nil { isBusy = transferOperation != nil }
         if pendingReload && visible { pendingReload = false; await load() }
     }
     private func readSummaries(_ token: UUID) async {
