@@ -5,12 +5,12 @@ import CoreDomain
 import DataContracts
 
 enum AppPage: String, CaseIterable, Identifiable {
-    case workspace = "工作台", research = "公司研究", offlineResearch = "离线摘录", secResearch = "SEC 财报", ledger = "交易账本", portfolio = "组合收益", options = "期权实验室", settings = "设置"
+    case workspace = "工作台", research = "公司研究", offlineResearch = "离线摘录", secResearch = "SEC 财报", ledger = "交易账本", portfolio = "组合收益", options = "期权实验室", market = "市场与数据", settings = "设置"
     var id: Self { self }
-    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .offlineResearch: "doc.text.magnifyingglass"; case .secResearch: "building.columns"; case .ledger: "book.closed"; case .portfolio: "chart.line.uptrend.xyaxis"; case .options: "chart.xyaxis.line"; case .settings: "gearshape" } }
-    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .offlineResearch: "4"; case .secResearch: "5"; case .ledger: "6"; case .portfolio: "7"; case .options: "8"; case .settings: "2" } }
-    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .offlineResearch: "pageOfflineResearch"; case .secResearch: "pageSECResearch"; case .ledger: "pageLedger"; case .portfolio: "pagePortfolio"; case .options: "pageOptions"; case .settings: "pageSettings" } }
-    var help: String { switch self { case .workspace: "工作台（⌘1）"; case .research: "公司研究（⌘3）"; case .offlineResearch: "离线摘录（⌘4）"; case .secResearch: "SEC 财报（⌘5）"; case .ledger: "交易账本（⌘6）"; case .portfolio: "组合收益（⌘7）"; case .options: "期权实验室（⌘8）"; case .settings: "设置（⌘2）" } }
+    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .offlineResearch: "doc.text.magnifyingglass"; case .secResearch: "building.columns"; case .ledger: "book.closed"; case .portfolio: "chart.line.uptrend.xyaxis"; case .options: "chart.xyaxis.line"; case .market: "globe.asia.australia"; case .settings: "gearshape" } }
+    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .offlineResearch: "4"; case .secResearch: "5"; case .ledger: "6"; case .portfolio: "7"; case .options: "8"; case .market: "9"; case .settings: "2" } }
+    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .offlineResearch: "pageOfflineResearch"; case .secResearch: "pageSECResearch"; case .ledger: "pageLedger"; case .portfolio: "pagePortfolio"; case .options: "pageOptions"; case .market: "pageMarket"; case .settings: "pageSettings" } }
+    var help: String { switch self { case .workspace: "工作台（⌘1）"; case .research: "公司研究（⌘3）"; case .offlineResearch: "离线摘录（⌘4）"; case .secResearch: "SEC 财报（⌘5）"; case .ledger: "交易账本（⌘6）"; case .portfolio: "组合收益（⌘7）"; case .options: "期权实验室（⌘8）"; case .market: "市场与数据（⌘9）"; case .settings: "设置（⌘2）" } }
 }
 
 @main enum MarketDecisionEntry {
@@ -88,6 +88,7 @@ struct RootView: View {
                 else if page == .ledger { LedgerPage(workspace: model) }
                 else if page == .portfolio { PortfolioPage(workspace: model) }
                 else if page == .options { OptionLabPage(workspace: model) }
+                else if page == .market { MarketStatePage(workspace: model) }
                 else { SettingsContent(model: model) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

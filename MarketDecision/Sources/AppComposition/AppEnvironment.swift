@@ -18,6 +18,8 @@ public struct AppEnvironment: Sendable {
     let secImportCoordinator: SECResearchImportCoordinator
     let secArchiveCoordinator: SECArchiveWorkspaceCoordinator
     let equityAcquisition: EquityResearchAcquisition
+    let marketStateStoreFactory: MarketStateStoreFactory
+    let marketStateTransferCoordinator: MarketStateTransferCoordinator
     let optionLabStoreFactory: OptionLabStoreFactory
     let optionTransferCoordinator: OptionTransferCoordinator
     let ledgerStoreFactory: LedgerStoreFactory
@@ -38,6 +40,10 @@ public struct AppEnvironment: Sendable {
         self.equityAcquisition = Self.makeEquityAcquisition(database: self.businessData, workspaceLock: workspaceLock)
         self.ledgerTransferCoordinator = LedgerTransferCoordinator()
         self.optionTransferCoordinator = OptionTransferCoordinator()
+        self.marketStateTransferCoordinator = MarketStateTransferCoordinator()
+        self.marketStateStoreFactory = MarketStateStoreFactory(path: offlineResearchDatabasePath == ":memory:" ? ":memory:"
+            : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
+                .appendingPathComponent("market-state.sqlite").path)
         self.optionLabStoreFactory = OptionLabStoreFactory(path: offlineResearchDatabasePath == ":memory:" ? ":memory:"
             : URL(fileURLWithPath: offlineResearchDatabasePath).deletingLastPathComponent()
                 .appendingPathComponent("options-lab.sqlite").path)

@@ -52,6 +52,11 @@ import SecuritySupport
         return try await environment.makePortfolioWorkspaceModel()
     }
 
+    public func makeMarketStateWorkspaceModel() async throws -> MarketStateWorkspaceModel {
+        guard let environment else { throw WorkspacePreparationError.notReady }
+        return try await environment.makeMarketStateWorkspaceModel()
+    }
+
     public func makeOptionLabWorkspaceModel() async throws -> OptionLabWorkspaceModel {
         guard let environment else { throw WorkspacePreparationError.notReady }
         return try await environment.makeOptionLabWorkspaceModel()
