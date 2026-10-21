@@ -331,8 +331,29 @@ import XCTest
         let save = mainWindow.buttons["macroSourceSavePreview"]
         XCTAssertTrue(save.waitForExistence(timeout: 10)); waitEnabled(save)
         let scroll = mainWindow.scrollViews.element(boundBy: 0)
-        for _ in 0..<20 where !save.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
-        XCTAssertTrue(save.isHittable); save.click()
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        func clickFullyVisible(_ button: XCUIElement) {
+            func fullyVisible() -> Bool {
+                guard button.exists else { return false }
+                let viewport = scroll.frame.intersection(mainWindow.frame).insetBy(dx: 8, dy: 12)
+                return !viewport.isEmpty && !button.frame.isEmpty && viewport.contains(button.frame)
+            }
+            // macOS 15 can report isHittable while a catalog button is still
+            // clipped by the scroll viewport. Never click that exposed sliver.
+            for _ in 0..<30 {
+                if fullyVisible() { break }
+                guard button.exists else { XCTFail("Source action disappeared before scrolling"); return }
+                let distance = scroll.frame.midY - button.frame.midY
+                scroll.scroll(byDeltaX: 0, deltaY: max(-100, min(100, distance)))
+            }
+            waitEnabled(button)
+            guard fullyVisible(), button.isHittable else {
+                XCTFail("Source action is outside viewport: button=\(button.frame), scroll=\(scroll.frame)")
+                return
+            }
+            button.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        }
+        clickFullyVisible(save)
         let panel = sheet(in: mainWindow)
         XCTAssertTrue(panel.waitForExistence(timeout: 10))
         let confirm = panel.buttons["macroSourceConfirmSave"]
@@ -345,8 +366,7 @@ import XCTest
         waitText("已冻结", in: mainWindow.staticTexts["macroSourceMessage"])
         let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "macroSourceOpen-")).firstMatch
         XCTAssertTrue(open.waitForExistence(timeout: 10))
-        for _ in 0..<30 where !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -100) }
-        XCTAssertTrue(open.isHittable); waitEnabled(open); open.click()
+        clickFullyVisible(open)
         waitText("完整重放", in: mainWindow.staticTexts["macroSourceMessage"])
         waitText("可用修订 2 条", in: mainWindow.staticTexts["macroSourceCounts"])
         // Uses only a fixed synthetic raw JSON template; no system file panel,
