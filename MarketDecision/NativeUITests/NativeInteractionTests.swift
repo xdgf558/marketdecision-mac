@@ -315,6 +315,42 @@ import XCTest
         XCTAssertFalse(saveExperiment.isEnabled) // Missing assumptions do not produce a report.
         // No provider request, account, Keychain or file importer/exporter is invoked.
     }
+    func testMarketStateMissingEvidenceFrozenReplayAndArchiveCancellation() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageMarket"].waitForExistence(timeout: 15))
+        app.typeKey("9", modifierFlags: .command)
+        let template = mainWindow.buttons["marketMissingDemo"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let calculate = mainWindow.buttons["marketCalculate"]
+        waitEnabled(calculate); calculate.click()
+        waitText("暂无可靠判断", in: mainWindow.staticTexts["marketRegime"])
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["marketOrigin"])
+        let save = mainWindow.buttons["marketSave"]
+        waitEnabled(save); save.click(); waitEnabled(save, false)
+        waitText("已冻结", in: mainWindow.staticTexts["marketMessage"])
+        researchTab("已保存快照")
+        let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "marketOpen-")).firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10)); waitEnabled(open); open.click()
+        waitText("完整输入重放核对通过", in: mainWindow.staticTexts["marketReplay"])
+        waitText("暂无可靠判断", in: mainWindow.staticTexts["marketRegime"])
+        researchTab("市场归档")
+        waitText("市场快照 1", in: mainWindow.staticTexts["marketArchiveCounts"])
+        let preview = mainWindow.buttons["marketArchiveClear"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10)); waitEnabled(preview)
+        let scroll = mainWindow.scrollViews.element(boundBy: 0)
+        for _ in 0..<20 where !preview.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
+        XCTAssertTrue(preview.isHittable); preview.click()
+        let panel = sheet(in: mainWindow)
+        XCTAssertTrue(panel.waitForExistence(timeout: 10))
+        let commit = panel.buttons["marketArchiveCommit"]
+        XCTAssertTrue(commit.waitForExistence(timeout: 5)); XCTAssertFalse(commit.isEnabled)
+        app.typeKey(.return, modifierFlags: []); XCTAssertTrue(panel.exists)
+        panel.buttons["marketArchiveCancel"].click(); waitNoSheet(in: mainWindow)
+        waitText("已取消预检计划", in: mainWindow.staticTexts["marketMessage"])
+        waitText("市场快照 1", in: mainWindow.staticTexts["marketArchiveCounts"])
+        // Does not open an importer, exporter or system file panel.
+    }
+
     func testOptionDailySummaryReplayAndArchivePreviewCancellation() {
         configure(); app.launch()
         XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))

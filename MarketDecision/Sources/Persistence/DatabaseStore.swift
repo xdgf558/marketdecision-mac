@@ -3,8 +3,8 @@ import GRDB
 
 public enum MigrationError: Error, Equatable { case invalidCatalog, unsupportedHistory, incompatiblePurpose }
 public enum DatabasePurpose: Sendable, Equatable {
-    case business, offlineIssuerResearch, secResearch, portfolioLedger, optionsLab
-    // Stable SQLite file markers: MDB1, MDO1, MDS1, MDL1 and MDQ1. These are independent of the
+    case business, offlineIssuerResearch, secResearch, portfolioLedger, optionsLab, marketState
+    // Stable SQLite file markers: MDB1, MDO1, MDS1, MDL1, MDQ1 and MDM1. These are independent of the
     // migration history and survive clearing the business rows.
     var applicationID: Int {
         switch self {
@@ -13,6 +13,7 @@ public enum DatabasePurpose: Sendable, Equatable {
         case .secResearch: 0x4d445331
         case .portfolioLedger: 0x4d444c31
         case .optionsLab: 0x4d445131
+        case .marketState: 0x4d444d31
         }
     }
 }
@@ -37,6 +38,8 @@ public struct DatabaseStore: Sendable {
             coreMigrations = [Self.portfolioLedgerMigration, Self.portfolioPerformanceMigration, Self.portfolioArchiveMigration]
         case .optionsLab:
             coreMigrations = [Self.optionsLabMigration, Self.optionDailyMigration, Self.optionChainMigration, Self.portfolioGreeksMigration, Self.optionEvidenceMigration]
+        case .marketState:
+            coreMigrations = [Self.marketStateMigration]
         default:
             coreMigrations = [Self.phase1BusinessMigration, Self.phase1CalendarMigration, Self.phase1SECMigration, Self.phase1EquityMigration, Self.phase1ResearchMigration, Self.phase1ResearchTransferMigration]
                 + (purpose == .secResearch ? [Self.secResearchCatalogMigration, Self.secResearchMetadataIndexMigration, Self.secFinancialReportMigration, Self.secValuationSupplementMigration] : [])

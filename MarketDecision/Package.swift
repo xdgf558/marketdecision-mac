@@ -18,21 +18,22 @@ let package = Package(
         .target(name: "MarketDataProviders", dependencies: ["CoreDomain", "DataContracts", "DataProviders"], path: "Sources/MarketDataProviders",
                 resources: [.process("Resources")]),
         .target(name: "MacroProviders", dependencies: ["DataProviders"], path: "Sources/MacroProviders"),
+        .target(name: "MarketAnalytics", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/MarketAnalytics"),
         .target(name: "FundamentalsEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/FundamentalsEngine"),
         .target(name: "OptionsAnalytics", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts"], path: "Sources/OptionsAnalytics"),
         .target(name: "BacktestEngine", dependencies: ["CoreCalculations", "DataContracts"], path: "Sources/BacktestEngine"),
-        .target(name: "PortfolioEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "OptionsAnalytics"], path: "Sources/PortfolioEngine"),
+        .target(name: "PortfolioEngine", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "OptionsAnalytics", "MarketAnalytics"], path: "Sources/PortfolioEngine"),
         .target(name: "DecisionJournal", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/DecisionJournal"),
         .target(name: "AlertEngine", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AlertEngine"),
-        .target(name: "Persistence", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),
+        .target(name: "Persistence", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),
         .target(name: "SecuritySupport", dependencies: [], path: "Sources/Security"),
         .target(name: "AIInsights", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AIInsights"),
         .target(name: "UIComponents", dependencies: [], path: "Sources/UIComponents"),
-        .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics"], path: "Sources/AppComposition",
+        .target(name: "AppComposition", dependencies: ["CoreDomain", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics"], path: "Sources/AppComposition",
                 resources: [.process("Resources")]),
         .executableTarget(name: "FoundationCodecProbe", dependencies: ["CoreDomain"], path: "Tools/FoundationCodecProbe"),
         .executableTarget(name: "SECNetworkIsolationProbe", dependencies: ["SECNetworkBroker", "EquityNetworkBroker"], path: "Tools/SECNetworkIsolationProbe"),
-        .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
+        .testTarget(name: "FoundationTests", dependencies: ["CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
     ],
     swiftLanguageModes: [.v6]
 )
