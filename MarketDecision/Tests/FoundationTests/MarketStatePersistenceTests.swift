@@ -39,7 +39,7 @@ struct MarketStatePersistenceTests {
             #expect(throws: MarketStateStorageError.incompatiblePurpose) { _ = try MarketStateStore(database: database) }
         }
         let database = try marketDB()
-        #expect(try database.migrationVersions() == ["foundation.v1", "market-state.v1"])
+        #expect(try database.migrationVersions() == ["foundation.v1", "market-state.v1", "market-state.v2"])
     }
     @Test func frozenInputSurvivesPurgeAndDatabaseReopen() async throws {
         let path = marketPath(); defer { try? FileManager.default.removeItem(at: path) }
@@ -153,7 +153,7 @@ struct MarketStatePersistenceTests {
         let archive = try await MarketStateArchiveStore(database: db).exportArchive()
         let files = try ResearchZIP.decode(archive)
         let manifest = try JSONDecoder().decode(MarketStateArchiveCodec.Manifest.self, from: #require(files["manifest.json"]))
-        #expect(manifest.format == "market-state-archive.v1" && manifest.purpose == "MDM1" && !manifest.encrypted)
+        #expect(manifest.format == "market-state-archive.v2" && manifest.purpose == "MDM1" && !manifest.encrypted)
         #expect(manifest.marketReports == 1 && manifest.attributionReports == 1)
         let target = try marketDB(), targetStore = try MarketStateStore(database: target), transfer = try MarketStateArchiveStore(database: target)
         let plan = try await transfer.prepareRestore(archive, mode: .replace, expectedRevision: targetStore.revision())

@@ -49,8 +49,8 @@ public actor MarketStateArchiveStore: MarketStateArchiveStorage {
         let baseline = try status(); try Self.check(baseline, expectedRevision)
         let current = try capture(expectedRevision)
         try current.validate()
-        guard ids.isSubset(of: Set(current.entries.map { $0.summary.id })) else { throw MarketStateStorageError.notFound }
-        let candidate = MarketArchiveState(format: MarketArchiveState.format, entries: current.entries.filter { !ids.contains($0.summary.id) })
+        guard ids.isSubset(of: Set(current.entries.map { $0.summary.id } + current.macroEntries.map { $0.summary.id })) else { throw MarketStateStorageError.notFound }
+        let candidate = MarketArchiveState(format: MarketArchiveState.format, entries: current.entries.filter { !ids.contains($0.summary.id) }, macroEntries: current.macroEntries.filter { !ids.contains($0.summary.id) })
         return try prepare(operation: .delete, baseline: baseline, candidate: candidate,
             existingHash: LedgerCSV.hash(try MarketStateStore.encode(current)))
     }
@@ -68,6 +68,9 @@ public actor MarketStateArchiveStore: MarketStateArchiveStorage {
                 if let hash = pending.existingHash {
                     let current = try MarketArchiveState.capture(db)
                     guard LedgerCSV.hash(try MarketStateStore.encode(current)) == hash else { throw MarketStateStorageError.corruptedStorage }
+                    if pending.plan.operation == .merge, current == pending.state {
+                        return MarketStateTransferResult(revision: before.revision, counts: before.counts)
+                    }
                 }
                 try Task.checkCancellation()
                 try MarketArchiveState.clearFrozen(db)
@@ -105,9 +108,9 @@ public actor MarketStateArchiveStore: MarketStateArchiveStorage {
             LedgerCSV.hash(bytes), existingHash ?? "replaceable-bodies"]
         let digest = LedgerCSV.hash(try MarketStateStore.encode(fields))
         let details = [
-            operation == .clear ? "清空独立市场库的历史快照、交易归因与可清理源缓存。" : "只变更独立市场库的冻结快照和交易归因，保留目标库源缓存。",
+            operation == .clear ? "清空独立市场库的历史快照、交易归因、冻结宏观来源/桥接报告与可清理源缓存。" : "只变更独立市场库的冻结快照、交易归因、宏观来源和桥接报告，保留目标库源缓存。",
             "研究、期权、portfolio-ledger.sqlite 和 Keychain 不变；嵌入交易证据不会恢复到账本。",
-            "ZIP 不加密，归档不含源缓存；快照包含重放所需的独立输入。打开前完整重算，目录不显示缓存分数。",
+            "ZIP 不加密，归档不含可清理源缓存；宏观原文件/发布证据独立冻结，快照包含重放所需的完整输入。打开前完整重算，目录不显示缓存分数。",
             "相同原始身份不同内容保留两份，结果含 \(result.conflictCopies) 份冲突副本；只重映射目录身份，不改冻结输入、报告或嵌入账本证据。重复导入按原始身份与内容哈希去重。",
             "批准只在本进程有效；字节预算不是进程内存上限。"
         ]
@@ -125,17 +128,20 @@ public actor MarketStateArchiveStore: MarketStateArchiveStorage {
     static func metadata(_ db: Database) throws -> MarketStateArchiveStatus {
         let revision = try MarketStateStore.revision(db)
         let names = Set(try String.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*'"))
-        guard names == Set(["grdb_migrations", "market_state_metadata", "market_state_catalog", "market_state_documents", "market_state_source_cache"]) else { throw MarketStateStorageError.unsupportedFormat }
-        let bodyCount = try MarketStateStore.count("market_state_documents", db)
-        let catalogCount = try MarketStateStore.count("market_state_catalog", db)
+        guard names == Set(["grdb_migrations", "market_state_metadata", "market_state_catalog", "market_state_documents", "market_state_source_cache", "market_macro_catalog", "market_macro_documents", "market_macro_sources", "market_macro_observations"]) else { throw MarketStateStorageError.unsupportedFormat }
+        let bodyCount = try MarketStateStore.count("market_state_documents", db) + MarketStateStore.count("market_macro_documents", db)
+        let catalogCount = try MarketStateStore.count("market_state_catalog", db) + MarketStateStore.count("market_macro_catalog", db)
         // Independent counts deliberately permit repair of missing/orphaned old
         // bodies. Merge/export still demand a complete, verified graph.
         guard bodyCount <= MarketStateStore.maximumReports, catalogCount <= MarketStateStore.maximumReports else { throw MarketStateStorageError.corruptedStorage }
         let market = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_state_catalog WHERE kind='marketState'") ?? 0
         let trades = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_state_catalog WHERE kind='tradeAttribution'") ?? 0
-        guard market + trades == catalogCount else { throw MarketStateStorageError.corruptedStorage }
-        let conflicts = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_state_catalog WHERE document_id != original_input_id") ?? 0
-        return .init(revision: revision, counts: .init(marketReports: market, attributionReports: trades, documentBodies: bodyCount, conflictCopies: conflicts,
+        let macro = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_macro_catalog WHERE kind='source'") ?? 0
+        let bridges = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_macro_catalog WHERE kind='marketBridge'") ?? 0
+        guard market + trades + macro + bridges == catalogCount else { throw MarketStateStorageError.corruptedStorage }
+        let conflicts = try Int.fetchOne(db, sql: "SELECT (SELECT COUNT(*) FROM market_state_catalog WHERE document_id != original_input_id) + (SELECT COUNT(*) FROM market_macro_catalog WHERE document_id != original_input_id)") ?? 0
+        return .init(revision: revision, counts: .init(marketReports: market, attributionReports: trades, macroReports: macro, bridgeReports: bridges,
+            frozenSources: try MarketStateStore.count("market_macro_sources", db), sourceObservations: try MarketStateStore.count("market_macro_observations", db), documentBodies: bodyCount, conflictCopies: conflicts,
             cachedSources: try MarketStateStore.count("market_state_source_cache", db)))
     }
 }

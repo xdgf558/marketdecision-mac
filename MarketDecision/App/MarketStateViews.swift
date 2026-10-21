@@ -53,6 +53,7 @@ struct MarketStateContent: View {
                 .font(.callout).foregroundStyle(.secondary)
             Picker("市场工作区内容", selection: $section) {
                 Text("总览与计算").tag("总览与计算"); Text("数据与历史").tag("数据与历史")
+                Text("来源导入").tag("来源导入")
                 Text("已保存快照").tag("已保存快照"); Text("市场归档").tag("市场归档")
             }.pickerStyle(.segmented).accessibilityIdentifier("marketSections")
             if let message = model.message { Text(message).foregroundStyle(model.hasError ? Color.red : Color.secondary).accessibilityIdentifier("marketMessage") }
@@ -60,6 +61,7 @@ struct MarketStateContent: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if section == "市场归档" { MarketStateArchiveContent(model: model) }
+                    else if section == "来源导入", let sources = model.sources { MacroSourceContent(model: sources, marketBase: model.report?.input) }
                     else if section == "已保存快照" { catalog }
                     else if section == "数据与历史" {
                         if let report = model.report { history(report); sources(report) }

@@ -315,6 +315,44 @@ import XCTest
         XCTAssertFalse(saveExperiment.isEnabled) // Missing assumptions do not produce a report.
         // No provider request, account, Keychain or file importer/exporter is invoked.
     }
+    func testMacroSourceExplicitPreviewApprovalAndFrozenReleaseCycleReplay() {
+        configure(); app.launch()
+        XCTAssertTrue(mainWindow.buttons["pageMarket"].waitForExistence(timeout: 15))
+        app.typeKey("9", modifierFlags: .command)
+        XCTAssertTrue(mainWindow.staticTexts["marketTitle"].waitForExistence(timeout: 15))
+        researchTab("来源导入")
+        let template = mainWindow.buttons["macroSourceDemo"]
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        let preview = mainWindow.buttons["macroSourcePreview"]
+        waitEnabled(preview); preview.click()
+        waitText("尚未保存", in: mainWindow.staticTexts["macroSourcePreviewState"])
+        waitText("可用修订 2 条", in: mainWindow.staticTexts["macroSourceCounts"])
+        waitText("SYNTHETIC", in: mainWindow.staticTexts["macroSourceOrigin"])
+        let save = mainWindow.buttons["macroSourceSavePreview"]
+        XCTAssertTrue(save.waitForExistence(timeout: 10)); waitEnabled(save)
+        let scroll = mainWindow.scrollViews.element(boundBy: 0)
+        for _ in 0..<20 where !save.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
+        XCTAssertTrue(save.isHittable); save.click()
+        let panel = sheet(in: mainWindow)
+        XCTAssertTrue(panel.waitForExistence(timeout: 10))
+        let confirm = panel.buttons["macroSourceConfirmSave"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); XCTAssertFalse(confirm.isEnabled)
+        app.typeKey(.return, modifierFlags: []); XCTAssertTrue(panel.exists)
+        let text = panel.textFields["macroSourceConfirmText"]
+        XCTAssertTrue(text.waitForExistence(timeout: 5)); text.click(); text.typeText("确认")
+        waitEnabled(confirm); confirm.click(); waitNoSheet(in: mainWindow)
+        waitText("已保存来源", in: mainWindow.staticTexts["macroSourcePreviewState"])
+        waitText("已冻结", in: mainWindow.staticTexts["macroSourceMessage"])
+        let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "macroSourceOpen-")).firstMatch
+        XCTAssertTrue(open.waitForExistence(timeout: 10))
+        for _ in 0..<30 where !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -100) }
+        XCTAssertTrue(open.isHittable); waitEnabled(open); open.click()
+        waitText("完整重放", in: mainWindow.staticTexts["macroSourceMessage"])
+        waitText("可用修订 2 条", in: mainWindow.staticTexts["macroSourceCounts"])
+        // Uses only a fixed synthetic raw JSON template; no system file panel,
+        // provider credential or network request is part of this test.
+    }
+
     func testMarketStateMissingEvidenceFrozenReplayAndArchiveCancellation() {
         configure(); app.launch()
         XCTAssertTrue(mainWindow.buttons["pageMarket"].waitForExistence(timeout: 15))
