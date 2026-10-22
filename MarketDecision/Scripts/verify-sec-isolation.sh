@@ -33,7 +33,9 @@ python3 "$project_root/Scripts/check-demo-entitlements.py" "$probe_app"
 # remains validly signed, but changing it without re-signing the containing app must fail.
 pristine_app="$probe_root/Pristine.app"
 ditto "$probe_app" "$pristine_app"
+tamper_failed=0
 for service in SECNetworkService EquityNetworkService AIAnalysisNetworkService; do
+  echo "CHECK: independent replacement fixture for $service"
   rm -rf "$probe_app"
   ditto "$pristine_app" "$probe_app"
   python3 - "$probe_app" "$service" <<'PY'
@@ -45,7 +47,21 @@ path.write_bytes(plistlib.dumps(value))
 PY
   codesign --force --sign - --options runtime --entitlements "$project_root/App/$service.entitlements" \
     "$probe_app/Contents/XPCServices/$service.xpc"
-  "$probe_app/Contents/MacOS/SECNetworkIsolationProbe" --expect-invalid-broker
+  # Establish the fixture independently: a valid nested signature must violate the
+  # unchanged containing seal. Never count a broken/unsigned helper as this rejection case.
+  codesign --verify --strict "$probe_app/Contents/XPCServices/$service.xpc"
+  if codesign --verify --deep --strict "$probe_app" > "$probe_root/outer-seal-check.log" 2>&1; then
+    echo "FAIL: replacement fixture did not invalidate the containing app seal ($service)" >&2
+    exit 1
+  fi
+  echo "PASS: replacement helper valid; containing app seal invalid ($service)"
+  if ! "$probe_app/Contents/MacOS/SECNetworkIsolationProbe" --expect-invalid-broker "$service"; then
+    tamper_failed=1
+  fi
 done
+if [[ "$tamper_failed" != 0 ]]; then
+  echo 'FAIL: one or more replacement fixtures were accepted by a broker' >&2
+  exit 1
+fi
 # Synthetic process/IPC denial only: no valid provider requests, credentials, file panels,
 # Apple Development signature, production workflow or performance acceptance.

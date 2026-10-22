@@ -306,36 +306,20 @@ struct SECResearchContent: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func overviewMetrics(_ report: SECFinancialReportDocument) -> some View {
-        let base = report.financials.baseReport.metrics
-        let growth = report.financials.growthReport.metrics
-        let rows: [(String, String, FundamentalMetric?)] = [
-            ("收入", "USD · TTM", base["revenue"]),
-            ("净利润", "USD · TTM", base["netIncome"]),
-            ("自由现金流", "USD · TTM", base["fcf"]),
-            ("现金", "USD", base["cash"]),
-            ("债务（含租赁）", "USD", base["debt"]),
-            ("三年收入增长", "年复合增长率", growth["revenueCAGR3Y"])
-        ]
+        let rows = SECFinancialOverview.rows(for: report.financials)
         return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), alignment: .leading)], alignment: .leading, spacing: 22) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+            ForEach(rows) { row in
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(row.0).font(.callout).foregroundStyle(.secondary)
-                    Text(overviewMetricValue(row.2, percent: row.0 == "三年收入增长"))
+                    Text(row.title).font(.callout).foregroundStyle(.secondary)
+                    Text(row.displayValue)
                         .font(.title3.weight(.semibold)).monospacedDigit().textSelection(.enabled)
-                    Text(row.1).font(.caption).foregroundStyle(.secondary)
-                    if let flags = row.2?.flags, !flags.isEmpty {
+                    Text(row.unit).font(.caption).foregroundStyle(.secondary)
+                    if let flags = row.metric?.flags, !flags.isEmpty {
                         Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             }
         }.accessibilityIdentifier("stockOverviewMetrics")
-    }
-    private func overviewMetricValue(_ metric: FundamentalMetric?, percent: Bool) -> String {
-        guard let value = metric?.value else { return financialMetricValue(metric) }
-        // Presentation only: retain the canonical exact value in the report and its full detail.
-        if percent, let percentage = try? value.multiplied(by: "100"),
-           let text = try? percentage.fixedString() { return text + "%" }
-        return value.decimalString
     }
     private var progressText: String {
         if model.archiveRestoreInProgress { return "正在恢复 SEC 研究并刷新本地列表…" }

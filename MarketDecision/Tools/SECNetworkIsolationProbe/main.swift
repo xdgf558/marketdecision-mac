@@ -34,14 +34,27 @@ import AIAnalysisNetworkBroker
     }
 
     static func main() async {
-        if CommandLine.arguments.dropFirst() == ["--expect-invalid-broker"] {
-            guard !SECNetworkServiceAvailability.isAvailable, !EquityNetworkServiceAvailability.isAvailable,
-                  !AIAnalysisServiceAvailability.isAvailable else {
-                fail("replaced-helper-accepted")
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--expect-invalid-broker" {
+            guard arguments.count == 2, Broker.allCases.contains(where: { $0.name == arguments[1] }) else {
+                fail("invalid-replacement-probe-arguments")
             }
+            // Evaluate every broker before asserting; a short-circuit guard hides which
+            // other routes would accept the same modified application package.
+            let availability: [(Broker, Bool)] = [
+                (.sec, SECNetworkServiceAvailability.isAvailable),
+                (.equity, EquityNetworkServiceAvailability.isAvailable),
+                (.aiAnalysis, AIAnalysisServiceAvailability.isAvailable),
+            ]
+            for (broker, available) in availability {
+                print("CHECK: replacement=" + arguments[1] + " broker=" + broker.name
+                    + " available=" + String(available))
+            }
+            guard availability.allSatisfy({ !$0.1 }) else { fail("replaced-helper-accepted") }
             print("PASS: main sealed resources reject an independently re-signed replacement helper for all three brokers")
             return
         }
+        guard arguments.isEmpty else { fail("invalid-probe-arguments") }
         guard SECNetworkServiceAvailability.isAvailable, EquityNetworkServiceAvailability.isAvailable,
               AIAnalysisServiceAvailability.isAvailable else { fail("broker-unavailable") }
         // No listener is needed: EPERM is an OS denial, unlike ECONNREFUSED/timeout.

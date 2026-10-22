@@ -114,8 +114,70 @@ struct LedgerWorkspaceContent: View {
     }
     private var busy: Bool { model.isBusy || fileFlow.isBusy }
 
+    // Keep the view and modifier groups in separate expressions for the Swift 6.1 compiler.
     var body: some View {
+        draftObservedContent
+        .onAppear { visible = true; accountExpanded = model.snapshot?.accounts.isEmpty != false }
+        .onChange(of: model.snapshot?.accounts.count) { _, _ in accountExpanded = model.snapshot?.accounts.isEmpty != false }
+        .onDisappear {
+            visible = false; fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); approval = nil
+            model.disappear()
+        }
+    }
+
+    private var draftObservedContent: some View {
+        workspaceObservedContent
+        .onChange(of: csvText) { _, value in
+            if Data(value.utf8) != selectedCSVDisplayBytes { selectedCSVBytes = nil; selectedCSVDisplayBytes = nil }
+            excludedRows = []; invalidateDraft()
+        }
+        .onChange(of: actionMappings) { _, _ in invalidateDraft() }
+        .onChange(of: sourceSystem) { _, _ in invalidateDraft() }
+        .onChange(of: fields) { _, _ in invalidateDraft() }
+        .onChange(of: correctionID) { _, _ in invalidateDraft() }
+        .onChange(of: reversalTimestamp) { _, _ in invalidateDraft() }
+        .onChange(of: reversalReason) { _, _ in invalidateDraft() }
+        .onChange(of: reversalBatchID) { _, _ in invalidateDraft() }
+    }
+
+    private var workspaceObservedContent: some View {
+        filePresentationContent
+        .onChange(of: model.transferEpoch) { _, _ in
+            fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); importing = false; approval = nil
+            staged = []; correctionID = ""; reversalBatchID = ""; form = Self.newManualDraft()
+            csvText = ""; selectedCSVBytes = nil; selectedCSVDisplayBytes = nil; parsedHeaders = []; excludedRows = []
+        }
+        .onChange(of: model.preview?.id) { _, id in if approval?.id != id { approval = nil } }
+        .onChange(of: form) { _, _ in if !model.isBusy { invalidateDraft() } }
+        .onChange(of: model.selectedAccountID) { _, _ in
+            staged = []; correctionID = ""; approval = nil; reversalBatchID = ""
+            form.lots = [:]; form.equityLots = [:]; form.existingOption = nil
+        }
+    }
+
+    private var filePresentationContent: some View {
         let fileRequest = fileFlow.id
+        return workspaceContent
+        .sheet(item: $approval) { item in confirmationSheet(item) }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { result in
+            guard visible, fileFlow.owns(fileRequest) else { return }
+            guard case .success(let urls) = result, urls.count == 1, let url = urls.first else {
+                finishFile(.failed, request: fileRequest); return
+            }
+            guard fileFlow.selectFile(for: fileRequest) else { return }
+            fileTask = Task {
+                if let bytes = await model.readSelectedCSV(url), let text = String(data: bytes, encoding: .utf8), visible, fileFlow.owns(fileRequest), !Task.isCancelled {
+                    selectedCSVBytes = bytes; selectedCSVDisplayBytes = Data(text.utf8)
+                    csvText = text; excludedRows = []; parsedHeaders = (try? LedgerCSV.parse(bytes).headers) ?? []
+                    finishRead(succeeded: true, request: fileRequest)
+                } else if visible, fileFlow.owns(fileRequest) {
+                    finishRead(succeeded: false, request: fileRequest)
+                }
+            }
+        } onCancellation: { finishFile(.cancelled, request: fileRequest) }
+    }
+
+    private var workspaceContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -152,51 +214,6 @@ struct LedgerWorkspaceContent: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             }
         }.padding(24)
-        .sheet(item: $approval) { item in confirmationSheet(item) }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.commaSeparatedText, .plainText], allowsMultipleSelection: false) { result in
-            guard visible, fileFlow.owns(fileRequest) else { return }
-            guard case .success(let urls) = result, urls.count == 1, let url = urls.first else {
-                finishFile(.failed, request: fileRequest); return
-            }
-            guard fileFlow.selectFile(for: fileRequest) else { return }
-            fileTask = Task {
-                if let bytes = await model.readSelectedCSV(url), let text = String(data: bytes, encoding: .utf8), visible, fileFlow.owns(fileRequest), !Task.isCancelled {
-                    selectedCSVBytes = bytes; selectedCSVDisplayBytes = Data(text.utf8)
-                    csvText = text; excludedRows = []; parsedHeaders = (try? LedgerCSV.parse(bytes).headers) ?? []
-                    finishRead(succeeded: true, request: fileRequest)
-                } else if visible, fileFlow.owns(fileRequest) {
-                    finishRead(succeeded: false, request: fileRequest)
-                }
-            }
-        } onCancellation: { finishFile(.cancelled, request: fileRequest) }
-        .onChange(of: model.transferEpoch) { _, _ in
-            fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); importing = false; approval = nil
-            staged = []; correctionID = ""; reversalBatchID = ""; form = Self.newManualDraft()
-            csvText = ""; selectedCSVBytes = nil; selectedCSVDisplayBytes = nil; parsedHeaders = []; excludedRows = []
-        }
-        .onChange(of: model.preview?.id) { _, id in if approval?.id != id { approval = nil } }
-        .onChange(of: form) { _, _ in if !model.isBusy { invalidateDraft() } }
-        .onChange(of: model.selectedAccountID) { _, _ in
-            staged = []; correctionID = ""; approval = nil; reversalBatchID = ""
-            form.lots = [:]; form.equityLots = [:]; form.existingOption = nil
-        }
-        .onChange(of: csvText) { _, value in
-            if Data(value.utf8) != selectedCSVDisplayBytes { selectedCSVBytes = nil; selectedCSVDisplayBytes = nil }
-            excludedRows = []; invalidateDraft()
-        }
-        .onChange(of: actionMappings) { _, _ in invalidateDraft() }
-        .onChange(of: sourceSystem) { _, _ in invalidateDraft() }
-        .onChange(of: fields) { _, _ in invalidateDraft() }
-        .onChange(of: correctionID) { _, _ in invalidateDraft() }
-        .onChange(of: reversalTimestamp) { _, _ in invalidateDraft() }
-        .onChange(of: reversalReason) { _, _ in invalidateDraft() }
-        .onChange(of: reversalBatchID) { _, _ in invalidateDraft() }
-        .onAppear { visible = true; accountExpanded = model.snapshot?.accounts.isEmpty != false }
-        .onChange(of: model.snapshot?.accounts.count) { _, _ in accountExpanded = model.snapshot?.accounts.isEmpty != false }
-        .onDisappear {
-            visible = false; fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); approval = nil
-            model.disappear()
-        }
     }
 
     private var accountSection: some View {

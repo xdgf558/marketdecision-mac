@@ -2,6 +2,7 @@
   "version": 1,
   "scope": "Public source, synthetic tests and fixed issuer-excerpt accounting only; private requirements and full source evidence remain local.",
   "sources": [
+    {"path": "Sources/AppComposition/SECFinancialOverview.swift", "kind": "tested", "suites": ["FoundationTests.SECFinancialOverviewTests"], "reason": "The native overview uses this report projection; full synthetic SEC acceptance and financial replay verify cash/CAGR ownership, exact display values and explicit missing-history reasons. Not visual or real-company acceptance."},
     {"path": "App/AIAnalysisNetworkService/main.swift", "kind": "build_only", "suites": [], "reason": "Candidate app-private XPC listener. Formal embedding/signing awaits the separate permission proposal; actual helper IPC, real API and account execution are not covered by Swift Testing."},
     {"path": "App/AIInsightViews.swift", "kind": "build_only", "suites": [], "reason": "Native manual AI interpretation and local key settings are application-build scope only; visual/native interaction and actual external submission have not executed, and file panels are prohibited."},
     {"path": "Sources/AppComposition/AIInsightWorkspaceModel.swift", "kind": "tested", "suites": ["FoundationTests.AIInsightWorkspaceTests"], "reason": "Synthetic manual-analysis lifecycle checks service-before-key ordering, no work on navigation, report/credential generations, cancellation, delayed close and result binding. Production service composition is not live API acceptance."},
@@ -260,6 +261,8 @@
     {"path": "Sources/AppComposition/InvestmentPresentation.swift", "kind": "tested", "suites": ["FoundationTests.InvestmentPresentationTests"], "reason": "Reconciled period profit, no deposit-as-profit, explicit missingness, private-by-default share projection and a fixed payload-free X URL; not external publication."}
   ],
   "tests": [
+    {"selector": "FoundationTests.SECFinancialOverviewTests/completeAnnualEvidenceDisplaysCashAndCAGRFromCalculatedCompletionReport()", "source": "Tests/FoundationTests/SECFinancialOverviewTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.SECFinancialOverviewTests/missingAnnualHistoryPreservesTheCalculatedUnavailableReason()", "source": "Tests/FoundationTests/SECFinancialOverviewTests.swift", "execution": "required"},
     {"selector": "FoundationTests.MacroSourceEngineTests/clippedRealtimeEndDoesNotInventExpiryOrPublication(_:)", "source": "Tests/FoundationTests/MacroSourceEngineTests.swift", "execution": "required"},
     {"selector": "FoundationTests.MacroMarketBridgeTests/alteredMarketResultOrBridgeVersionCannotPassReopening()", "source": "Tests/FoundationTests/MacroMarketBridgeTests.swift", "execution": "required"},
     {"selector": "FoundationTests.MacroMarketBridgeTests/existingPriceTotalReturnAndCalendarInputsRemainDistinctAndUnchanged()", "source": "Tests/FoundationTests/MacroMarketBridgeTests.swift", "execution": "required"},
