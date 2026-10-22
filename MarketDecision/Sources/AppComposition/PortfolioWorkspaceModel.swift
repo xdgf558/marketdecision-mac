@@ -5,7 +5,19 @@ import Persistence
 
 public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, frozen, synthetic }
 
-/// Page-local state. Every preview captures both revisions before suspension;
+/// A draft's original context, including the visible investment-entry session.
+/// Reusing evidence does not authorize silently moving its draft to new revisions.
+public struct PortfolioPreparationBaseline: Equatable, Sendable {
+    public let ledgerRevision: UUID
+    public let performanceRevision: UUID
+    public let inputEpoch: UUID
+    public init(ledgerRevision: UUID, performanceRevision: UUID, inputEpoch: UUID) {
+        self.ledgerRevision = ledgerRevision; self.performanceRevision = performanceRevision; self.inputEpoch = inputEpoch
+    }
+}
+
+/// Investment-entry state, shared by its daily and advanced subpages.
+/// Every preview captures both revisions before suspension;
 /// only storage can freeze the result against the same ledger and evidence history.
 @MainActor @Observable public final class PortfolioWorkspaceModel: LedgerTransferParticipant {
     public private(set) var context: PerformanceStoreContext?
@@ -23,6 +35,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     private let storage: any PerformanceStorage
     public private(set) var transfer: LedgerTransferModel?
     public private(set) var transferEpoch = UUID()
+    public private(set) var inputEpoch = UUID()
     private var transferOperation: UUID?
     private var transferRefreshedGeneration: UUID?
     private var generation = UUID()
@@ -39,6 +52,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     }
     func beginLedgerTransfer(_ id: UUID) {
         transferOperation = id; transferEpoch = UUID(); transferRefreshedGeneration = nil
+        inputEpoch = UUID()
         generation = UUID(); operation = nil; isBusy = true
         let previous = takePreview()
         context = nil; saved = []; clearReport(); message = nil; hasError = false; listError = nil
@@ -59,10 +73,15 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     }
     public var canPrepare: Bool { !isBusy && context != nil && selectedAccountID != nil }
     public var canSave: Bool { !isBusy && preview != nil && origin == .preview }
+    public var preparationBaseline: PortfolioPreparationBaseline? {
+        guard visible, let context, selectedAccountID != nil else { return nil }
+        return .init(ledgerRevision: context.ledger.revision, performanceRevision: context.revision, inputEpoch: inputEpoch)
+    }
 
     public func load() async {
         visible = true
         guard !isBusy else { return }
+        inputEpoch = UUID()
         let previous = takePreview(), token = begin()
         clearReport(); context = nil
         defer { finish(token) }
@@ -75,6 +94,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
 
     public func chooseAccount(_ accountID: String) async {
         guard !isBusy, context?.ledger.accounts.contains(where: { $0.id == accountID }) == true else { return }
+        inputEpoch = UUID()
         let previous = takePreview(), token = begin()
         selectedAccountID = accountID; saved = []; clearReport()
         defer { finish(token) }
@@ -84,7 +104,21 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
     }
 
     public func prepare(_ request: PerformanceRequest, rawRequest: Data? = nil) async {
-        guard canPrepare, let baseline = context, let accountID = selectedAccountID else { return }
+        guard let baseline = preparationBaseline else { return }
+        await prepare(request, rawRequest: rawRequest, baseline: baseline)
+    }
+
+    /// Daily drafts must retain the baseline captured when editing began.
+    /// The legacy advanced action above captures its baseline at the explicit
+    /// calculate action; this overload never replaces an already bound baseline.
+    public func prepare(_ request: PerformanceRequest, rawRequest: Data? = nil,
+                        baseline: PortfolioPreparationBaseline) async {
+        guard canPrepare, let accountID = selectedAccountID else { return }
+        guard baseline == preparationBaseline else {
+            draftChanged(); hasError = true
+            message = "草稿对应的账本、收益版本或输入会话已变化，未计算或保存。请核对当前账户并重新开始本次核算。"
+            return
+        }
         guard request.accountID == accountID else {
             draftChanged(); hasError = true; message = "证据中的账户与当前选择不一致，未计算或保存。"; return
         }
@@ -95,7 +129,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
         guard owns(token), !Task.isCancelled else { return }
         do {
             let value = try await storage.prepare(request: request, rawRequest: rawRequest,
-                expectedLedgerRevision: baseline.ledger.revision, expectedPerformanceRevision: baseline.revision)
+                expectedLedgerRevision: baseline.ledgerRevision, expectedPerformanceRevision: baseline.performanceRevision)
             guard owns(token), !Task.isCancelled else { await storage.cancel(planID: value.id); return }
             preview = value; report = value.report; displayedRequest = request; origin = .preview
             message = "已按当前账本与显式证据计算，尚未冻结。请核对估值缺口、会话和收益分段；缺失数据不当作零。"
@@ -203,6 +237,7 @@ public enum PortfolioDisplayOrigin: String, Sendable { case none, preview, froze
 
     public func disappear() {
         visible = false; generation = UUID(); operation = nil
+        inputEpoch = UUID()
         let previous = takePreview(); context = nil; saved = []; clearReport(); message = nil; hasError = false
         if committing == nil {
             isBusy = transferOperation != nil

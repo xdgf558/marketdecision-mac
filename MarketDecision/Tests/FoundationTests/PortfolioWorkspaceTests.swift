@@ -79,6 +79,7 @@ private actor PortfolioWorkspaceFake: PerformanceStorage {
         return result
     }
     func advanceLedger() { ledgerRevision = UUID() }
+    func advancePerformance() { performanceRevision = UUID() }
 }
 @Suite("Portfolio workspace publication and local evidence") @MainActor
 struct PortfolioWorkspaceTests {
@@ -99,6 +100,7 @@ struct PortfolioWorkspaceTests {
         let storage = PortfolioWorkspaceFake()
         let injected = PortfolioWorkspaceModel(storage: storage)
         #expect(injected.context == nil && injected.report == nil && injected.selectedAccountID == nil)
+        #expect(injected.preparationBaseline == nil)
         #expect(await storage.reads == 0)
     }
     @Test func preparePinsBothRevisionsAndPreservesExactJSONBytes() async throws {
@@ -111,6 +113,101 @@ struct PortfolioWorkspaceTests {
         #expect(plan.ledgerRevision == baseline.ledger.revision && plan.performanceRevision == baseline.revision)
         #expect(await storage.lastRaw == raw)
         #expect(model.origin == .preview && model.savedReport == nil)
+    }
+    @Test func boundDraftRejectsEachChangedRevisionBeforeCallingStorage() async throws {
+        for ledgerChanged in [true, false] {
+            let (model, storage) = await setup(), original = try #require(model.preparationBaseline)
+            if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+            await model.load()
+            let current = try #require(model.preparationBaseline)
+            // Preserve the current session to isolate the revision precondition.
+            let oldRevision = PortfolioPreparationBaseline(ledgerRevision: original.ledgerRevision,
+                performanceRevision: original.performanceRevision, inputEpoch: current.inputEpoch)
+            await model.prepare(try PortfolioSyntheticExample.input().request, baseline: oldRevision)
+            #expect(model.hasError && model.preview == nil && model.report == nil)
+            #expect(model.preparationBaseline == current && model.canPrepare)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func boundDraftCannotRegainApprovalAfterReloadReentryAccountRoundTripOrTransfer() async throws {
+        for transition in ["reload", "reentry", "account", "transfer"] {
+            let (model, storage) = await setup(), original = try #require(model.preparationBaseline)
+            let request = try PortfolioSyntheticExample.input().request
+            switch transition {
+            case "reload": await model.load()
+            case "reentry": model.disappear(); await model.load()
+            case "account":
+                await model.chooseAccount("ordinary-b")
+                await model.chooseAccount(request.accountID)
+            default:
+                let operation = UUID()
+                model.beginLedgerTransfer(operation)
+                await model.refreshLedgerTransfer(operation)
+                model.endLedgerTransfer(operation)
+            }
+            let current = try #require(model.preparationBaseline)
+            #expect(current.ledgerRevision == original.ledgerRevision && current.performanceRevision == original.performanceRevision)
+            #expect(current.inputEpoch != original.inputEpoch)
+            await model.prepare(request, baseline: original)
+            #expect(model.hasError && model.preview == nil && model.report == nil)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func ordinaryEditingKeepsDraftBaselineAndBoundPreparationPreservesExactBytes() async throws {
+        let (model, storage) = await setup(), original = try #require(model.preparationBaseline)
+        let request = try PortfolioSyntheticExample.input().request
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted]
+        let raw = try encoder.encode(request)
+        model.draftChanged()
+        #expect(model.preparationBaseline == original)
+        await model.prepare(request, rawRequest: raw, baseline: original)
+        let plan = try #require(model.preview)
+        #expect(plan.ledgerRevision == original.ledgerRevision && plan.performanceRevision == original.performanceRevision)
+        #expect(model.displayedRequest == request && model.origin == .preview)
+        #expect(await storage.lastRaw == raw)
+    }
+    @Test func outdatedBoundDraftCancelsPreviousPreviewInsteadOfLeavingItSaveable() async throws {
+        let (model, storage) = await setup(), current = try #require(model.preparationBaseline)
+        let plan = try await prepare(model)
+        let stale = PortfolioPreparationBaseline(ledgerRevision: current.ledgerRevision,
+            performanceRevision: current.performanceRevision, inputEpoch: UUID())
+        await model.prepare(try PortfolioSyntheticExample.input().request, baseline: stale)
+        #expect(model.preview == nil && model.report == nil && !model.canSave && model.hasError)
+        #expect(await save(model, plan) == false)
+        #expect(await storage.prepares == 1)
+        #expect(await storage.commits == 0)
+    }
+    @Test func lateBoundPreparationCannotPopulateAReopenedDifferentAccount() async throws {
+        let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+        let gate = PortfolioWorkspaceGate(), request = try PortfolioSyntheticExample.input().request
+        await storage.gate("prepare", gate)
+        let old = Task { await model.prepare(request, baseline: baseline) }
+        await gate.wait()
+        model.disappear(); await model.load(); await model.chooseAccount("ordinary-b")
+        let current = try #require(model.preparationBaseline)
+        await gate.release(); await old.value
+        #expect(model.selectedAccountID == "ordinary-b" && model.preparationBaseline == current)
+        #expect(!model.isBusy && !model.hasError && model.preview == nil && model.report == nil && model.displayedRequest == nil)
+        #expect(await storage.cancelled.count == 1)
+        #expect(await storage.commits == 0)
+    }
+    @Test func successfulSaveRetainsVerifiedInputWhenListRefreshFailsButNotOldDraftApproval() async throws {
+        let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+        let request = try PortfolioSyntheticExample.input().request
+        await model.prepare(request, baseline: baseline)
+        let plan = try #require(model.preview)
+        await storage.fail("reports")
+        #expect(await save(model, plan))
+        #expect(model.origin == .frozen && model.savedReport?.replayMatched == true)
+        #expect(model.report == plan.report && model.displayedRequest == request && model.listError != nil)
+        #expect(model.inputEpoch == baseline.inputEpoch)
+        #expect(model.preparationBaseline?.performanceRevision != baseline.performanceRevision)
+        await model.prepare(request, baseline: baseline)
+        #expect(model.hasError && !model.canSave && model.preview == nil)
+        #expect(await storage.prepares == 1)
+        #expect(await storage.commits == 1)
     }
     @Test func wrongAccountIsRejectedBeforeStorageAndSelectionClearsPreviousApproval() async throws {
         let (model, storage) = await setup()

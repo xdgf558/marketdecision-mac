@@ -386,6 +386,102 @@ import XCTest
         XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 5))
         XCTAssertFalse(cash.exists)
     }
+    func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
+        configure(); launchMainWindow(); selectPage("pageInvestments")
+        let share = mainWindow.buttons["investmentShare"]
+        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share, false)
+        let record = mainWindow.buttons["investmentRecord"]
+        waitEnabled(record); record.click()
+        let accountName = mainWindow.textFields["ledgerAccountName"]
+        XCTAssertTrue(accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
+        accountName.click(); accountName.typeText("Daily workflow test")
+        let create = mainWindow.buttons["ledgerCreateAccount"]
+        waitEnabled(create); create.click()
+        let next = mainWindow.buttons["ledgerContinueCalculation"]
+        XCTAssertTrue(next.waitForExistence(timeout: 5)); waitEnabled(next); next.click()
+
+        // An explicitly empty local account avoids market observations entirely.
+        // The input is test-only user-confirmed material, never a relabelled demo.
+        let scroll = mainWindow.scrollViews.firstMatch
+        func reach(_ element: XCUIElement) {
+            func viewport() -> CGRect { scroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8) }
+            func visible() -> Bool {
+                element.exists && element.isHittable && !element.frame.isEmpty && viewport().contains(element.frame)
+            }
+            for _ in 0..<24 {
+                if visible() { break }
+                let offset = element.exists ? viewport().midY - element.frame.midY : -120
+                scroll.scroll(byDeltaX: 0, deltaY: max(-180, min(180, offset)))
+            }
+            XCTAssertTrue(visible(), "Investment input must be wholly visible before native interaction: \(element.debugDescription)")
+        }
+        func fill(_ element: XCUIElement, _ value: String) {
+            XCTAssertTrue(element.waitForExistence(timeout: 5)); reach(element); waitEnabled(element)
+            element.click(); element.typeKey("a", modifierFlags: .command); element.typeText(value)
+        }
+        func evidence(_ prefix: String, reference: String) {
+            let source = mainWindow.textFields[prefix + "Source"]
+            expandDisclosure(prefix + "Details", revealing: source)
+            fill(source, "Local test record")
+            fill(mainWindow.textFields[prefix + "Reference"], reference)
+            fill(mainWindow.textFields[prefix + "AvailableAt"], "2026-01-01T00:00:00Z")
+            fill(mainWindow.textViews[prefix + "Text"], "Explicit test-only " + reference)
+        }
+        let calendar = mainWindow.textViews["investmentCalendarDays"]
+        XCTAssertTrue(calendar.waitForExistence(timeout: 10))
+        fill(calendar, "2026-01-05\n2026-01-06")
+        evidence("investmentCalendar", reference: "calendar-v1")
+        let inspect = mainWindow.buttons["investmentInspectMissing"]
+        reach(inspect); inspect.click()
+        for day in ["2026-01-05", "2026-01-06"] {
+            let instant = mainWindow.textFields["investmentValuation-" + day]
+            XCTAssertTrue(instant.waitForExistence(timeout: 5))
+            XCTAssertEqual(instant.value as? String, "") // No current date or close time is invented.
+            fill(instant, day + "T21:00:00Z")
+        }
+        let flows = mainWindow.checkBoxes["investmentConfirmFlows"]
+        XCTAssertTrue(flows.waitForExistence(timeout: 5)); XCTAssertEqual(flows.value as? String, "0")
+        evidence("investmentFlow", reference: "empty-account-flows-v1")
+        reach(flows); flows.click()
+        let calculate = mainWindow.buttons["investmentCalculate"]
+        reach(calculate); waitEnabled(calculate); calculate.click()
+        waitText("0.00 USD", in: mainWindow.staticTexts["investmentCalculationPnL"])
+        let review = mainWindow.buttons["investmentSaveCalculation"]
+        reach(review); waitEnabled(review); review.click()
+        let confirmation = mainWindow.sheets.containing(.button, identifier: "investmentConfirmSave").firstMatch
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let commit = confirmation.buttons["investmentConfirmSave"]
+        XCTAssertFalse(commit.isEnabled)
+        app.typeKey(.return, modifierFlags: [])
+        XCTAssertTrue(confirmation.exists)
+        let text = confirmation.textFields["investmentSaveConfirmation"]
+        text.click(); text.typeText("保存"); waitEnabled(commit); commit.click()
+        waitAbsent(confirmation)
+        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share)
+        waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
+        share.click()
+        let sharing = mainWindow.sheets.containing(.button, identifier: "investmentShareCopy").firstMatch
+        XCTAssertTrue(sharing.waitForExistence(timeout: 5))
+        XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
+        XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
+        XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
+        XCTAssertEqual(sharing.checkBoxes["investmentShareAmounts"].value as? String, "0")
+        XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
+        // Preview only: no clipboard mutation, browser launch, file panel or post.
+        sharing.buttons["完成"].click(); waitAbsent(sharing)
+        let again = mainWindow.buttons["investmentStartCalculation"]
+        waitEnabled(again); again.click()
+        let reuse = mainWindow.buttons["investmentReuseEvidence"]
+        XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
+        XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))
+        XCTAssertEqual(mainWindow.textFields["investmentStartDay"].value as? String, "2026-01-05")
+        XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
+        XCTAssertFalse(calendar.exists)
+        XCTAssertFalse(mainWindow.textFields["investmentValuation-2026-01-05"].exists)
+        XCTAssertEqual(flows.value as? String, "0") // Reuse never re-approves completeness.
+        reach(calculate); waitEnabled(calculate); calculate.click()
+        waitText("待补数据", in: mainWindow.staticTexts["investmentCalculationPnL"])
+    }
     func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
         configure(); launchMainWindow()
         XCTAssertTrue(mainWindow.buttons["pageOptions"].waitForExistence(timeout: 15))

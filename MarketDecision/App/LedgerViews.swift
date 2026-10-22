@@ -9,15 +9,19 @@ struct LedgerPage: View {
     let workspace: WorkspaceModel
     let initialSection: String
     let initialAccountID: String?
+    let onContinueToCalculation: ((String?) -> Void)?
     @State private var model: LedgerWorkspaceModel?
     @State private var failure = false
     @State private var attempt = UUID()
-    init(workspace: WorkspaceModel, initialSection: String = "现金与批次", initialAccountID: String? = nil) {
+    init(workspace: WorkspaceModel, initialSection: String = "现金与批次", initialAccountID: String? = nil,
+         onContinueToCalculation: ((String?) -> Void)? = nil) {
         self.workspace = workspace; self.initialSection = initialSection; self.initialAccountID = initialAccountID
+        self.onContinueToCalculation = onContinueToCalculation
     }
     var body: some View {
         Group {
-            if let model { LedgerWorkspaceContent(model: model, initialSection: initialSection) }
+            if let model { LedgerWorkspaceContent(model: model, initialSection: initialSection,
+                onContinueToCalculation: onContinueToCalculation) }
             else if failure {
                 ContentUnavailableView("交易账本暂不可用", systemImage: "book.closed",
                     description: Text("本地账本未能通过检查。已有记录保留，不影响研究工作区。"))
@@ -52,6 +56,7 @@ private struct LedgerApproval: Identifiable {
 
 struct LedgerWorkspaceContent: View {
     @Bindable var model: LedgerWorkspaceModel
+    let onContinueToCalculation: ((String?) -> Void)?
     @State private var section = "现金与批次"
     @State private var accountID = "local-" + UUID().uuidString
     @State private var accountName = ""
@@ -83,8 +88,9 @@ struct LedgerWorkspaceContent: View {
     @State private var visible = false
     @State private var fileMessage: String?
 
-    init(model: LedgerWorkspaceModel, initialSection: String = "现金与批次") {
+    init(model: LedgerWorkspaceModel, initialSection: String = "现金与批次", onContinueToCalculation: ((String?) -> Void)? = nil) {
         self.model = model; _section = State(initialValue: initialSection)
+        self.onContinueToCalculation = onContinueToCalculation
         _form = State(initialValue: Self.newManualDraft())
     }
     private static func newManualDraft() -> LedgerManualDraft {
@@ -185,6 +191,12 @@ struct LedgerWorkspaceContent: View {
                     Text("本地 USD 账户 · 先预览再入账 · 事件可追溯").foregroundStyle(.secondary)
                 }
                 Spacer()
+                if let onContinueToCalculation {
+                    Button("用已入账记录继续核算") { onContinueToCalculation(model.selectedAccountID) }
+                        .disabled(busy || model.selectedAccountID == nil || model.preview != nil)
+                        .accessibilityIdentifier("ledgerContinueCalculation")
+                        .help("只使用已确认入账的记录；未提交的表单与 CSV 不计入核算。")
+                }
                 Button("重新载入") { Task { await model.load() } }.disabled(busy)
                     .accessibilityIdentifier("ledgerReload")
             }
