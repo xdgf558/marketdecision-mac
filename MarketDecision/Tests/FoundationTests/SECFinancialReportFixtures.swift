@@ -20,7 +20,8 @@ private actor FinancialFixtureTransport: HTTPTransport {
 }
 
 /// Real accept pipeline over synthetic response bytes; no network or answer-key fixture.
-func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String = "<p>QA</p>") async throws -> SECResearchDocument {
+func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String = "<p>QA</p>",
+                                     includeOverviewMetrics: Bool = false) async throws -> SECResearchDocument {
     let now = Date(timeIntervalSince1970: 1_791_072_000)
     var accessions: [String] = [], dates: [String] = [], reportDates: [String] = []
     var forms: [String] = [], documents: [String] = [], accepted: [String] = []
@@ -30,7 +31,7 @@ func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String =
         ("OperatingIncomeLoss", 20), ("NetIncomeLoss", 10),
         ("NetCashProvidedByUsedInOperatingActivities", 25),
         ("PaymentsToAcquirePropertyPlantAndEquipment", 5)]
-    for year in 2023...2024 {
+    for year in (includeOverviewMetrics ? 2021 : 2023)...2024 {
         for (index, bounds) in [("01-01", "03-31"), ("04-01", "06-30"), ("07-01", "09-30"), ("10-01", "12-31")].enumerated() {
             let end = String(year) + "-" + bounds.1
             let date = try MarketDate(iso8601: end).addingDays(32).iso8601
@@ -38,7 +39,10 @@ func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String =
             let form = index == 3 ? "10-K" : "10-Q"
             accessions.append(acc); dates.append(date); reportDates.append(end); forms.append(form)
             documents.append(index == 3 ? "annual.htm" : "quarter.htm"); accepted.append(date + "T21:00:00Z")
-            for (concept, value) in concepts {
+            for (concept, fixedValue) in concepts {
+                // Four complete annual revenue periods with exact doubling give 100% CAGR.
+                let value = includeOverviewMetrics && concept == "RevenueFromContractWithCustomerExcludingAssessedTax"
+                    ? fixedValue * (1 << (year - 2021)) : fixedValue
                 // fp/fy are deliberately the enclosing filing metadata, not our quarter contract.
                 var observations = units[concept] ?? []
                 observations.append(["start": String(year) + "-" + bounds.0, "end": end, "val": value,
@@ -55,6 +59,11 @@ func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String =
     var facts: [String: Any] = [:]
     for (concept, _) in concepts {
         facts[concept] = ["label": concept, "description": "Synthetic report inputs", "units": ["USD": units[concept] ?? []]]
+    }
+    if includeOverviewMetrics {
+        facts["CashAndCashEquivalentsAtCarryingValue"] = ["label": "Cash", "description": "Synthetic instant cash",
+            "units": ["USD": [["end": "2024-12-31", "val": 50, "accn": "0000320193-24-000004",
+                               "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"]]]]
     }
     func payload(_ object: [String: Any]) throws -> HTTPPayload {
         HTTPPayload(statusCode: 200, mediaType: "application/json", body: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))

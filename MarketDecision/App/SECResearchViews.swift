@@ -13,6 +13,7 @@ struct SECResearchPage: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: SECResearchWorkspaceModel?
     @State private var equityModel: EquityResearchWorkspaceModel?
+    @State private var aiModel: AIInsightWorkspaceModel?
     @State private var equityError: String?
     @State private var equityAttempt = UUID()
     @State private var errorMessage: String?
@@ -20,7 +21,7 @@ struct SECResearchPage: View {
     var body: some View {
         Group {
             if let model {
-                SECResearchContent(model: model, equityModel: equityModel, equityError: equityError,
+                SECResearchContent(model: model, aiModel: aiModel, equityModel: equityModel, equityError: equityError,
                     retryEquity: { equityAttempt = UUID() })
             }
             else if let errorMessage {
@@ -37,6 +38,7 @@ struct SECResearchPage: View {
                 if model == nil {
                     let ready = try await workspace.makeSECResearchWorkspace(networkAvailable: SECNetworkServiceAvailability.isAvailable)
                     try Task.checkCancellation(); model = ready
+                    aiModel = try workspace.makeAIInsightWorkspace()
                 }
                 await model?.load()
             } catch {
@@ -62,19 +64,22 @@ struct SECResearchPage: View {
             if phase == .active { equityModel?.appear() }
             else { equityModel?.disappear() }
         }
-        .onDisappear { model?.disappear(); equityModel?.disappear() }
+        .onDisappear { model?.disappear(); equityModel?.disappear(); aiModel?.disappear() }
     }
 }
 
 struct SECResearchContent: View {
     @Bindable var model: SECResearchWorkspaceModel
+    let aiModel: AIInsightWorkspaceModel?
     let equityModel: EquityResearchWorkspaceModel?
     let equityError: String?
     let retryEquity: () -> Void
     // User-provided contact stays in local preferences. It is excluded from research documents,
     // source provenance, exported material, error messages and diagnostics.
     @AppStorage("secContactEmail") private var contactEmail = ""
-    @State private var section = "财务数据"
+    @State private var section = "分析概览"
+    @State private var showsConnectionSettings = false
+    @State private var showsAdvanced = false
     @State private var filter = ""
     @State private var reportSection = "基础财务"
     @State private var industryApplicability: SECIndustryApplicability = .unknown
@@ -88,35 +93,12 @@ struct SECResearchContent: View {
     @State private var includeCapturedPrice = false
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("SEC 公司研究").font(.system(size: 32, weight: .bold))
-                Text("公开申报 · 本地保存 · 可追溯重算").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("股票分析").font(.system(size: 32, weight: .semibold)).accessibilityIdentifier("stockAnalysisTitle")
+                Text("看懂收入、利润、现金流和负债。先选公司，再查看本地财报。")
+                    .foregroundStyle(.secondary)
             }
-            Label("本地研究用途；估值与评分按证据逐项检查。缺少合格价格或模型适用性时保留缺项，不提供投资价位。", systemImage: "info.circle")
-                .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            GroupBox("从 SEC 导入") {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        TextField("股票代码", text: Binding(get: { model.ticker }, set: { model.chooseTicker($0) }))
-                            .textFieldStyle(.roundedBorder).frame(width: 120).disabled(model.isBusy)
-                            .accessibilityIdentifier("secTicker")
-                        TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder).disabled(model.isBusy)
-                            .accessibilityIdentifier("secContactEmail")
-                        Button("导入财报") { model.startImport(email: contactEmail) }
-                            .disabled(model.isBusy || !model.networkAvailable).accessibilityIdentifier("secImport")
-                        if model.isBusy && !model.archiveRestoreInProgress {
-                            Button("取消") { model.cancel() }.accessibilityIdentifier("secCancel")
-                        }
-                    }
-                    Text("点击后发送股票代码和联系邮箱给 SEC。邮箱仅保存在本机；不会随研究记录保存或公开。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if !model.networkAvailable {
-                        Text("本构建的 SEC 导入服务不可用，可查看和重算已保存研究。")
-                            .font(.callout).foregroundStyle(.orange).accessibilityIdentifier("secNetworkDisabled")
-                    }
-                }.padding(8)
-            }
+            importControls
             if model.isBusy {
                 HStack { ProgressView().controlSize(.small); Text(progressText).font(.callout) }
                     .accessibilityIdentifier("secProgress")
@@ -125,12 +107,42 @@ struct SECResearchContent: View {
                 Text(message).font(.callout).foregroundStyle(model.hasError ? Color.red : Color.secondary)
                     .accessibilityIdentifier("secMessage")
             }
-            Picker("研究内容", selection: $section) {
-                ForEach(["财务数据", "财务报告", "行情参考", "估值与评分", "来源与修订", "已保存", "归档与恢复"], id: \.self) { Text($0).tag($0) }
-            }.pickerStyle(.segmented).accessibilityIdentifier("secSections")
+            HStack(spacing: 10) {
+                ForEach(["分析概览", "财务报告", "已保存"], id: \.self) { item in
+                    Button(item) { section = item }
+                        .buttonStyle(.borderless)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(section == item ? Color.accentColor.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8))
+                        .accessibilityIdentifier("stockSection-" + item)
+                        .accessibilityAddTraits(section == item ? .isSelected : [])
+                }
+                Spacer()
+                VStack(alignment: .leading, spacing: 8) {
+                    Button { showsAdvanced.toggle() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: showsAdvanced ? "chevron.down" : "chevron.right")
+                            Text("高级详情")
+                            Spacer()
+                        }
+                        .font(.callout).foregroundStyle(.secondary).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("stockAdvancedDetails")
+                        .accessibilityValue(showsAdvanced ? "已展开" : "已收起")
+                    if showsAdvanced {
+                        Picker("研究内容", selection: $section) {
+                            ForEach(["分析概览", "财务数据", "财务报告", "行情参考", "估值与评分", "来源与修订", "已保存", "归档与恢复"], id: \.self) {
+                                Text($0).tag($0)
+                            }
+                        }.pickerStyle(.menu).accessibilityIdentifier("secSections")
+                    }
+                }.frame(maxWidth: 250)
+            }
+            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if section == "财务报告" { financialReports }
+                    if section == "分析概览" { dailyOverview }
+                    else if section == "财务报告" { financialReports }
                     else if section == "行情参考" {
                         if let equityModel {
                             EquityResearchContent(model: equityModel, financialTicker: model.financialReport?.ticker)
@@ -165,7 +177,10 @@ struct SECResearchContent: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 20)
             }
-        }.padding(24)
+        }.padding(28)
+        .onChange(of: section) { _, value in
+            if !["分析概览", "财务报告", "已保存"].contains(value) { showsAdvanced = true }
+        }
         .onChange(of: model.financialReport?.id) { _, _ in
             industryApplicability = .unknown; industrySource = ""; industryExcerpt = ""; industryRationale = ""
             includeShareEvidence = false; shareEvidence = .init(); includeSplitEvidence = false; splitEvidence = .init()
@@ -177,6 +192,134 @@ struct SECResearchContent: View {
             includeCapturedPrice = false
         }
         .onChange(of: capturedPriceSelectionKey) { _, _ in includeCapturedPrice = false }
+    }
+    private var importControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                TextField("输入股票代码，如 AAPL", text: Binding(get: { model.ticker }, set: { model.chooseTicker($0) }))
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 260).disabled(model.isBusy)
+                    .accessibilityIdentifier("secTicker")
+                Button("导入财报") {
+                    if contactEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        showsConnectionSettings = true
+                    } else {
+                        section = "分析概览"
+                        model.startImport(email: contactEmail)
+                    }
+                }.disabled(model.isBusy || !model.networkAvailable).accessibilityIdentifier("secImport")
+                Button("生成分析") {
+                    section = "分析概览"
+                    Task { await model.generateFinancialReport() }
+                }.buttonStyle(.borderedProminent).disabled(!model.canGenerateFinancialReport)
+                    .accessibilityIdentifier("stockGenerateAnalysis")
+                Spacer(minLength: 0)
+                if model.isBusy && !model.archiveRestoreInProgress {
+                    Button("取消") { model.cancel() }.accessibilityIdentifier("secCancel")
+                }
+            }
+            Text("导入仅在点击后联网；生成分析只使用本地财报。价格或财务证据不足时会明确留空。")
+                .font(.caption).foregroundStyle(.secondary)
+            Button { showsConnectionSettings.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showsConnectionSettings ? "chevron.down" : "chevron.right")
+                    Text("SEC 连接设置")
+                    Spacer()
+                }
+                .font(.callout).foregroundStyle(.secondary).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+                .accessibilityIdentifier("stockConnectionSettings")
+                .accessibilityValue(showsConnectionSettings ? "已展开" : "已收起")
+            if showsConnectionSettings {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder)
+                        .disabled(model.isBusy).accessibilityIdentifier("secContactEmail")
+                    Text("邮箱保存在本机，并仅随用户发起的 SEC 请求发送；不会随研究记录或归档保存。填写后点击“导入财报”开始。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(.vertical, 8)
+            }
+            if !model.networkAvailable {
+                Text("本构建的 SEC 导入服务不可用，可查看和重算已保存研究。")
+                    .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("secNetworkDisabled")
+            }
+        }.padding(.vertical, 10)
+    }
+    private var dailyOverview: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if let report = model.financialReport {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(report.ticker + " · " + report.companyName).font(.title2.weight(.semibold))
+                    Text("财务期末 " + report.financials.baseReport.periodEnd.iso8601 + " · 来源截止 "
+                         + report.cutoff.formatted(date: .numeric, time: .shortened))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text(financialVerificationText).font(.caption).foregroundStyle(.secondary)
+                }
+                if model.canDisplayFinancialReport {
+                    overviewMetrics(report)
+                    if let aiModel { AIInsightCard(model: aiModel, report: report, reportRevision: model.financialReportRevision).id(report.id) }
+                    HStack {
+                        Button(model.financialReportIsSaved ? "分析已保存" : "保存分析") {
+                            Task { await model.saveFinancialReport() }
+                        }.disabled(!model.canSaveFinancialReport).accessibilityIdentifier("stockSaveAnalysis")
+                        Button("查看完整财务报告") { section = "财务报告" }
+                            .accessibilityIdentifier("stockShowFinancialReport")
+                    }
+                } else {
+                    ContentUnavailableView("先核对这份已保存的分析", systemImage: "checkmark.shield",
+                        description: Text("重算完成前不显示缓存数值，已有报告和原始财报不会被覆盖。"))
+                        .accessibilityIdentifier("secFinancialReportUnverified")
+                    Button("重算并核对报告") { Task { await model.recomputeFinancialReport() } }
+                        .disabled(model.isBusy).accessibilityIdentifier("secReplayFinancialReport")
+                }
+                if let message = model.financialMessage {
+                    Text(message).font(.callout).foregroundStyle(model.financialHasError ? Color.red : Color.secondary)
+                        .accessibilityIdentifier("secFinancialMessage")
+                }
+                financialEvidence(report)
+            } else if let document = model.document {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(document.ticker + " · " + document.identity.name).font(.title2.weight(.semibold))
+                    Text("来源截止 " + document.cutoff.formatted(date: .numeric, time: .shortened))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("财报已在本地。点击“生成分析”，查看收入、利润、现金流、负债和增长。")
+                    if let message = model.financialMessage {
+                        Text(message).foregroundStyle(model.financialHasError ? Color.red : Color.secondary)
+                            .accessibilityIdentifier("secFinancialMessage")
+                    }
+                    DisclosureGroup("财报覆盖与缺项") {
+                        ForEach(Array(document.gaps.enumerated()), id: \.offset) { _, gap in
+                            Text(gapTitle(gap)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } else {
+                ContentUnavailableView("从一家公司开始", systemImage: "chart.bar.xaxis",
+                    description: Text("输入股票代码并导入财报，或打开“已保存”中的本地研究。没有合格数据时不显示示例数值。"))
+                    .accessibilityIdentifier("stockAnalysisEmpty")
+                Button("打开已保存的研究") { section = "已保存" }
+                    .accessibilityIdentifier("stockOpenSaved")
+            }
+            Divider()
+            Label("财报研究用途。估值需要另行核对价格、股份和口径；缺项不会自动补成有效判断。", systemImage: "info.circle")
+                .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("stockResearchLimitations")
+            Button("查看估值与评分的证据要求") { section = "估值与评分" }
+                .buttonStyle(.link).accessibilityIdentifier("stockValuationDetails")
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+    private func overviewMetrics(_ report: SECFinancialReportDocument) -> some View {
+        let rows = SECFinancialOverview.rows(for: report.financials)
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), alignment: .leading)], alignment: .leading, spacing: 22) {
+            ForEach(rows) { row in
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(row.title).font(.callout).foregroundStyle(.secondary)
+                    Text(row.displayValue)
+                        .font(.title3.weight(.semibold)).monospacedDigit().textSelection(.enabled)
+                    Text(row.unit).font(.caption).foregroundStyle(.secondary)
+                    if let flags = row.metric?.flags, !flags.isEmpty {
+                        Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+            }
+        }.accessibilityIdentifier("stockOverviewMetrics")
     }
     private var progressText: String {
         if model.archiveRestoreInProgress { return "正在恢复 SEC 研究并刷新本地列表…" }
@@ -281,7 +424,9 @@ struct SECResearchContent: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if let document = model.document {
                         Text(document.ticker + " · " + document.identity.name).font(.headline)
-                        Text("选定源研究：" + document.id.uuidString).font(.caption).textSelection(.enabled)
+                        DisclosureGroup("源研究标识") {
+                            Text(document.id.uuidString).font(.caption).textSelection(.enabled)
+                        }
                     } else {
                         Text("先在“已保存”中打开一份源研究，或打开下方报告绑定的源研究。")
                             .font(.callout).foregroundStyle(.secondary)
@@ -346,7 +491,9 @@ struct SECResearchContent: View {
             Text("源截止 " + report.cutoff.formatted(date: .numeric, time: .standard)
                  + " · 财务期末 " + report.financials.baseReport.periodEnd.iso8601)
                 .font(.caption).foregroundStyle(.secondary)
-            Text("绑定源研究：" + report.parentDocumentID.uuidString).font(.caption).textSelection(.enabled)
+            DisclosureGroup("源研究标识") {
+                Text(report.parentDocumentID.uuidString).font(.caption).textSelection(.enabled)
+            }
             HStack {
                 Button("保存报告") { Task { await model.saveFinancialReport() } }
                     .disabled(!model.canSaveFinancialReport).accessibilityIdentifier("secSaveFinancialReport")

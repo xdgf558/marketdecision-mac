@@ -86,7 +86,11 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public private(set) var hasError = false
     public private(set) var recomputationState: OfflineIssuerRecomputationState = .notVerified
     public var canDisplayValues: Bool { document != nil && recomputationState == .matched }
-    public private(set) var financialReport: SECFinancialReportDocument?
+    /// Every replacement, including the same immutable ID, invalidates dependent page results.
+    public private(set) var financialReportRevision = UUID()
+    public private(set) var financialReport: SECFinancialReportDocument? {
+        didSet { financialReportRevision = UUID() }
+    }
     public private(set) var savedFinancialReports: [SECFinancialReportSummary] = []
     public private(set) var financialReportState: SECFinancialReportDisplayState = .notVerified
     public private(set) var financialReportIsSaved = false

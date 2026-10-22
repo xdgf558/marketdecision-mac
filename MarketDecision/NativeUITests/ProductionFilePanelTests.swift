@@ -11,7 +11,7 @@ import CryptoKit
     private var files: URL!
     private var savedClipboard: [NSPasteboardItem]?
     private var window: XCUIElement {
-        app.windows.containing(.button, identifier: "pageResearch").firstMatch
+        app.windows.containing(.button, identifier: "pageStocks").firstMatch
     }
     private var panel: XCUIElement { window.sheets.firstMatch }
     private var message: XCUIElement { window.staticTexts["researchTransferMessage"].firstMatch }
@@ -197,7 +197,7 @@ import CryptoKit
     }
 
     private func openResearch() {
-        let button = app.buttons["pageResearch"]
+        let button = app.buttons["pageStocks"]
         app.activate()
         XCTAssertTrue(button.waitForExistence(timeout: 20))
         // Restored window frames can extend past a smaller CI display. Use the
@@ -215,6 +215,11 @@ import CryptoKit
                        .completed, window.debugDescription)
         attachHierarchy(window, name: "visible-research-window")
         button.click()
+        let tools = window.descendants(matching: .any)["stockAdvancedTools"].firstMatch
+        XCTAssertTrue(tools.waitForExistence(timeout: 10)); waitHittable(tools); tools.click()
+        let demo = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",
+            "stockOpenDemo", "合成研究与自选管理")).firstMatch
+        XCTAssertTrue(demo.waitForExistence(timeout: 10)); demo.click()
         XCTAssertTrue(window.staticTexts["researchCompany"].waitForExistence(timeout: 20), window.debugDescription)
     }
     private var windowIsVisible: Bool {
@@ -356,7 +361,7 @@ import CryptoKit
             containers = query.containing(.textField, identifier: "PathTextField").allElementsBoundByIndex.filter {
                 // Empty AX identifiers do not establish that two containers are
                 // the same panel. Keep the uniqueness assertion below instead.
-                (picker.identifier.isEmpty || $0.identifier != picker.identifier) && !$0.buttons["pageResearch"].exists
+                (picker.identifier.isEmpty || $0.identifier != picker.identifier) && !$0.buttons["pageStocks"].exists
             }
             if !containers.isEmpty { break }
         }
