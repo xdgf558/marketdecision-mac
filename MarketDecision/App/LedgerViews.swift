@@ -7,12 +7,17 @@ import Persistence
 
 struct LedgerPage: View {
     let workspace: WorkspaceModel
+    let initialSection: String
+    let initialAccountID: String?
     @State private var model: LedgerWorkspaceModel?
     @State private var failure = false
     @State private var attempt = UUID()
+    init(workspace: WorkspaceModel, initialSection: String = "现金与批次", initialAccountID: String? = nil) {
+        self.workspace = workspace; self.initialSection = initialSection; self.initialAccountID = initialAccountID
+    }
     var body: some View {
         Group {
-            if let model { LedgerWorkspaceContent(model: model) }
+            if let model { LedgerWorkspaceContent(model: model, initialSection: initialSection) }
             else if failure {
                 ContentUnavailableView("交易账本暂不可用", systemImage: "book.closed",
                     description: Text("本地账本未能通过检查。已有记录保留，不影响研究工作区。"))
@@ -28,6 +33,7 @@ struct LedgerPage: View {
                     try Task.checkCancellation(); model = ready
                 }
                 await model?.load()
+                if let initialAccountID { await model?.chooseAccount(initialAccountID) }
             } catch { if !Task.isCancelled { failure = true } }
         }
     }
@@ -47,9 +53,10 @@ private struct LedgerApproval: Identifiable {
 struct LedgerWorkspaceContent: View {
     @Bindable var model: LedgerWorkspaceModel
     @State private var section = "现金与批次"
-    @State private var accountID = ""
+    @State private var accountID = "local-" + UUID().uuidString
     @State private var accountName = ""
     @State private var accountExpanded = true
+    @State private var accountDetailsExpanded = false
     @State private var basisMethod: LedgerCostBasisMethod = .fifo
     @State private var form = LedgerManualDraft()
     @State private var staged: [LedgerEvent] = []
@@ -75,6 +82,17 @@ struct LedgerWorkspaceContent: View {
     @State private var fileTask: Task<Void, Never>?
     @State private var visible = false
     @State private var fileMessage: String?
+
+    init(model: LedgerWorkspaceModel, initialSection: String = "现金与批次") {
+        self.model = model; _section = State(initialValue: initialSection)
+        _form = State(initialValue: Self.newManualDraft())
+    }
+    private static func newManualDraft() -> LedgerManualDraft {
+        var draft = LedgerManualDraft()
+        draft.externalID = "manual-" + UUID().uuidString
+        draft.openingLotID = "lot-" + UUID().uuidString
+        return draft
+    }
 
     private var lots: [LedgerLot] {
         (model.snapshot?.state.lots ?? []).filter { $0.accountID == model.selectedAccountID && !$0.isClosed }
@@ -108,7 +126,7 @@ struct LedgerWorkspaceContent: View {
                 Button("重新载入") { Task { await model.load() } }.disabled(busy)
                     .accessibilityIdentifier("ledgerReload")
             }
-            Label("现金与批次按记录重放；管理成本不是税务成本。净值与收益见“组合收益”；账本备份独立于研究归档。", systemImage: "info.circle")
+            Label("记录先预览、确认后入账。出入金不计利润，权利金收入不等于已实现盈亏。", systemImage: "info.circle")
                 .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             accountSection
@@ -153,7 +171,7 @@ struct LedgerWorkspaceContent: View {
         } onCancellation: { finishFile(.cancelled, request: fileRequest) }
         .onChange(of: model.transferEpoch) { _, _ in
             fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); importing = false; approval = nil
-            staged = []; correctionID = ""; reversalBatchID = ""; form = .init()
+            staged = []; correctionID = ""; reversalBatchID = ""; form = Self.newManualDraft()
             csvText = ""; selectedCSVBytes = nil; selectedCSVDisplayBytes = nil; parsedHeaders = []; excludedRows = []
         }
         .onChange(of: model.preview?.id) { _, id in if approval?.id != id { approval = nil } }
@@ -173,7 +191,8 @@ struct LedgerWorkspaceContent: View {
         .onChange(of: reversalTimestamp) { _, _ in invalidateDraft() }
         .onChange(of: reversalReason) { _, _ in invalidateDraft() }
         .onChange(of: reversalBatchID) { _, _ in invalidateDraft() }
-        .onAppear { visible = true }
+        .onAppear { visible = true; accountExpanded = model.snapshot?.accounts.isEmpty != false }
+        .onChange(of: model.snapshot?.accounts.count) { _, _ in accountExpanded = model.snapshot?.accounts.isEmpty != false }
         .onDisappear {
             visible = false; fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); approval = nil
             model.disappear()
@@ -196,19 +215,33 @@ struct LedgerWorkspaceContent: View {
                 }
                 DisclosureGroup(model.snapshot?.accounts.isEmpty == true ? "建立第一个本地账户" : "新增本地账户", isExpanded: $accountExpanded) {
                     HStack {
-                        TextField("账户标识", text: $accountID).textFieldStyle(.roundedBorder).accessibilityIdentifier("ledgerAccountID")
                         TextField("账户名称", text: $accountName).textFieldStyle(.roundedBorder).accessibilityIdentifier("ledgerAccountName")
-                        Picker("成本方法", selection: $basisMethod) {
-                            Text("FIFO").tag(LedgerCostBasisMethod.fifo)
-                            Text("指定批次").tag(LedgerCostBasisMethod.specificLot)
-                        }.frame(width: 180)
                         Button("建立账户") {
                             let account = LedgerAccount(id: accountID, name: accountName, costBasisMethod: basisMethod)
-                            Task { await model.createAccount(account) }
+                            Task {
+                                await model.createAccount(account)
+                                if !model.hasError { accountName = ""; accountID = "local-" + UUID().uuidString }
+                            }
                         }.disabled(busy || model.snapshot == nil || accountID.isEmpty || accountName.isEmpty)
                             .accessibilityIdentifier("ledgerCreateAccount")
                     }.disabled(busy).padding(.top, 8)
-                    Text("成本方法在账户有交易后锁定。账户标识用于导入去重，请稳定使用。")
+                    Button { accountDetailsExpanded.toggle() } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: accountDetailsExpanded ? "chevron.down" : "chevron.right")
+                            Text("账户标识与成本口径")
+                            Spacer()
+                        }.font(.callout).foregroundStyle(.secondary).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("ledgerAccountDetails")
+                        .accessibilityValue(accountDetailsExpanded ? "已展开" : "已收起")
+                    if accountDetailsExpanded {
+                        TextField("账户标识", text: $accountID).textFieldStyle(.roundedBorder).accessibilityIdentifier("ledgerAccountID")
+                        Picker("成本方法", selection: $basisMethod) {
+                            Text("FIFO（先买先卖）").tag(LedgerCostBasisMethod.fifo)
+                            Text("指定批次").tag(LedgerCostBasisMethod.specificLot)
+                        }
+                    }
+                    Text("默认使用 FIFO。账户标识自动生成；有交易后成本方法锁定。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(8)
@@ -249,18 +282,22 @@ struct LedgerWorkspaceContent: View {
                 ForEach(LedgerManualKind.allCases, id: \.self) { Text($0.title).tag($0) }
             }.accessibilityIdentifier("ledgerEventKind")
             GroupBox("时间与来源") {
-                VStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     line("生效时刻（须带时区）", text: $form.timestamp, prompt: "2026-01-02T14:30:00Z")
-                    line("原始同刻顺序（可空）", text: $form.sequence, prompt: "来源提供的非负整数")
-                    line("来源系统", text: $form.sourceSystem)
-                    line("外部交易标识", text: $form.externalID)
                     line("证据 / 记录依据", text: $form.evidence)
                     line("备注", text: $form.notes)
+                    DisclosureGroup("来源标识与同刻顺序") {
+                        line("原始同刻顺序（可空）", text: $form.sequence, prompt: "来源提供的非负整数")
+                        line("来源系统", text: $form.sourceSystem)
+                        line("外部交易标识", text: $form.externalID)
+                        Text("手工记录标识已自动生成。导入券商成交时，应使用原交易标识避免重复。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                 }.padding(8)
             }
             Toggle("显示已关闭历史批次供明确选择", isOn: $showClosedLots)
             manualFields
-            GroupBox("组合 / 策略关联") {
+            DisclosureGroup("期权策略与多腿关联") {
                 VStack(alignment: .leading, spacing: 8) {
                     line("展期组标识", text: $form.rollGroupID)
                     line("多腿组标识", text: $form.multiLegGroupID)
@@ -284,7 +321,7 @@ struct LedgerWorkspaceContent: View {
                 Button("加入本批") { stageEvent() }.disabled(!model.canPrepare)
                 Button("预检本笔") { previewManual() }.disabled(!model.canPrepare)
                     .accessibilityIdentifier("ledgerPreviewManual")
-                Button("新建空白记录") { form = .init(); formError = nil; correctionID = "" }.disabled(busy)
+                Button("新建空白记录") { form = Self.newManualDraft(); formError = nil; correctionID = "" }.disabled(busy)
             }
             if !staged.isEmpty {
                 GroupBox("待预检批次 · \(staged.count) 笔") {
@@ -324,7 +361,7 @@ struct LedgerWorkspaceContent: View {
                     Picker("开平", selection: $form.effect) { Text("开仓").tag(LedgerTradeEffect.open); Text("平仓").tag(LedgerTradeEffect.close) }
                     line("数量（期权为合约张数）", text: $form.quantity); line("单位成交价", text: $form.unitPrice)
                     line("实际费用 USD（零也须填 0）", text: $form.fee)
-                    if form.effect == .open { line("新批次标识", text: $form.openingLotID) }
+                    if form.effect == .open { DisclosureGroup("批次标识（已自动生成）") { line("新批次标识", text: $form.openingLotID) } }
                     else { lotSelection(title: "指定批次及本次数量", values: $form.lots) }
                 }.padding(8)
             }
@@ -649,7 +686,7 @@ struct LedgerWorkspaceContent: View {
         do {
             let event = try form.event(accountID: account)
             guard !staged.contains(where: { $0.id == event.id }) else { throw LedgerError.duplicateIdentity }
-            staged.append(event); formError = nil; form = .init()
+            staged.append(event); formError = nil; form = Self.newManualDraft()
         } catch { formError = "本笔未加入。请核对时间、来源、明确费用、合约交割与批次证据，空白不代表零。" }
     }
     private func previewManual(correction: Bool = false) {

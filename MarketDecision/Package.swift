@@ -5,7 +5,8 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [.library(name: "MarketDecisionFoundation", targets: ["AppComposition"]),
                .library(name: "SECNetworkBroker", targets: ["SECNetworkBroker"]),
-               .library(name: "EquityNetworkBroker", targets: ["EquityNetworkBroker"])],
+               .library(name: "EquityNetworkBroker", targets: ["EquityNetworkBroker"]),
+               .library(name: "AIAnalysisNetworkBroker", targets: ["AIAnalysisNetworkBroker"])],
     dependencies: [.package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")],
     targets: [
         .target(name: "CoreDomain", dependencies: [], path: "Sources/CoreDomain"),
@@ -28,12 +29,13 @@ let package = Package(
         .target(name: "Persistence", dependencies: ["MacroProviders", "CoreDomain", "DataContracts", "DataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics", .product(name: "GRDB", package: "GRDB.swift")], path: "Sources/Persistence"),
         .target(name: "SecuritySupport", dependencies: [], path: "Sources/Security"),
         .target(name: "AIInsights", dependencies: ["CoreDomain", "DataContracts"], path: "Sources/AIInsights"),
+        .target(name: "AIAnalysisNetworkBroker", dependencies: ["AIInsights"], path: "Sources/AIAnalysisNetworkBroker"),
         .target(name: "UIComponents", dependencies: [], path: "Sources/UIComponents"),
-        .target(name: "AppComposition", dependencies: ["MacroProviders", "CoreDomain", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics"], path: "Sources/AppComposition",
+        .target(name: "AppComposition", dependencies: ["AIInsights", "AIAnalysisNetworkBroker", "MacroProviders", "CoreDomain", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "Persistence", "SecuritySupport", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics"], path: "Sources/AppComposition",
                 resources: [.process("Resources")]),
         .executableTarget(name: "FoundationCodecProbe", dependencies: ["CoreDomain"], path: "Tools/FoundationCodecProbe"),
-        .executableTarget(name: "SECNetworkIsolationProbe", dependencies: ["SECNetworkBroker", "EquityNetworkBroker"], path: "Tools/SECNetworkIsolationProbe"),
-        .testTarget(name: "FoundationTests", dependencies: ["MacroProviders", "CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
+        .executableTarget(name: "SECNetworkIsolationProbe", dependencies: ["SECNetworkBroker", "EquityNetworkBroker", "AIAnalysisNetworkBroker"], path: "Tools/SECNetworkIsolationProbe"),
+        .testTarget(name: "FoundationTests", dependencies: ["AIInsights", "AIAnalysisNetworkBroker", "MacroProviders", "CoreDomain", "CoreCalculations", "DataContracts", "DataProviders", "SECProvider", "SECNetworkBroker", "EquityNetworkBroker", "MarketDataProviders", "FundamentalsEngine", "PortfolioEngine", "OptionsAnalytics", "MarketAnalytics", "Persistence", "SecuritySupport", "AppComposition", .product(name: "GRDB", package: "GRDB.swift")], resources: [.process("Resources")])
     ],
     swiftLanguageModes: [.v6]
 )

@@ -35,7 +35,8 @@ class DemoPermissionTests(unittest.TestCase):
         (contents / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier': 'local.marketdecision.development'}))
         self.services = {}
         for name, identity in [('SECNetworkService.xpc', 'local.marketdecision.sec-network'),
-                               ('EquityNetworkService.xpc', 'local.marketdecision.equity-network')]:
+                               ('EquityNetworkService.xpc', 'local.marketdecision.equity-network'),
+                               ('AIAnalysisNetworkService.xpc', 'local.marketdecision.ai-analysis-network')]:
             service = contents / 'XPCServices' / name
             service_contents = service / 'Contents'
             service_contents.mkdir(parents=True)
@@ -85,7 +86,8 @@ class DemoPermissionTests(unittest.TestCase):
                 name = next((name for name, commands in service_calls.items() if args == commands[1]), 'main')
                 identity = {'main': 'local.marketdecision.development',
                             'SECNetworkService.xpc': 'local.marketdecision.sec-network',
-                            'EquityNetworkService.xpc': 'local.marketdecision.equity-network'}[name]
+                            'EquityNetworkService.xpc': 'local.marketdecision.equity-network',
+                            'AIAnalysisNetworkService.xpc': 'local.marketdecision.ai-analysis-network'}[name]
                 details = (signature_details or {}).get(name, 'Identifier=' + identity + '\nTeamIdentifier=' + team + '\n')
                 return subprocess.CompletedProcess(args, 0, stdout='', stderr=details)
             value = entitlements if args == read else SERVICE
@@ -207,7 +209,8 @@ class DemoPermissionTests(unittest.TestCase):
     def test_missing_or_ambiguous_signature_metadata_cannot_pass(self):
         identities = {'main': 'local.marketdecision.development',
                       'SECNetworkService.xpc': 'local.marketdecision.sec-network',
-                      'EquityNetworkService.xpc': 'local.marketdecision.equity-network'}
+                      'EquityNetworkService.xpc': 'local.marketdecision.equity-network',
+                            'AIAnalysisNetworkService.xpc': 'local.marketdecision.ai-analysis-network'}
         for name, identity in identities.items():
             identifier_line = 'Identifier=' + identity + '\n'
             team_line = 'TeamIdentifier=not set\n'
@@ -218,7 +221,9 @@ class DemoPermissionTests(unittest.TestCase):
 
     def test_service_signing_metadata_cannot_cross_identities(self):
         for name in self.services:
-            identity = 'local.marketdecision.sec-network' if name.startswith('SEC') else 'local.marketdecision.equity-network'
+            identity = {'SECNetworkService.xpc': 'local.marketdecision.sec-network',
+                        'EquityNetworkService.xpc': 'local.marketdecision.equity-network',
+                        'AIAnalysisNetworkService.xpc': 'local.marketdecision.ai-analysis-network'}[name]
             good = dict(SERVICE, **{'com.apple.application-identifier': 'SYNTHETICTEAM.' + identity,
                                    'com.apple.developer.team-identifier': 'SYNTHETICTEAM'})
             self.check(self.signed, provisioned=True, service_entitlements=good, target_service=name)
@@ -290,6 +295,7 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
             'MarketDecision-UIHost.entitlements': {SANDBOX: True},
             'SECNetworkService.entitlements': SERVICE,
             'EquityNetworkService.entitlements': SERVICE,
+            'AIAnalysisNetworkService.entitlements': SERVICE,
             'MarketDecision-FileAcceptance.entitlements': {SANDBOX: True, SELECTED: True},
         }
         for filename, keys in expected.items():
@@ -313,6 +319,7 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
             ('local.marketdecision.development', '"$(MARKETDECISION_APP_ENTITLEMENTS)"'),
             ('local.marketdecision.sec-network', 'SECNetworkService.entitlements'),
             ('local.marketdecision.equity-network', 'EquityNetworkService.entitlements'),
+            ('local.marketdecision.ai-analysis-network', 'AIAnalysisNetworkService.entitlements'),
         ]:
             with self.subTest(bundle=bundle):
                 selected = [(settings, name) for settings, name in configurations
@@ -322,16 +329,16 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                     self.assertEqual(re.findall(r'CODE_SIGN_ENTITLEMENTS\s*=\s*([^;]+);', settings), [expected])
                     if bundle == 'local.marketdecision.development':
                         self.assertIn('MARKETDECISION_APP_ENTITLEMENTS = MarketDecision.entitlements;', settings)
-                    if bundle in ['local.marketdecision.sec-network', 'local.marketdecision.equity-network']:
+                    if bundle in ['local.marketdecision.sec-network', 'local.marketdecision.equity-network', 'local.marketdecision.ai-analysis-network']:
                         self.assertIn('CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;', settings)
 
     def test_only_production_embeds_and_depends_on_network_service(self):
         project = ROOT / 'App/MarketDecision.xcodeproj/project.pbxproj'
         objects = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(project)]))['objects']
         targets = {value['name']: value for value in objects.values() if value.get('isa') == 'PBXNativeTarget'}
-        services = [targets['SECNetworkService'], targets['EquityNetworkService']]
+        services = [targets['SECNetworkService'], targets['EquityNetworkService'], targets['AIAnalysisNetworkService']]
         products = [service['productReference'] for service in services]
-        for service, expected_product in zip(services, ['SECNetworkBroker', 'EquityNetworkBroker']):
+        for service, expected_product in zip(services, ['SECNetworkBroker', 'EquityNetworkBroker', 'AIAnalysisNetworkBroker']):
             self.assertEqual(service['productType'], 'com.apple.product-type.xpc-service')
             helper_products = [objects[d]['productName'] for d in service['packageProductDependencies']]
             self.assertEqual(helper_products, [expected_product])
@@ -347,8 +354,8 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
                 self.assertEqual([objects[f]['fileRef'] for f in copies[0]['files']], products)
                 for copied in copies[0]['files']:
                     self.assertIn('CodeSignOnCopy', objects[copied]['settings']['ATTRIBUTES'])
-                self.assertEqual(len(dependencies), 2)
-                self.assertEqual([objects[d]['name'] for d in dependencies], ['SECNetworkService', 'EquityNetworkService'])
+                self.assertEqual(len(dependencies), 3)
+                self.assertEqual([objects[d]['name'] for d in dependencies], ['SECNetworkService', 'EquityNetworkService', 'AIAnalysisNetworkService'])
             else:
                 self.assertEqual(copies, [])
                 self.assertEqual(dependencies, [])
@@ -358,12 +365,12 @@ class EntitlementSourceIsolationTests(unittest.TestCase):
             text = (ROOT / 'Scripts' / name).read_text()
             self.assertNotRegex(text, r'(?m)\sCODE_SIGN_ENTITLEMENTS=')
 
-    def test_isolation_probe_declares_both_broker_dependencies(self):
+    def test_isolation_probe_declares_all_three_broker_dependencies(self):
         manifest = (ROOT / 'Package.swift').read_text()
         dependencies = re.findall(
             r'\.executableTarget\(name: "SECNetworkIsolationProbe", dependencies: \[([^]]+)\]', manifest)
         self.assertEqual(len(dependencies), 1)
-        self.assertEqual(re.findall(r'"([^"]+)"', dependencies[0]), ['SECNetworkBroker', 'EquityNetworkBroker'])
+        self.assertEqual(re.findall(r'"([^"]+)"', dependencies[0]), ['SECNetworkBroker', 'EquityNetworkBroker', 'AIAnalysisNetworkBroker'])
 
 
 

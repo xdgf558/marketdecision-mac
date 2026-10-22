@@ -8,6 +8,7 @@ import SecuritySupport
 @MainActor @Observable public final class WorkspaceModel {
     public private(set) var research: ResearchWorkspaceModel?
     public private(set) var credentials: CredentialSettingsModel?
+    public private(set) var aiCredentials: CredentialSettingsModel?
     public private(set) var quote: Quote?
     public private(set) var isLoading = false
     public private(set) var isPreparing = false
@@ -35,6 +36,11 @@ import SecuritySupport
     public func makeSECResearchWorkspace(networkAvailable: Bool) async throws -> SECResearchWorkspaceModel {
         guard let environment else { throw WorkspacePreparationError.notReady }
         return try await environment.makeSECResearchWorkspace(networkAvailable: networkAvailable)
+    }
+
+    public func makeAIInsightWorkspace() throws -> AIInsightWorkspaceModel {
+        guard let environment, let aiCredentials else { throw WorkspacePreparationError.notReady }
+        return environment.makeAIInsightWorkspace(credentials: aiCredentials)
     }
 
     public func makeEquityResearchWorkspace() throws -> EquityResearchWorkspaceModel {
@@ -78,6 +84,7 @@ import SecuritySupport
                 try Task.checkCancellation()
                 environment = ready
                 credentials = ready.makeCredentialSettings()
+                aiCredentials = ready.makeAICredentialSettings()
                 research = ready.makeResearchWorkspace()
             } catch {
                 // Cancellation is owned by this refresh task. A provider or factory may

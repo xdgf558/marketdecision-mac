@@ -5,12 +5,15 @@ import CoreDomain
 import DataContracts
 
 enum AppPage: String, CaseIterable, Identifiable {
-    case workspace = "工作台", research = "公司研究", offlineResearch = "离线摘录", secResearch = "SEC 财报", ledger = "交易账本", portfolio = "组合收益", options = "期权实验室", market = "市场与数据", settings = "设置"
+    case investments = "我的投资", options = "期权交易", stocks = "股票分析", settings = "设置"
     var id: Self { self }
-    var symbol: String { switch self { case .workspace: "house.fill"; case .research: "chart.bar.doc.horizontal"; case .offlineResearch: "doc.text.magnifyingglass"; case .secResearch: "building.columns"; case .ledger: "book.closed"; case .portfolio: "chart.line.uptrend.xyaxis"; case .options: "chart.xyaxis.line"; case .market: "globe.asia.australia"; case .settings: "gearshape" } }
-    var shortcut: KeyEquivalent { switch self { case .workspace: "1"; case .research: "3"; case .offlineResearch: "4"; case .secResearch: "5"; case .ledger: "6"; case .portfolio: "7"; case .options: "8"; case .market: "9"; case .settings: "2" } }
-    var accessibilityID: String { switch self { case .workspace: "pageWorkspace"; case .research: "pageResearch"; case .offlineResearch: "pageOfflineResearch"; case .secResearch: "pageSECResearch"; case .ledger: "pageLedger"; case .portfolio: "pagePortfolio"; case .options: "pageOptions"; case .market: "pageMarket"; case .settings: "pageSettings" } }
-    var help: String { switch self { case .workspace: "工作台（⌘1）"; case .research: "公司研究（⌘3）"; case .offlineResearch: "离线摘录（⌘4）"; case .secResearch: "SEC 财报（⌘5）"; case .ledger: "交易账本（⌘6）"; case .portfolio: "组合收益（⌘7）"; case .options: "期权实验室（⌘8）"; case .market: "市场与数据（⌘9）"; case .settings: "设置（⌘2）" } }
+    static var daily: [Self] { [.investments, .options, .stocks] }
+    var shortcut: KeyEquivalent {
+        switch self { case .investments: "1"; case .options: "2"; case .stocks: "3"; case .settings: "," }
+    }
+    var accessibilityID: String {
+        switch self { case .investments: "pageInvestments"; case .options: "pageOptions"; case .stocks: "pageStocks"; case .settings: "pageSettings" }
+    }
 }
 
 @main enum MarketDecisionEntry {
@@ -52,50 +55,102 @@ struct MarketDecisionApp: App {
 
 struct RootView: View {
     @Bindable var model: WorkspaceModel
-    @State private var page: AppPage = .workspace
+    @State private var page: AppPage = .investments
+    @Environment(\.colorScheme) private var colorScheme
+    private var accent: Color { colorScheme == .dark ? Color(red: 0.38, green: 0.78, blue: 0.72) : Color(red: 0.06, green: 0.43, blue: 0.41) }
+    private var surface: Color { colorScheme == .dark ? Color(nsColor: .windowBackgroundColor) : Color(red: 0.985, green: 0.985, blue: 0.972) }
+
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 8) {
-                ForEach(AppPage.allCases) { item in
-                    Button { page = item } label: {
-                        Label(item.rawValue, systemImage: item.symbol)
-                            .font(.system(size: 22, weight: .medium))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 18).padding(.vertical, 12)
-                            .contentShape(Rectangle())
+        VStack(spacing: 0) {
+            HStack(spacing: 24) {
+                Text("投资手账").font(.system(size: 19, weight: .semibold))
+                    .frame(width: 150, alignment: .leading)
+                Spacer(minLength: 0)
+                HStack(spacing: 30) {
+                    ForEach(AppPage.daily) { item in
+                        Button { page = item } label: {
+                            Text(item.rawValue)
+                                .font(.system(size: 16, weight: page == item ? .semibold : .medium))
+                                .padding(.vertical, 23).padding(.horizontal, 9)
+                                .contentShape(Rectangle())
+                                .overlay(alignment: .bottom) {
+                                    if page == item { Rectangle().fill(accent).frame(height: 3) }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(page == item ? accent : Color.primary)
+                        .accessibilityAddTraits(page == item ? .isSelected : [])
+                        .keyboardShortcut(item.shortcut, modifiers: .command)
+                        .accessibilityIdentifier(item.accessibilityID)
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(page == item ? Color.white : Color.primary)
-                    .background(page == item ? Color.blue : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityAddTraits(page == item ? .isSelected : [])
-                    .keyboardShortcut(item.shortcut, modifiers: .command)
-                    .help(item.help)
-                    .accessibilityIdentifier(item.accessibilityID)
                 }
-                Spacer()
+                Spacer(minLength: 0)
+                Button { page = .settings } label: {
+                    Label("设置", systemImage: "gearshape").font(.system(size: 15))
+                        .padding(.vertical, 16).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(page == .settings ? accent : Color.secondary)
+                .accessibilityAddTraits(page == .settings ? .isSelected : [])
+                // Command-comma belongs to the independent native Settings scene.
+                .accessibilityIdentifier("pageSettings")
+                .frame(width: 150, alignment: .trailing)
             }
-            .padding(.horizontal, 14).padding(.top, 40)
-            .frame(width: 260)
-            .background(.regularMaterial)
+            .padding(.horizontal, 32).padding(.top, 17)
             Divider()
             Group {
-                if page == .workspace { WorkspaceContent(model: model) }
-                else if page == .research {
-                    if let research = model.research { ResearchContent(model:research) }
-                    else { VStack { Text(model.initializationError ?? "正在准备本地研究…"); Button("重试初始化") { Task { await model.refresh() } } } }
-                } else if page == .offlineResearch { OfflineIssuerResearchPage(workspace: model) }
-                else if page == .secResearch { SECResearchPage(workspace: model) }
-                else if page == .ledger { LedgerPage(workspace: model) }
-                else if page == .portfolio { PortfolioPage(workspace: model) }
-                else if page == .options { OptionLabPage(workspace: model) }
-                else if page == .market { MarketStatePage(workspace: model) }
-                else { SettingsContent(model: model) }
+                if page != .settings, !model.isPrepared, let error = model.initializationError {
+                    VStack(spacing: 16) {
+                        ContentUnavailableView("本地数据暂不可用", systemImage: "externaldrive.badge.exclamationmark", description: Text(error))
+                        Button("重试打开本地数据") { Task { await model.refresh() } }
+                            .disabled(model.isLoading).accessibilityIdentifier("dailyWorkspaceRetry")
+                    }
+                } else {
+                    switch page {
+                    case .investments: InvestmentsPage(workspace: model)
+                    case .options: OptionLabPage(workspace: model)
+                    case .stocks: StockAnalysisPage(workspace: model)
+                    case .settings: SettingsHub(model: model)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
         }
+        .tint(accent).background(surface)
         .frame(minWidth: 900, minHeight: 620)
         .task { await model.refresh() }
+    }
+}
+
+/// Infrequent research/diagnostic tools remain reachable without occupying daily navigation.
+private struct SettingsHub: View {
+    @Bindable var model: WorkspaceModel
+    @State private var advanced = false
+    @State private var tool: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let tool {
+                Button { self.tool = nil } label: { Label("返回设置", systemImage: "chevron.left") }
+                    .buttonStyle(.plain).padding(.horizontal, 32).padding(.top, 20)
+                    .accessibilityIdentifier("settingsBack")
+                if tool == "market" { MarketStatePage(workspace: model) }
+                else { WorkspaceContent(model: model) }
+            } else {
+                SettingsContent(model: model)
+                VStack(alignment: .leading, spacing: 14) {
+                    Button { advanced.toggle() } label: {
+                        Label("高级工具", systemImage: advanced ? "chevron.down" : "chevron.right")
+                    }.buttonStyle(.plain).accessibilityIdentifier("settingsAdvancedTools")
+                    if advanced {
+                        HStack(spacing: 24) {
+                            Button("市场与数据") { tool = "market" }.accessibilityIdentifier("settingsOpenMarket")
+                            Button("合成演示与诊断") { tool = "demo" }.accessibilityIdentifier("settingsOpenDemo")
+                        }.buttonStyle(.bordered)
+                        Text("来源、修订和研究工具按需使用，不影响三个日常入口。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.padding(.horizontal, 32).padding(.bottom, 24)
+            }
+        }
     }
 }
 
@@ -173,6 +228,7 @@ struct SettingsContent: View {
     @Bindable var model: WorkspaceModel
     @AppStorage("appearance") private var appearance = "system"
     @State private var connectionMessage: String?
+    @State private var showsAISettings = false
     var body: some View {
         Form {
             Section("外观") {
@@ -203,7 +259,15 @@ struct SettingsContent: View {
                     } else { ProgressView("正在准备本地服务…") }
                 }
             }
-            Section { Text("数据默认保存在本机。当前不会调用付费 API。") }
+            if let aiCredentials = model.aiCredentials {
+                Section("AI 财报解读") {
+                    Text("在股票分析页手动发送当前公司的财报摘要。API 使用你的 OpenAI 账户计费。")
+                        .foregroundStyle(.secondary)
+                    Button("AI 设置…") { showsAISettings = true }
+                        .sheet(isPresented: $showsAISettings) { AISettingsView(credentials: aiCredentials) }
+                }
+            }
+            Section { Text("数据默认保存在本机。AI 解读仅在你点击时发送摘要，不会自动调用。") }
         }
         .formStyle(.grouped).navigationTitle("设置")
         .task { await model.refresh() }
@@ -212,6 +276,9 @@ struct SettingsContent: View {
 
 struct CredentialSettingsSection: View {
     @Bindable var model: CredentialSettingsModel
+    var title = "服务凭据"
+    var explanation = "预留的数据服务凭据，仅存入本机钥匙串，不会显示已保存的内容。保存不代表已连接或验证服务。"
+    var identifierPrefix = "credential"
     @State private var draft = ""
     @State private var flow = CredentialInteractionFlow()
     private enum Control: Hashable { case input, save, delete, check }
@@ -221,14 +288,14 @@ struct CredentialSettingsSection: View {
         !model.isBusy && model.presence != .unknown && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     var body: some View {
-        Section("服务凭据") {
+        Section(title) {
             LabeledContent("本机状态", value: model.presence == .saved ? "已保存" : model.presence == .absent ? "未保存" : "待检查")
-                .accessibilityIdentifier("credentialPresence")
-            Text("预留的数据服务凭据，仅存入本机钥匙串，不会显示已保存的内容。保存不代表已连接或验证服务。")
+                .accessibilityIdentifier(identifierPrefix + "Presence")
+            Text(explanation)
                 .foregroundStyle(.secondary)
             SecureField(model.presence == .saved ? "输入新凭据以替换" : "输入凭据", text: $draft)
                 .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("credentialInput")
+                .accessibilityIdentifier(identifierPrefix + "Input")
                 .accessibilityLabel(model.presence == .saved ? "输入新凭据以替换" : "输入凭据")
                 .accessibilityHint("安全文本，不显示已保存的凭据。按 Command S 保存或打开替换确认；回车不保存。")
                 .focused($focusedControl, equals: .input)
@@ -245,7 +312,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(!canSave)
                     .help(model.presence == .saved ? "替换凭据（⌘S），仍需确认" : "保存凭据（⌘S）")
-                    .accessibilityIdentifier("credentialSave")
+                    .accessibilityIdentifier(identifierPrefix + "Save")
                 Button("删除凭据…", role: .destructive) { requestDelete() }
                     .focusable(model.presence == .saved && !model.isBusy)
                     .focused($focusedControl, equals: .delete)
@@ -254,7 +321,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(model.isBusy || model.presence != .saved)
                     .help("删除凭据（⇧⌘⌫），仍需确认")
-                    .accessibilityIdentifier("credentialDelete")
+                    .accessibilityIdentifier(identifierPrefix + "Delete")
                 Spacer()
                 Button("检查状态") { checkStatus() }
                     .focusable(!model.isBusy)
@@ -264,7 +331,7 @@ struct CredentialSettingsSection: View {
                     }
                     .disabled(model.isBusy)
                     .help("检查钥匙串状态（⇧⌘R）")
-                    .accessibilityIdentifier("credentialCheck")
+                    .accessibilityIdentifier(identifierPrefix + "Check")
             }
             if let confirmationNotice = flow.confirmationNotice { Text(confirmationNotice).foregroundStyle(.secondary) }
             if model.isBusy { ProgressView("正在访问钥匙串…").controlSize(.small) }
@@ -274,7 +341,7 @@ struct CredentialSettingsSection: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(message)
-                    .accessibilityIdentifier("credentialMessage")
+                    .accessibilityIdentifier(identifierPrefix + "Message")
             }
         }
         .focusedSceneValue(\.credentialActions, CredentialSceneActions(
