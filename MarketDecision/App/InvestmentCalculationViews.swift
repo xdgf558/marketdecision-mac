@@ -10,6 +10,23 @@ private struct InvestmentSaveApproval: Identifiable {
     let performance: UUID
 }
 
+/// Cheap value comparison only. Calendar parsing and validation belong to the
+/// inspection worker, never to a date row's rendering path.
+private struct InvestmentCalendarSelection: Equatable {
+    let start: String
+    let end: String
+    let replaces: Bool
+    let dates: String
+    let evidence: PortfolioEvidenceDraft
+    let reused: PerformanceCalendar?
+
+    init(_ draft: InvestmentCalculationDraft) {
+        start = draft.startDay; end = draft.endDay; replaces = draft.replacesCalendar
+        dates = draft.replacementTradingDays; evidence = draft.replacementCalendarEvidence
+        reused = draft.reusedRequest?.calendar
+    }
+}
+
 /// One page-local draft against a fixed, already loaded ledger. Reusing evidence
 /// never replaces its typed values with display strings or changes its quality.
 struct InvestmentCalculationView: View {
@@ -20,6 +37,11 @@ struct InvestmentCalculationView: View {
     @State private var reusable: SavedPerformanceReport?
     @State private var rows: [InvestmentDayRequirement] = []
     @State private var inspectedDraft: InvestmentCalculationDraft?
+    @State private var inspection = InvestmentInspectionModel()
+    @State private var inspectionRequest: UUID?
+    @State private var inspectedCalendar: InvestmentCalendarSelection?
+    @State private var selectedDays: Set<String> = []
+    @State private var requirementsByDay: [String: InvestmentDayRequirement] = [:]
     @State private var error: String?
     @State private var approval: InvestmentSaveApproval?
     @State private var confirmation = ""
@@ -43,7 +65,7 @@ struct InvestmentCalculationView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 heading
                 if !current && !model.isBusy {
                     ContentUnavailableView("请重新载入账本", systemImage: "arrow.clockwise",
@@ -51,10 +73,11 @@ struct InvestmentCalculationView: View {
                         .accessibilityIdentifier("investmentCalculationStale")
                 } else if draft != nil {
                     reuseSection
-                    if let binding = Binding($draft) { inputSections(binding) }
+                    if let binding = Binding($draft) { inputSections(editable(binding)) }
                     previewSection
                 }
                 if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("investmentCalculationError") }
+                if let message = inspection.message { Text(message).foregroundStyle(.orange) }
                 if let message = model.message {
                     Text(message).foregroundStyle(model.hasError ? Color.red : Color.secondary)
                         .accessibilityIdentifier("investmentCalculationMessage")
@@ -63,13 +86,36 @@ struct InvestmentCalculationView: View {
         }
         .sheet(item: $approval) { saveConfirmation($0) }
         .onAppear { visible = true }
-        .onDisappear { visible = false; approval = nil }
+        .onDisappear { visible = false; approval = nil; invalidateInspection() }
         .onChange(of: draft) { _, _ in
             approval = nil; error = nil
             if !model.isBusy { model.draftChanged() }
         }
         .onChange(of: model.preview?.id) { _, id in if approval?.id != id { approval = nil } }
-        .onChange(of: model.inputEpoch) { _, _ in approval = nil; rows = []; inspectedDraft = nil }
+        .onChange(of: model.inputEpoch) { _, _ in approval = nil; clearInspection() }
+        .onChange(of: model.preparationBaseline) { _, _ in invalidateInspection() }
+        .onChange(of: model.selectedAccountID) { _, _ in invalidateInspection() }
+        .onChange(of: model.isBusy) { _, busy in if busy { invalidateInspection() } }
+    }
+
+    private func editable(_ value: Binding<InvestmentCalculationDraft>) -> Binding<InvestmentCalculationDraft> {
+        Binding(get: { value.wrappedValue }, set: { updated in
+            // Invalidate at the edit itself, even if A -> B -> A is coalesced
+            // into a single SwiftUI update. Worker publication bypasses this.
+            if updated != value.wrappedValue { invalidateInspection() }
+            value.wrappedValue = updated
+        })
+    }
+
+    private func invalidateInspection() {
+        inspectionRequest = nil
+        inspection.invalidate()
+    }
+
+    private func clearInspection() {
+        invalidateInspection()
+        rows = []; inspectedDraft = nil; inspectedCalendar = nil
+        selectedDays = []; requirementsByDay = [:]
     }
 
     private var heading: some View {
@@ -110,7 +156,7 @@ struct InvestmentCalculationView: View {
             flowSection(value)
             Button("核算盈亏") { calculate() }
                 .buttonStyle(.borderedProminent).tint(accent).controlSize(.large)
-                .disabled(blocked).accessibilityIdentifier("investmentCalculate")
+                .disabled(blocked || inspection.isBusy).accessibilityIdentifier("investmentCalculate")
         }.disabled(blocked)
     }
 
@@ -140,11 +186,18 @@ struct InvestmentCalculationView: View {
     }
 
     private func dataSection(_ value: Binding<InvestmentCalculationDraft>) -> some View {
-        GroupBox("按日期补齐估值数据") {
-            VStack(alignment: .leading, spacing: 12) {
+        let calendarMatches = inspectedCalendar == InvestmentCalendarSelection(value.wrappedValue)
+        let originals = Dictionary((value.wrappedValue.reusedRequest?.days ?? []).map { ($0.day, $0) },
+                                   uniquingKeysWith: { first, _ in first })
+        return GroupBox("按日期补齐估值数据") {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Button("整理缺项并带入持仓") { inspect() }.accessibilityIdentifier("investmentInspectMissing")
-                    if inspectedDraft == draft { Text("已按当前填写内容整理").font(.caption).foregroundStyle(.secondary) }
+                    Button("整理缺项并带入持仓") { inspect() }.disabled(inspection.isBusy)
+                        .accessibilityIdentifier("investmentInspectMissing")
+                    if inspection.isBusy {
+                        ProgressView().controlSize(.small)
+                        Button("取消整理") { invalidateInspection() }
+                    } else if inspectedDraft == draft { Text("已按当前填写内容整理").font(.caption).foregroundStyle(.secondary) }
                     else { Text("修改期间或估值时刻后，再整理一次。").font(.caption).foregroundStyle(.secondary) }
                 }
                 Text("新日期先填估值时刻，再点击整理，即可列出那一刻实际持有的标的。旧资料按原值保留；有记录不等于价格已合格。")
@@ -158,13 +211,16 @@ struct InvestmentCalculationView: View {
                         }.font(.caption)
                     }
                 }
-                ForEach(value.supplementalDays) { day in
-                    if (try? value.wrappedValue.selectedCalendar().tradingDays.contains(day.wrappedValue.day)) == true {
-                    let original = value.wrappedValue.reusedRequest?.days.first { $0.day == day.wrappedValue.day }
-                    InvestmentDayFields(draft: day, original: original,
-                        instruments: rows.first(where: { $0.day == day.wrappedValue.day })?.instrumentIDs ?? [],
-                        inspect: inspect)
+                if calendarMatches {
+                    ForEach(value.supplementalDays) { day in
+                        if selectedDays.contains(day.wrappedValue.day) {
+                            InvestmentDayFields(draft: day, original: originals[day.wrappedValue.day],
+                                instruments: requirementsByDay[day.wrappedValue.day]?.instrumentIDs ?? [],
+                                inspecting: inspection.isBusy, inspect: inspect)
+                        }
                     }
+                } else if !value.wrappedValue.supplementalDays.isEmpty {
+                    Text("期间或日历已变化，请重新整理。已填资料会保留。").font(.caption).foregroundStyle(.secondary)
                 }
                 if let source = value.wrappedValue.reusedRequest {
                     DisclosureGroup("已保留的附加资料") {
@@ -248,7 +304,7 @@ struct InvestmentCalculationView: View {
         guard current, !model.isBusy else { return }
         do {
             draft = try .init(accountID: model.selectedAccountID ?? "", reusing: request)
-            rows = []; inspectedDraft = nil; error = nil
+            clearInspection(); error = nil
         } catch { self.error = "这份报告不能用于当前账户。合成资料不能转换为个人账户证据。" }
     }
     private func reset() {
@@ -256,19 +312,33 @@ struct InvestmentCalculationView: View {
         do {
             var empty = try InvestmentCalculationDraft(accountID: model.selectedAccountID ?? "")
             empty.replacesCalendar = true; empty.usesNewFlowEvidence = true
-            draft = empty; rows = []; inspectedDraft = nil; error = nil
+            draft = empty; clearInspection(); error = nil
         } catch { self.error = "请先选择有效账户。" }
     }
     private func inspect() {
-        guard current, !model.isBusy, var value = draft, let ledger = model.context?.ledger else { return }
-        do {
-            try value.fillMissingQuotes(accounts: ledger.accounts, events: ledger.events)
-            rows = try value.requirements(accounts: ledger.accounts, events: ledger.events)
-            draft = value; inspectedDraft = value; error = nil
-        } catch { self.error = "无法整理缺项：请核对完整日历、期间范围及估值时刻。已有输入保留。" }
+        guard current, !model.isBusy, !inspection.isBusy, let value = draft,
+              let baseline, let ledger = model.context?.ledger else { return }
+        let request = UUID()
+        inspectionRequest = request; error = nil
+        Task {
+            guard visible, inspectionRequest == request, draft == value,
+                  model.preparationBaseline == baseline, !model.isBusy, !Task.isCancelled else { return }
+            let result = await inspection.inspect(draft: value, baseline: baseline,
+                                                  accounts: ledger.accounts, events: ledger.events)
+            guard let result, visible, inspectionRequest == request, !Task.isCancelled,
+                  self.baseline == result.baseline, model.preparationBaseline == result.baseline,
+                  model.selectedAccountID == result.draft.accountID, !model.isBusy,
+                  draft == result.sourceDraft else { return }
+            inspectionRequest = nil
+            rows = result.rows
+            requirementsByDay = Dictionary(result.rows.map { ($0.day, $0) }, uniquingKeysWith: { first, _ in first })
+            selectedDays = Set(result.rows.map(\.day))
+            inspectedCalendar = InvestmentCalendarSelection(result.draft)
+            draft = result.draft; inspectedDraft = result.draft
+        }
     }
     private func calculate() {
-        guard current, !model.isBusy, let draft, let baseline else { return }
+        guard current, !model.isBusy, !inspection.isBusy, let draft, let baseline else { return }
         do {
             let request = try draft.build(calculatedAt: Date())
             error = nil
@@ -281,6 +351,7 @@ private struct InvestmentDayFields: View {
     @Binding var draft: PortfolioDayDraft
     let original: PerformanceDayInput?
     let instruments: [String]
+    let inspecting: Bool
     let inspect: () -> Void
     var body: some View {
         GroupBox(draft.day) {
@@ -293,7 +364,7 @@ private struct InvestmentDayFields: View {
                 } else {
                     TextField("估值时刻（带时区，如 2026-01-02T21:00:00Z）", text: $draft.valuationAt)
                         .accessibilityIdentifier("investmentValuation-" + draft.day)
-                    Button("按这个时刻列出持仓", action: inspect)
+                    Button("按这个时刻列出持仓", action: inspect).disabled(inspecting)
                 }
                 ForEach($draft.quotes) { quote in
                     let quoteID = quote.wrappedValue.id
@@ -304,9 +375,12 @@ private struct InvestmentDayFields: View {
                 if !instruments.isEmpty {
                     Menu("补充某个持仓的报价") {
                         ForEach(instruments, id: \.self) { instrument in
-                            Button(instrument) { var quote = PortfolioQuoteDraft(); quote.instrumentID = instrument; draft.quotes.append(quote) }
+                            Button(instrument) { draft.appendSupplementalQuote(instrumentID: instrument) }
+                                .disabled(!draft.canAddSupplementalQuote(instrumentID: instrument))
                         }
                     }
+                    Text("每个持仓保留一条待填报价；已添加的持仓请编辑上方记录。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
         }

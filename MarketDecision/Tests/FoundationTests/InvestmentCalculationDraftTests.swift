@@ -141,6 +141,76 @@ struct InvestmentCalculationDraftTests {
         #expect(draft.supplementalDays.first { $0.day == third.day }?.quotes.count == 1)
     }
 
+    @Test func fillingReturnsTheSameRequirementsWithoutTreatingPendingQuotesAsEvidence() throws {
+        let original = try base(calendar: ["2026-01-02", "2026-01-05", "2026-01-06"])
+        var draft = try InvestmentCalculationDraft(accountID: account.id, reusing: original)
+        let events = [try trade("buy", symbol: "NEW", timestamp: "2026-01-02T15:00:00Z")]
+        let expected = try draft.requirements(accounts: [account], events: events)
+        let returned = try draft.fillMissingQuotes(accounts: [account], events: events)
+        #expect(returned == expected)
+        #expect(returned == (try draft.requirements(accounts: [account], events: events)))
+        #expect(returned.last?.reason != nil) // Missing valuation remains explicit.
+        #expect(draft.supplementalDays.map(\.day) == original.calendar.tradingDays)
+        #expect(draft.supplementalDays[0].quotes.map(\.instrumentID) == ["equity:NEW"])
+        let filled = draft
+        #expect(try draft.fillMissingQuotes(accounts: [account], events: events) == returned)
+        #expect(draft == filled) // A second preparation never creates new pending identities.
+        #expect(draft.reusedRequest == original && !draft.externalFlowsComplete)
+    }
+
+    @Test func dailyQuoteAdditionRejectsDuplicateInstrumentWithoutReplacingInputOrRelaxingSessionConflicts() throws {
+        var day = PortfolioDayDraft(); day.day = "2026-01-05"
+        #expect(!day.canAddSupplementalQuote(instrumentID: "  "))
+        #expect(!day.appendSupplementalQuote(instrumentID: ""))
+        #expect(day.appendSupplementalQuote(instrumentID: "equity:OLD"))
+        day.quotes[0].opensAt = "2026-01-05T14:30:00Z"
+        day.quotes[0].closesAt = "2026-01-05T21:00:00Z"
+        day.quotes[0].quoteAt = "2026-01-05T20:59:00Z"
+        day.quotes[0].bid = "12"; day.quotes[0].ask = "13"
+        day.quotes[0].sessionEvidence = proof("pending-session")
+        day.quotes[0].priceEvidence = proof("pending-price")
+        let entered = day
+        #expect(!day.canAddSupplementalQuote(instrumentID: "equity:OLD"))
+        #expect(!day.appendSupplementalQuote(instrumentID: "equity:OLD"))
+        #expect(day == entered)
+        #expect(day.appendSupplementalQuote(instrumentID: "equity:NEW"))
+        #expect(day.quotes.first == entered.quotes.first && day.quotes.count == 2)
+
+        // The editing helper is not permission to bypass the lower-level guard.
+        let original = try base()
+        var conflicting = entered
+        var second = entered.quotes[0]; second.id = UUID().uuidString
+        second.quoteAt = "2026-01-05T20:59:30Z"
+        conflicting.quotes.append(second)
+        var draft = try InvestmentCalculationDraft(accountID: account.id, reusing: original)
+        draft.supplementalDays = [conflicting]
+        #expect(throws: InvestmentDraftError.conflictingSession) { try draft.build(calculatedAt: original.calculatedAt) }
+    }
+
+    @Test func cancelledPreparationThrowsInsteadOfReturningRowsOrPartlyFillingTheDraft() async throws {
+        let original = try base(calendar: ["2026-01-02", "2026-01-05", "2026-01-06"])
+        var initial = try InvestmentCalculationDraft(accountID: account.id, reusing: original)
+        var invalid = PortfolioDayDraft(); invalid.day = "2026-01-06"; invalid.valuationAt = "invalid date"
+        initial.supplementalDays = [invalid]
+        let immutableInput = initial
+        let accounts = [account]
+        let events = [try trade("buy", symbol: "NEW", timestamp: "2026-01-02T15:00:00Z")]
+        let result = await Task.detached { () -> (Bool, Bool, Bool) in
+            var draft = immutableInput
+            // Explicit self-cancellation avoids timeout or scheduler-speed assumptions.
+            withUnsafeCurrentTask { $0?.cancel() }
+            var requirementsCancelled = false, fillCancelled = false
+            do { _ = try draft.requirements(accounts: accounts, events: events) }
+            catch is CancellationError { requirementsCancelled = true }
+            catch { }
+            do { _ = try draft.fillMissingQuotes(accounts: accounts, events: events) }
+            catch is CancellationError { fillCancelled = true }
+            catch { }
+            return (requirementsCancelled, fillCancelled, draft == immutableInput)
+        }.value
+        #expect(result.0 && result.1 && result.2)
+    }
+
     @Test func validMultiLegMembershipIsCheckedBeforeCuttingAtAnIntermediateValuation() throws {
         let original = try base()
         let first = try trade("leg-a", symbol: "A", timestamp: "2026-01-02T15:00:00Z", group: "group")

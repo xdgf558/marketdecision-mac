@@ -19,6 +19,23 @@ public struct InvestmentDayRequirement: Equatable, Sendable, Identifiable {
     public let reason: String?
 }
 
+public extension PortfolioDayDraft {
+    /// The daily editing flow has one pending quote per instrument and day. A
+    /// second click never replaces an input or creates a second session form.
+    func canAddSupplementalQuote(instrumentID: String) -> Bool {
+        !instrumentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !quotes.contains(where: { $0.instrumentID == instrumentID })
+    }
+
+    @discardableResult
+    mutating func appendSupplementalQuote(instrumentID: String) -> Bool {
+        guard canAddSupplementalQuote(instrumentID: instrumentID) else { return false }
+        var quote = PortfolioQuoteDraft(); quote.instrumentID = instrumentID
+        quotes.append(quote)
+        return true
+    }
+}
+
 /// Keeps already replay-checked evidence as typed, immutable values. This type
 /// neither loads saved records nor proves their provenance: the workspace may
 /// supply `reusing` only after its normal stored-report integrity/replay checks.
@@ -94,17 +111,21 @@ public struct InvestmentCalculationDraft: Equatable, Sendable {
     /// exactly as the existing performance engine does. Closed current positions
     /// therefore remain required when they were open at an earlier valuation.
     public func requirements(accounts: [LedgerAccount], events: [LedgerEvent]) throws -> [InvestmentDayRequirement] {
+        try Task.checkCancellation()
         let calendar = try selectedCalendar()
         guard accounts.contains(where: { $0.id == accountID }) else { throw InvestmentDraftError.accountMismatch }
+        try Task.checkCancellation()
         let complete = try LedgerEngine.replay(accounts: accounts, events: events)
         let activeIDs = Set(complete.activeEventIDs)
         let active = events.filter { activeIDs.contains($0.id) && $0.accountID == accountID }
         try validateSupplementalRows()
-        return try calendar.tradingDays.map { day in
+        let rows: [InvestmentDayRequirement] = try calendar.tradingDays.map { day in
+            try Task.checkCancellation()
             let original = reusedRequest?.days.first { $0.day == day }
             let extra = supplementalDays.first { $0.day == day }
             let at: Date
             do { at = try valuation(original: original, extra: extra, day: day) }
+            catch is CancellationError { throw CancellationError() }
             catch {
                 return .init(day: day, valuationAt: nil, instrumentIDs: [], reusedSessionInstrumentIDs: [],
                              recordedPriceInstrumentIDs: [], missingInstrumentIDs: [],
@@ -116,6 +137,7 @@ public struct InvestmentCalculationDraft: Equatable, Sendable {
                 LedgerEvent(id: $0.id, accountID: $0.accountID, effectiveAt: $0.effectiveAt,
                             providerSequence: $0.providerSequence, source: $0.source, payload: $0.payload, notes: $0.notes)
             }
+            try Task.checkCancellation()
             let state = try LedgerEngine.replay(accounts: accounts, events: cut)
             let required = Set(state.lots.filter { $0.accountID == accountID && !$0.isClosed }.map { $0.instrument.identity })
             let sessions = Set(original?.sessions.map(\.instrumentID) ?? [])
@@ -126,23 +148,33 @@ public struct InvestmentCalculationDraft: Equatable, Sendable {
                          reusedSessionInstrumentIDs: sessions.sorted(), recordedPriceInstrumentIDs: prices.sorted(),
                          missingInstrumentIDs: required.subtracting(sessions.intersection(prices)).sorted(), reason: nil)
         }
+        try Task.checkCancellation()
+        return rows
     }
 
     /// Inserts empty inputs only for declared dates and actual historical holdings.
     /// No timestamp, price, source assertion or flow-completeness value is guessed.
-    public mutating func fillMissingQuotes(accounts: [LedgerAccount], events: [LedgerEvent]) throws {
+    /// Returns that same preparation result; callers must not replay it again just
+    /// to render the rows. Cancellation leaves the editable draft unchanged.
+    @discardableResult
+    public mutating func fillMissingQuotes(accounts: [LedgerAccount], events: [LedgerEvent]) throws -> [InvestmentDayRequirement] {
         let needed = try requirements(accounts: accounts, events: events)
+        var updatedDays = supplementalDays
         for row in needed {
-            if !supplementalDays.contains(where: { $0.day == row.day }) {
+            try Task.checkCancellation()
+            if !updatedDays.contains(where: { $0.day == row.day }) {
                 var day = PortfolioDayDraft(); day.day = row.day
-                supplementalDays.append(day)
+                updatedDays.append(day)
             }
-            guard let index = supplementalDays.firstIndex(where: { $0.day == row.day }) else { continue }
-            for instrument in row.missingInstrumentIDs where !supplementalDays[index].quotes.contains(where: { $0.instrumentID == instrument }) {
-                var quote = PortfolioQuoteDraft(); quote.instrumentID = instrument
-                supplementalDays[index].quotes.append(quote)
+            guard let index = updatedDays.firstIndex(where: { $0.day == row.day }) else { continue }
+            for instrument in row.missingInstrumentIDs {
+                try Task.checkCancellation()
+                updatedDays[index].appendSupplementalQuote(instrumentID: instrument)
             }
         }
+        try Task.checkCancellation()
+        supplementalDays = updatedDays
+        return needed
     }
 
     /// Out-of-period supplemental rows remain in the editable draft and are not
@@ -207,7 +239,7 @@ public struct InvestmentCalculationDraft: Equatable, Sendable {
               Set(supplementalDays.map(\.id)).count == supplementalDays.count else { throw InvestmentDraftError.duplicateIdentity }
         let quotes = supplementalDays.flatMap(\.quotes)
         guard Set(quotes.map(\.id)).count == quotes.count else { throw InvestmentDraftError.duplicateIdentity }
-        for row in supplementalDays { try Self.validateDay(row.day) }
+        for row in supplementalDays { try Task.checkCancellation(); try Self.validateDay(row.day) }
     }
 
     private func valuation(original: PerformanceDayInput?, extra: PortfolioDayDraft?, day: String) throws -> Date {
@@ -235,7 +267,7 @@ public struct InvestmentCalculationDraft: Equatable, Sendable {
     }
     private static func validateCalendar(_ days: [String]) throws {
         guard !days.isEmpty, days == days.sorted(), Set(days).count == days.count else { throw InvestmentDraftError.invalidCalendar }
-        for day in days { try validateDay(day) }
+        for day in days { try Task.checkCancellation(); try validateDay(day) }
     }
     private static func money(_ value: String) throws -> Money? { value.isEmpty ? nil : try Money(value) }
     private static func isBlank(_ evidence: PortfolioEvidenceDraft) -> Bool {
