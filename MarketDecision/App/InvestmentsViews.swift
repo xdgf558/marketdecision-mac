@@ -32,9 +32,9 @@ struct InvestmentsPage: View {
 }
 
 private enum InvestmentDetail: Identifiable {
-    case ledger(String), portfolio
+    case ledger(String), portfolio, calculation
     var id: String {
-        switch self { case .ledger(let section): "ledger-" + section; case .portfolio: "portfolio" }
+        switch self { case .ledger(let section): "ledger-" + section; case .portfolio: "portfolio"; case .calculation: "calculation" }
     }
 }
 
@@ -46,6 +46,8 @@ private struct InvestmentsContent: View {
     @State private var share: InvestmentShareSnapshot?
     @State private var reloadID = UUID()
     @State private var requestedAccountID: String?
+    @State private var preferredReportID: UUID?
+    @State private var continueToCalculation = false
     @State private var shareError: String?
     private let accent = Color(red: 0.0, green: 0.43, blue: 0.42)
     private var summary: InvestmentSummary? { model.report.map(InvestmentSummary.init) }
@@ -57,8 +59,14 @@ private struct InvestmentsContent: View {
             if let detail {
                 detailShell {
                     switch detail {
-                    case .ledger(let section): LedgerPage(workspace: workspace, initialSection: section, initialAccountID: detailAccountID)
+                    case .ledger(let section): LedgerPage(workspace: workspace, initialSection: section, initialAccountID: detailAccountID,
+                        onContinueToCalculation: { account in
+                            continueToCalculation = true; self.detail = nil; requestReload(account: account)
+                        })
                     case .portfolio: PortfolioPage(workspace: workspace, initialAccountID: detailAccountID)
+                    case .calculation: InvestmentCalculationView(model: model) { id in
+                        preferredReportID = id; self.detail = nil; requestReload(account: detailAccountID)
+                    }
                     }
                 }
             } else { dashboard }
@@ -72,8 +80,16 @@ private struct InvestmentsContent: View {
             if let requested, model.selectedAccountID != requested { await model.chooseAccount(requested) }
             guard !Task.isCancelled, model.context != nil else { return }
             let account = model.selectedAccountID
-            if let newest = model.saved.filter({ $0.accountID == account }).max(by: { $0.createdAt < $1.createdAt }) {
+            if let preferred = preferredReportID {
+                preferredReportID = nil
+                await model.open(preferred)
+            } else if let newest = model.saved.filter({ $0.accountID == account }).max(by: { $0.createdAt < $1.createdAt }) {
                 await model.open(newest.id)
+            }
+            guard !Task.isCancelled, detail == nil else { return }
+            if continueToCalculation {
+                continueToCalculation = false
+                if model.preparationBaseline != nil { showCalculation() }
             }
         }
         .onDisappear { model.disappear(); shareError = nil; share = nil }
@@ -128,8 +144,10 @@ private struct InvestmentsContent: View {
             }
             HStack(spacing: 20) {
                 Button(model.context?.ledger.accounts.isEmpty == true ? "建立账户" : "记录交易") { showDetail(.ledger("手工录入")) }
-                    .buttonStyle(.borderedProminent).tint(accent).controlSize(.large).accessibilityIdentifier("investmentRecord")
-                Button("导入交易") { showDetail(.ledger("CSV 导入")) }.buttonStyle(.plain).foregroundStyle(accent).accessibilityIdentifier("investmentImport")
+                    .buttonStyle(.borderedProminent).tint(accent).controlSize(.large).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
+                Button("导入交易") { showDetail(.ledger("CSV 导入")) }.buttonStyle(.plain).foregroundStyle(accent).disabled(model.isBusy).accessibilityIdentifier("investmentImport")
+                Button("补齐数据并核算") { showCalculation() }.disabled(!model.canPrepare)
+                    .accessibilityIdentifier("investmentStartCalculation")
                 Spacer()
                 Button { prepareShare() } label: { Label("分享盈亏", systemImage: "square.and.arrow.up") }
                     .disabled(model.isBusy || model.savedReport == nil || summary?.netPnL == nil).accessibilityIdentifier("investmentShare")
@@ -152,13 +170,16 @@ private struct InvestmentsContent: View {
                 }
                 Text("已扣外部资金流；总额另含股息、利息、费用、税款及应计变化。").font(.caption).foregroundStyle(.secondary)
                 if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
-                if model.savedReport?.isCurrentLedger == false { Text("这是历史账本报告；新增交易尚未计入，需重新计算。").foregroundStyle(.orange).font(.callout) }
+                if model.savedReport?.isCurrentLedger == false {
+                    Text("这是历史账本报告；新增交易尚未计入，需重新计算。").foregroundStyle(.orange).font(.callout)
+                    Button("复用资料，核算新账本") { showCalculation() }.disabled(!model.canPrepare)
+                }
                 if summary.usesStalePrices { Text("含 STALE 价格，仅用于账本估值。").foregroundStyle(.orange).font(.caption) }
                 if let report = model.report { navChart(report) }
             } else {
                 Text("记录交易后，补齐估值日期和价格，就能核对盈亏。现金余额不是利润，缺价格不会显示为零。")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("计算或打开收益报告") { showDetail(.portfolio) }.foregroundStyle(accent).accessibilityIdentifier("investmentPrepareReturn")
+                Button("补齐数据并核算") { showCalculation() }.foregroundStyle(accent).disabled(!model.canPrepare).accessibilityIdentifier("investmentPrepareReturn")
             }
         }
     }
@@ -268,6 +289,11 @@ private struct InvestmentsContent: View {
     private func showDetail(_ value: InvestmentDetail) {
         detailAccountID = model.selectedAccountID
         model.disappear(); share = nil; detail = value
+    }
+    private func showCalculation() {
+        guard model.preparationBaseline != nil else { return }
+        detailAccountID = model.selectedAccountID
+        share = nil; shareError = nil; detail = .calculation
     }
     private func requestReload(account: String?) {
         model.disappear(); share = nil; shareError = nil

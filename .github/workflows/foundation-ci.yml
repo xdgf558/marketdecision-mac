@@ -13,7 +13,7 @@ jobs:
   foundation:
     name: macOS foundation (no account signing)
     runs-on: macos-15
-    # PR62 used 46m37s before native checks. Budget for 19 x 90s cases plus
+    # PR62 used 46m37s before native checks. Budget for 20 x 90s cases plus
     # host compilation/result collection; keep every check and per-case limit.
     timeout-minutes: 90
     env:
@@ -47,7 +47,7 @@ jobs:
             echo '## Foundation CI evidence'
             echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
             echo "- Debug/Release, effective main/helper permissions and synthetic XPC/socket-denial probe: $BUILD_OUTCOME"
-            echo "- Native interaction suite (nineteen cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
+            echo "- Native interaction suite (twenty cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
             echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'

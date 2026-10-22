@@ -17,6 +17,17 @@ class NativeResultTests(unittest.TestCase):
             result.validate_results(self.summary if summary is None else summary, self.tree if tree is None else tree)
     def test_exact_required_pass(self):
         self.assertEqual(set(result.validate_results(self.summary, self.tree)), result.expected)
+    def test_daily_investment_flow_cannot_be_omitted_from_previous_suite(self):
+        name = 'testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries'
+        self.assertIn(name, result.expected)
+        self.tree['testNodes'] = [node for node in self.tree['testNodes'] if node['name'] != name + '()']
+        self.summary.update(totalTestCount=len(result.expected) - 1, passedTests=len(result.expected) - 1)
+        self.rejected()
+    def test_daily_investment_flow_must_actually_pass(self):
+        name = 'testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries()'
+        node = next(node for node in self.tree['testNodes'] if node['name'] == name)
+        node['result'] = 'Failed'
+        self.rejected()
     def test_skip_is_not_pass(self):
         self.summary.update(skippedTests=1, passedTests=3); self.rejected()
     def test_failure_is_not_pass(self):
