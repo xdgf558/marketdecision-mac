@@ -635,12 +635,26 @@ import XCTest
         let preview = mainWindow.buttons["optionArchiveClearPreview"]
         XCTAssertTrue(preview.waitForExistence(timeout: 10)); waitEnabled(preview)
         let scroll = mainWindow.scrollViews.element(boundBy: 0)
-        for _ in 0..<20 where !preview.isHittable {
-            scroll.scroll(byDeltaX: 0, deltaY: -80)
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        func previewFullyVisible() -> Bool {
+            guard preview.exists else { return false }
+            let viewport = scroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !viewport.isEmpty && !preview.frame.isEmpty && viewport.contains(preview.frame)
         }
-        XCTAssertTrue(preview.isHittable); preview.click()
+        // macOS 15 reports a clipped button as hittable. Bring the whole action
+        // into its viewport before clicking its center, not the exposed edge.
+        for _ in 0..<20 where !previewFullyVisible() {
+            guard preview.exists else { XCTFail("Archive action disappeared before scrolling"); return }
+            let distance = scroll.frame.intersection(mainWindow.frame).midY - preview.frame.midY
+            scroll.scroll(byDeltaX: 0, deltaY: max(-100, min(100, distance)))
+        }
+        guard previewFullyVisible(), preview.isHittable else {
+            XCTFail("Archive action is outside viewport: button=\(preview.frame), scroll=\(scroll.frame)")
+            return
+        }
+        preview.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         let confirmation = sheet(in: mainWindow)
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 10))
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 10), mainWindow.debugDescription)
         let commit = confirmation.buttons["optionArchiveCommit"]
         XCTAssertTrue(commit.waitForExistence(timeout: 5)); XCTAssertFalse(commit.isEnabled)
         app.typeKey(.return, modifierFlags: [])
@@ -737,7 +751,8 @@ import XCTest
         let rate = mainWindow.textFields["optionLabPricingRate"]
         // copyToDraft restores this report's enabled pricing disclosure. Do not
         // toggle it based on a lazy rate field that is merely below the viewport.
-        // Input and report tabs share this outer viewport and retain its offset.
+        // Section identity resets the outer viewport, but the field can still
+        // lie below the initial visible input content.
         // The rate belongs to a LazyVGrid: on macOS 15 it may not enter the AX
         // tree until scrolled into view. Never locate the viewport through it.
         let editor = mainWindow.scrollViews.element(boundBy: 0)
@@ -745,7 +760,10 @@ import XCTest
         let origin = mainWindow.staticTexts["optionLabOrigin"]
         func originFullyVisible() -> Bool {
             guard origin.exists else { return false }
-            let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            // This is a noninteractive top anchor, not a click target. At the
+            // scroll limit it sits inside the content's 3-point padding; an
+            // artificial 8-point inset would reject it even at scroll offset 0.
+            let viewport = editor.frame.intersection(mainWindow.frame)
             return !origin.frame.isEmpty && !viewport.isEmpty
                 && origin.frame.minY >= viewport.minY && origin.frame.maxY <= viewport.maxY
         }
