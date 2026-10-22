@@ -3,26 +3,60 @@ import Darwin
 import Security
 import SECNetworkBroker
 import EquityNetworkBroker
+import AIAnalysisNetworkBroker
 
 // Synthetic signing/IPC probe only, never linked into the production executable. No valid
-// SEC/equity request, contact, account, file panel, user database or credential is used here.
+// SEC/equity/AI request, contact, account, file panel, user database or credential is used here.
 @main struct SECNetworkIsolationProbe {
     private enum Broker: CaseIterable, Sendable {
-        case sec, equity
-        var name: String { self == .sec ? "SECNetworkService" : "EquityNetworkService" }
-        var identity: String { self == .sec ? SECNetworkIdentity.serviceName : EquityNetworkIdentity.serviceName }
-        var invalidCode: Int { self == .sec ? SECNetworkReplyCode.invalidRequest.rawValue : EquityNetworkReplyCode.invalidRequest.rawValue }
+        case sec, equity, aiAnalysis
+        var name: String {
+            switch self {
+            case .sec: "SECNetworkService"
+            case .equity: "EquityNetworkService"
+            case .aiAnalysis: "AIAnalysisNetworkService"
+            }
+        }
+        var identity: String {
+            switch self {
+            case .sec: SECNetworkIdentity.serviceName
+            case .equity: EquityNetworkIdentity.serviceName
+            case .aiAnalysis: AIAnalysisNetworkIdentity.serviceName
+            }
+        }
+        var invalidCode: Int {
+            switch self {
+            case .sec: SECNetworkReplyCode.invalidRequest.rawValue
+            case .equity: EquityNetworkReplyCode.invalidRequest.rawValue
+            case .aiAnalysis: AIAnalysisReplyCode.invalidRequest.rawValue
+            }
+        }
     }
 
     static func main() async {
-        if CommandLine.arguments.dropFirst() == ["--expect-invalid-broker"] {
-            guard !SECNetworkServiceAvailability.isAvailable, !EquityNetworkServiceAvailability.isAvailable else {
-                fail("replaced-helper-accepted")
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.first == "--expect-invalid-broker" {
+            guard arguments.count == 2, Broker.allCases.contains(where: { $0.name == arguments[1] }) else {
+                fail("invalid-replacement-probe-arguments")
             }
-            print("PASS: main sealed resources reject an independently re-signed replacement helper for both brokers")
+            // Evaluate every broker before asserting; a short-circuit guard hides which
+            // other routes would accept the same modified application package.
+            let availability: [(Broker, Bool)] = [
+                (.sec, SECNetworkServiceAvailability.isAvailable),
+                (.equity, EquityNetworkServiceAvailability.isAvailable),
+                (.aiAnalysis, AIAnalysisServiceAvailability.isAvailable),
+            ]
+            for (broker, available) in availability {
+                print("CHECK: replacement=" + arguments[1] + " broker=" + broker.name
+                    + " available=" + String(available))
+            }
+            guard availability.allSatisfy({ !$0.1 }) else { fail("replaced-helper-accepted") }
+            print("PASS: main sealed resources reject an independently re-signed replacement helper for all three brokers")
             return
         }
-        guard SECNetworkServiceAvailability.isAvailable, EquityNetworkServiceAvailability.isAvailable else { fail("broker-unavailable") }
+        guard arguments.isEmpty else { fail("invalid-probe-arguments") }
+        guard SECNetworkServiceAvailability.isAvailable, EquityNetworkServiceAvailability.isAvailable,
+              AIAnalysisServiceAvailability.isAvailable else { fail("broker-unavailable") }
         // No listener is needed: EPERM is an OS denial, unlike ECONNREFUSED/timeout.
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { fail("socket-create") }
@@ -45,7 +79,7 @@ import EquityNetworkBroker
             do { try await rejectedDescriptorRoundTrip(broker) }
             catch { fail("ipc-rejection") }
         }
-        print("PASS: sandbox denies main sockets; authenticated SEC/Equity XPC reject malformed requests; zero external requests")
+        print("PASS: sandbox denies main sockets; authenticated SEC/Equity/AIAnalysis XPC reject malformed requests; zero external requests")
     }
     private static func rejectedDescriptorRoundTrip(_ broker: Broker) async throws {
         let serviceURL = Bundle.main.bundleURL.appendingPathComponent("Contents/XPCServices/" + broker.name + ".xpc")
@@ -60,6 +94,7 @@ import EquityNetworkBroker
         switch broker {
         case .sec: connection.remoteObjectInterface = NSXPCInterface(with: SECNetworkServiceProtocol.self)
         case .equity: connection.remoteObjectInterface = NSXPCInterface(with: EquityNetworkServiceProtocol.self)
+        case .aiAnalysis: connection.remoteObjectInterface = NSXPCInterface(with: AIAnalysisNetworkServiceProtocol.self)
         }
         connection.resume()
         defer { connection.invalidate() }
@@ -78,6 +113,9 @@ import EquityNetworkBroker
             case .equity:
                 guard let remote = proxy as? EquityNetworkServiceProtocol else { once.finish(false); return }
                 remote.fetch(Data("{}".utf8), withReply: reply)
+            case .aiAnalysis:
+                guard let remote = proxy as? AIAnalysisNetworkServiceProtocol else { once.finish(false); return }
+                remote.analyze(Data("{}".utf8), withReply: reply)
             }
         }
         guard accepted else { fail("ipc-refusal-contract") }

@@ -7,9 +7,13 @@ import Persistence
 
 struct PortfolioPage: View {
     let workspace: WorkspaceModel
+    let initialAccountID: String?
     @State private var model: PortfolioWorkspaceModel?
     @State private var failure = false
     @State private var attempt = UUID()
+    init(workspace: WorkspaceModel, initialAccountID: String? = nil) {
+        self.workspace = workspace; self.initialAccountID = initialAccountID
+    }
     var body: some View {
         Group {
             if let model { PortfolioWorkspaceContent(model: model) }
@@ -28,6 +32,7 @@ struct PortfolioPage: View {
                     try Task.checkCancellation(); model = ready
                 }
                 await model?.load()
+                if let initialAccountID { await model?.chooseAccount(initialAccountID) }
             } catch { if !Task.isCancelled { failure = true } }
         }
     }

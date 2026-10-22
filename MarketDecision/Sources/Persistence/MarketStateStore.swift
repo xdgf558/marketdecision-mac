@@ -171,11 +171,12 @@ public actor MarketStateStore: MarketStateStorage {
                 guard let id = UUID(uuidString: raw), let old = try Self.load(id, db), old.originKey == entry.originKey else { throw MarketStateStorageError.corruptedStorage }
                 _ = try old.replay(); return old
             }
+            guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM market_macro_catalog WHERE document_id=?", arguments: [entry.summary.id.uuidString]) == 0 else { throw MarketStateStorageError.identityConflict }
             if let old = try Self.load(entry.summary.id, db) {
                 _ = try old.replay()
                 guard old == entry else { throw MarketStateStorageError.identityConflict }; return old
             }
-            guard try Self.count("market_state_catalog", db) < Self.maximumReports else { throw MarketStateStorageError.budgetExceeded }
+            guard try Self.count("market_state_catalog", db) + Self.count("market_macro_catalog", db) < Self.maximumReports else { throw MarketStateStorageError.budgetExceeded }
             try Task.checkCancellation(); try entry.insert(db)
             if inject { throw MarketStateStorageError.injectedFailure }
             try Task.checkCancellation(); try Self.bump(db)

@@ -20,6 +20,8 @@ import Persistence
     public private(set) var hasError = false
     public private(set) var listError: String?
     public private(set) var transferEpoch = UUID()
+    public private(set) var sources: MacroSourceWorkspaceModel?
+    public func installSources(_ sources: MacroSourceWorkspaceModel) { self.sources = sources }
     private let storage: any MarketStateStorage
     private let archive: any MarketStateArchiveStorage
     private let coordinator: MarketStateTransferCoordinator

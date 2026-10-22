@@ -50,18 +50,18 @@ access. This does not automate native scene lifecycle, commands, sheets or actua
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
 
-The separate `Scripts/verify-native-ui.sh` runs seventeen XCTest UI cases in
+The separate `Scripts/verify-native-ui.sh` runs eighteen XCTest UI cases in
 `NativeUITests/NativeInteractionTests.swift`. The independently identified
 MarketDecisionUITestHost compiles the same native views with a compile-time-only
 factory using synthetic quotes, an in-memory database and an in-memory credential
 presence store. Neither shipping configuration compiles that factory. UI tests
 are separate from the fixed Swift Testing inventory; the xcresult summary and
-individual case results must both report seventeen passes with no skips. Unknown result
+individual case results must both report eighteen passes with no skips. Unknown result
 formats fail. A failed or unavailable runner is not a passed platform check.
 
 Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
 paths, native replace/delete sheets, shared state in independent Settings, stale
-sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen plus ledger clear preview/cancel/typed confirmation, portfolio synthetic-example isolation from account reports, and explicit options calculation, frozen replay and draft invalidation plus opt-in local pricing assumptions, model-result replay and pricing-edit invalidation, plus explicit risk evidence and price/IV scenario replay with edit invalidation. The added case covers explicit daily-IV calculation, saved-input replay and archive clear-preview cancellation. The market-data-center case checks explicitly missing synthetic evidence, frozen replay and cancellation of a market-only clear preview. These seventeen cases do not open a file importer or exporter. Native scene wiring is exercised here;
+sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen plus ledger clear preview/cancel/typed confirmation, portfolio synthetic-example isolation from account reports, and explicit options calculation, frozen replay and draft invalidation plus opt-in local pricing assumptions, model-result replay and pricing-edit invalidation, plus explicit risk evidence and price/IV scenario replay with edit invalidation. The added case covers explicit daily-IV calculation, saved-input replay and archive clear-preview cancellation. The market-data-center case checks explicitly missing synthetic evidence, frozen replay and cancellation of a market-only clear preview. These eighteen cases do not open a file importer or exporter. Native scene wiring is exercised here;
 the foundation catalog's `build_only` label remains specific to its Swift Testing
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain
@@ -81,3 +81,5 @@ inventory. Xcode 16.4 does not expose usable `hasFocus` through XCUIElement on t
 runner, so focus is proved behaviorally: input must land in the independent page
 without another click, enable only its Save control, and its next confirmation must
 belong to that window after another page's older sheet is invalidated.
+
+Offline source adapters retain exact FRED/ALFRED JSON and Cboe/CFTC CSV bytes with declared release evidence. MacroSource suites cover parsing, revision selection, raw/typed SQLite integrity, same-revision commits, full-source market bridge replay and archive v1/v2 compatibility. Synthetic format fixtures do not certify current provider files, licensing or historical availability. The native source case exercises explicit preview/approval/reopen only, never system file panels.

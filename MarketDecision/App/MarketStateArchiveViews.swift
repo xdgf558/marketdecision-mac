@@ -29,7 +29,7 @@ struct MarketStateArchiveContent: View {
         let request = flow.id, displayedPlanID = model.plan?.id
         VStack(alignment: .leading, spacing: 16) {
             Text("独立市场库归档").font(.title2.bold())
-            Text("保存市场历史快照、来源版本和嵌入交易依据。不会导出或恢复研究库、期权库、实际账本、源缓存或 Keychain。")
+            Text("保存市场历史快照、冻结来源原文件与修订、来源市场报告和嵌入交易依据。不会导出或恢复研究库、期权库、实际账本、可清理源缓存或 Keychain。")
                 .foregroundStyle(.secondary)
             if let status = model.status { Text(marketCounts(status.counts)).accessibilityIdentifier("marketArchiveCounts") }
             GroupBox("导出市场快照 ZIP") {
@@ -43,7 +43,7 @@ struct MarketStateArchiveContent: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Picker("恢复方式", selection: $mode) {
                         Text("合并 · 相同内容去重，冲突保留两份").tag(MarketStateRestoreMode.merge)
-                        Text("替换 · 仅替换市场冻结快照，保留源缓存").tag(MarketStateRestoreMode.replace)
+                        Text("替换 · 替换市场快照与冻结来源，保留源缓存").tag(MarketStateRestoreMode.replace)
                     }.pickerStyle(.radioGroup).disabled(busy || model.plan != nil)
                     Text("读取和完整预检不改变数据库；必须核对固定计划及版本，再显式确认。替换可修复损坏旧正文，但仍要求有效元数据和完整备份。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -57,7 +57,7 @@ struct MarketStateArchiveContent: View {
             Divider()
             Button("预检清空独立市场库…", role: .destructive) { run { await model.prepareClear() } }
                 .disabled(!model.canPrepare || flow.isBusy).accessibilityIdentifier("marketArchiveClear")
-            Text("清空包括市场快照、交易归因及独立市场源缓存；其他数据库不变。计划在本进程有效，关闭页面不会撤销已经发起的事务。")
+            Text("清空包括市场快照、交易归因、冻结来源与修订、来源市场报告及独立市场源缓存；其他数据库不变。计划在本进程有效，关闭页面不会撤销已经发起的事务。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .fileExporter(isPresented: $exporting, document: document, contentTypes: [.zip], defaultFilename: "market-state-backup.zip") { result in
@@ -124,5 +124,5 @@ struct MarketStateArchiveContent: View {
     }
 }
 private func marketCounts(_ value: MarketStateArchiveCounts) -> String {
-    "市场快照 \(value.marketReports) · 交易归因 \(value.attributionReports) · 正文 \(value.documentBodies) · 冲突副本 \(value.conflictCopies) · 源缓存 \(value.cachedSources)"
+    "市场快照 \(value.marketReports) · 交易归因 \(value.attributionReports) · 来源报告 \(value.macroReports) · 来源市场报告 \(value.bridgeReports) · 原文件 \(value.frozenSources) · 观测 \(value.sourceObservations) · 正文 \(value.documentBodies) · 冲突副本 \(value.conflictCopies) · 源缓存 \(value.cachedSources)"
 }

@@ -138,7 +138,7 @@ struct MarketStateWorkspaceTests {
         #expect(second.report == nil && second.savedID == nil)
         await second.open(item)
         #expect(second.report == first.report && second.savedID == first.savedID)
-        #expect(try DatabaseStore(path: path, purpose: .marketState).migrationVersions() == ["foundation.v1", "market-state.v1"])
+        #expect(try DatabaseStore(path: path, purpose: .marketState).migrationVersions() == ["foundation.v1", "market-state.v1", "market-state.v2"])
         #expect(throws: MigrationError.incompatiblePurpose) { try DatabaseStore(path: path, purpose: .portfolioLedger) }
         for name in unrelatedNames { #expect(try Data(contentsOf: folder.appendingPathComponent(name)) == sentinel) }
         let credentialCallsAfter = await credentials.calls, providerCallsAfter = await provider.calls

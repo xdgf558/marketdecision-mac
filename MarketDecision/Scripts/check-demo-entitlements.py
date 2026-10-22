@@ -1,6 +1,6 @@
 """Verify production's process split from effective signatures, never source plists alone.
 
-The app has no network entitlement. Only the exact SEC and Equity XPC services have
+The app has no network entitlement. Only the exact SEC, Equity and AIAnalysis XPC services have
 outbound access; each enforces its own closed endpoint policy. The entitlement itself is
 process-wide and must never be described as an OS host allowlist.
 """
@@ -11,7 +11,8 @@ import sys
 
 APP_ID = 'local.marketdecision.development'
 SERVICES = {'SECNetworkService.xpc': 'local.marketdecision.sec-network',
-            'EquityNetworkService.xpc': 'local.marketdecision.equity-network'}
+            'EquityNetworkService.xpc': 'local.marketdecision.equity-network',
+            'AIAnalysisNetworkService.xpc': 'local.marketdecision.ai-analysis-network'}
 SANDBOX = 'com.apple.security.app-sandbox'
 SELECTED = 'com.apple.security.files.user-selected.read-write'
 CLIENT = 'com.apple.security.network.client'
@@ -56,7 +57,7 @@ if (entitlements.get(SANDBOX) is not True or entitlements.get(SELECTED) is not T
 services = app / 'Contents/XPCServices'
 if (services.is_symlink() or not services.is_dir()
         or set(item.name for item in services.iterdir()) != set(SERVICES)):
-    raise SystemExit('FAIL: production must embed exactly the SEC and Equity network services')
+    raise SystemExit('FAIL: production must embed exactly the SEC, Equity and AIAnalysis network services')
 app_team = signature_team(app, APP_ID)
 if (provisioned and app_team != team) or (not provisioned and app_team != 'not set'):
     raise SystemExit('FAIL: production signature does not match the selected signing mode')
@@ -81,4 +82,4 @@ for filename, service_id in SERVICES.items():
         raise SystemExit('FAIL: production and network service signing teams differ')
     subprocess.run(['codesign', '--verify', '--strict', str(service)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', '--deep', str(app)], check=True)
-print('PASS: production main has no network entitlement; exactly two separately sandboxed SEC/Equity services own outbound access')
+print('PASS: production main has no network entitlement; exactly three separately sandboxed SEC/Equity/AIAnalysis services own outbound access')

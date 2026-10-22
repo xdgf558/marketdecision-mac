@@ -84,6 +84,11 @@ public struct OptionLabLegDraft: Equatable, Sendable {
         quotedAt = optionDraftTimestamp(leg.quotedAt); receivedAt = optionDraftTimestamp(leg.receivedAt)
         originalQuotedAt = leg.quotedAt; originalReceivedAt = leg.receivedAt; sourceReference = leg.source.reference
     }
+    fileprivate mutating func applyManualQuoteTime(_ date: Date, reference: String) {
+        if contractID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { contractID = "MANUAL-" + UUID().uuidString }
+        quotedAt = optionDraftTimestamp(date); receivedAt = optionDraftTimestamp(date)
+        originalQuotedAt = date; originalReceivedAt = date; sourceReference = reference
+    }
     func build(symbol: String, right: OptionLabRight, expiry: MarketDate, source: OptionLabSource) throws -> OptionLabLeg {
         guard let multiplier = Int(multiplier), let quantity = Int(quantity), let bidSize = Int(bidSize), let askSize = Int(askSize) else {
             throw OptionLabDraftError.invalidNumber
@@ -197,6 +202,75 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     }
     public mutating func useManualCapital() {
         ledgerBasis = nil; capitalReference = ""
+    }
+    /// Convenience for a user-confirmed MANUAL snapshot only. This does not
+    /// establish actual market timestamps, exchange identity, tick or admission.
+    public var canUseManualQuoteAssistance: Bool { origin == .manual && chainEvidence == nil }
+    public mutating func applyManualQuoteAssistance(quotedAt: Date, settlementAt: Date,
+                                                    quoteReference: String, expiryReference: String) throws {
+        guard canUseManualQuoteAssistance else { throw OptionLabDraftError.missingField }
+        let quoteSource = quoteReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expirySource = expiryReference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !quoteSource.isEmpty, !expirySource.isEmpty, quoteSource.utf8.count <= 4096,
+              expirySource.utf8.count <= 4096 else { throw OptionLabDraftError.missingField }
+        guard quotedAt.timeIntervalSince1970.isFinite, settlementAt.timeIntervalSince1970.isFinite,
+              settlementAt > quotedAt, let zone = TimeZone(identifier: "America/New_York") else { throw OptionLabDraftError.invalidDate }
+        if let ledgerBasis, ledgerBasis.asOf != quotedAt { throw OptionLabDraftError.incompatibleLedgerBasis }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = zone
+        let components = calendar.dateComponents([.year, .month, .day], from: settlementAt)
+        guard let year = components.year, let month = components.month, let day = components.day else { throw OptionLabDraftError.invalidDate }
+        var replacement = self
+        replacement.asOf = optionDraftTimestamp(quotedAt); replacement.originalAsOf = quotedAt
+        replacement.expirationDate = MarketDate(year: year, month: month, day: day).iso8601
+        replacement.settlementAt = optionDraftTimestamp(settlementAt); replacement.originalSettlementAt = settlementAt
+        replacement.sourceReference = quoteSource; replacement.expiryReference = expirySource
+        replacement.underlyingQuotedAt = optionDraftTimestamp(quotedAt); replacement.originalUnderlyingQuotedAt = quotedAt
+        replacement.underlyingReceivedAt = optionDraftTimestamp(quotedAt); replacement.originalUnderlyingReceivedAt = quotedAt
+        replacement.shortLeg.applyManualQuoteTime(quotedAt, reference: quoteSource)
+        if replacement.hasLongLeg { replacement.longLeg.applyManualQuoteTime(quotedAt, reference: quoteSource) }
+        self = replacement
+    }
+    /// Existing entered prices are drawing samples, never predicted prices or
+    /// new probabilistic assumptions. Adoption is an explicit UI action.
+    public func chartPricesFromEnteredInputs() throws -> [Money] {
+        let bid = try Money(underlyingBid), ask = try Money(underlyingAsk), strike = try Money(shortLeg.strike)
+        guard bid.amount > 0, ask >= bid, strike.amount > 0 else { throw OptionLabDraftError.invalidNumber }
+        var values = [bid, ask, strike]
+        if hasLongLeg {
+            let longStrike = try Money(longLeg.strike)
+            guard longStrike.amount > 0 else { throw OptionLabDraftError.invalidNumber }
+            values.append(longStrike)
+        }
+        return Dictionary(grouping: values, by: \.decimalString).compactMap { $0.value.first }.sorted()
+    }
+    public mutating func useChartPricesFromEnteredInputs() throws {
+        let values = try chartPricesFromEnteredInputs()
+        scenarioPrices = values.map(\.decimalString).joined(separator: "\n")
+    }
+    /// Guidance only; the existing builder and engine remain the authority.
+    public var dailyInputIssues: [String] {
+        func blank(_ value: String) -> Bool { value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        func number(_ value: String) -> Bool { (try? Money(value)) != nil }
+        var issues: [String] = []
+        if blank(symbol) { issues.append("标的代码") }
+        if !number(underlyingBid) || !number(underlyingAsk) { issues.append("标的买卖价") }
+        let legs = [("卖出合约", shortLeg)] + (hasLongLeg ? [("保护合约", longLeg)] : [])
+        for (name, leg) in legs {
+            if !number(leg.strike) || Int(leg.quantity) == nil || !number(leg.bid) || !number(leg.ask) { issues.append(name + "行权价、张数与买卖价") }
+            if Int(leg.bidSize) == nil || Int(leg.askSize) == nil { issues.append(name + "双边报价张数") }
+            if !number(leg.tick) { issues.append(name + "最小报价单位 tick（未知不能猜）") }
+            if blank(leg.contractID) || (try? optionDraftDate(leg.quotedAt, original: nil)) == nil || (try? optionDraftDate(leg.receivedAt, original: nil)) == nil { issues.append(name + "报价时间，可使用手工辅助填写") }
+        }
+        if (try? evaluationDate()) == nil || (try? MarketDate(iso8601: expirationDate)) == nil
+            || (try? optionDraftDate(settlementAt, original: originalSettlementAt)) == nil
+            || (try? optionDraftDate(underlyingQuotedAt, original: originalUnderlyingQuotedAt)) == nil
+            || (try? optionDraftDate(underlyingReceivedAt, original: originalUnderlyingReceivedAt)) == nil
+            || blank(sourceReference) || blank(expiryReference) { issues.append("评估／到期时间与依据，可使用手工辅助填写") }
+        if ![cashBeforeTrade, committedCash, availableShares, committedShares].allSatisfy(number) || blank(capitalReference) { issues.append("现金、已承诺额度、持股与资金说明（零也要明确填写）") }
+        if ![lambda, openingFeePerContract, ticketFee, terminalFeeTotal].allSatisfy(number) { issues.append("费用与滑点") }
+        if blank(scenarioPrices) { issues.append("损益图采样点，可采用当前已填价格") }
+        if pricing.enabled && (![pricing.rate, pricing.dividendYield, pricing.volatility].allSatisfy(number) || blank(pricing.sourceReference)) { issues.append("模型利率、股息率、理论波动率与假设说明") }
+        return issues
     }
     public func evaluationDate() throws -> Date { try optionDraftDate(asOf, original: originalAsOf) }
     public func build(createdAt: Date = Date()) throws -> OptionLabInput {

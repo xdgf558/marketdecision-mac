@@ -12,9 +12,11 @@ import SecuritySupport
     public private(set) var hasError = false
     private let store: any CredentialStorage
     private let log: SafeLog
-    private let reference = "reserved-data-service"
+    private let reference: String
 
-    public init(store: any CredentialStorage, log: SafeLog = SafeLog()) { self.store = store; self.log = log }
+    public init(store: any CredentialStorage, log: SafeLog = SafeLog(), reference: String = "reserved-data-service") {
+        self.store = store; self.log = log; self.reference = reference
+    }
 
     @discardableResult public func refresh() async -> Bool {
         guard !isBusy else { return false }

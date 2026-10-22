@@ -182,8 +182,13 @@ private func financialWorkspaceReportCopy(_ report: SECFinancialReportDocument, 
         #expect(model.financialReportIsSaved && !model.canSaveFinancialReport)
         #expect(await storage.attemptedRevisions == [baseline])
         #expect(model.savedFinancialReports.map(\.id) == [report.id])
+        let generatedRevision = model.financialReportRevision
         await model.openFinancialReport(report.id)
         #expect(!model.canDisplayFinancialReport && model.financialReportState == .notVerified)
+        #expect(model.financialReportRevision != generatedRevision)
+        let openedRevision = model.financialReportRevision
+        await model.openFinancialReport(report.id)
+        #expect(model.financialReport?.id == report.id && model.financialReportRevision != openedRevision)
         await model.recomputeFinancialReport()
         #expect(model.canDisplayFinancialReport && model.financialReportState == .matched)
         #expect(try ResearchDocument.encoded(try #require(model.document)) == original)

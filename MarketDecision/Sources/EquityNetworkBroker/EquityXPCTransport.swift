@@ -13,11 +13,19 @@ public enum EquityNetworkServiceAvailability {
         guard Bundle.main.bundleIdentifier == applicationIdentifier else { throw HTTPTransportPolicyError.closed }
         var current: SecCode?
         var staticCurrent: SecStaticCode?
+        var staticBundle: SecStaticCode?
         guard SecCodeCopySelf([], &current) == errSecSuccess, let current,
               SecCodeCopyStaticCode(current, [], &staticCurrent) == errSecSuccess, let staticCurrent,
               SecStaticCodeCheckValidity(staticCurrent,
                   SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess,
-              let mainEntitlements = entitlements(staticCurrent),
+              // Validate the app root explicitly as well as the running code's disk
+              // representation. Nested resources must not depend on executable-to-bundle
+              // inference. CFEqual binds both representations to the same CodeDirectory.
+              SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &staticBundle) == errSecSuccess,
+              let staticBundle, CFEqual(staticCurrent, staticBundle),
+              SecStaticCodeCheckValidity(staticBundle,
+                  SecCSFlags(rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess,
+              let mainEntitlements = entitlements(staticBundle),
               mainEntitlements["com.apple.security.app-sandbox"] as? Bool == true,
               mainEntitlements["com.apple.security.network.client"] == nil,
               mainEntitlements["com.apple.security.network.server"] == nil
