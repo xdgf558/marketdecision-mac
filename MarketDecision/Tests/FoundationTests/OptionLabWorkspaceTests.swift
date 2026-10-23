@@ -156,12 +156,55 @@ struct OptionLabWorkspaceTests {
     @Test func saveFailureKeepsOriginalIDInputAndRevisionForRetry() async throws {
         let (model, store) = await setup(), input = try OptionLabDemo.input(), baseline = try #require(model.revision)
         await model.calculate(input); await store.fail("save")
-        #expect(await model.save() == false)
+        #expect(await model.save(expectedID: input.id, expectedRevision: baseline) == false)
         #expect(model.canSave && model.savedID == nil && model.report?.input == input)
-        #expect(await model.save())
+        #expect(await model.save(expectedID: input.id, expectedRevision: baseline))
         #expect(model.savedID == input.id && model.saved.count == 1 && !model.canSave)
         #expect(await store.baselines == [baseline, baseline])
         #expect(await store.inputs == [input, input])
+    }
+    @Test func staleCandidateConfirmationCannotSaveTheNewCalculatedInput() async throws {
+        let (model, store) = await setup(), first = try OptionLabDemo.input(), second = try OptionLabDemo.input(strategy: .coveredCall)
+        let baseline = try #require(model.revision)
+        await model.calculate(first); await model.calculate(second)
+        let reads = await store.reads
+        #expect(first.id != second.id)
+        #expect(await model.save(expectedID: first.id, expectedRevision: baseline) == false)
+        #expect(await store.saves == 0)
+        #expect(await store.reads == reads)
+        #expect(model.report?.input == second && model.canSave && model.savedID == nil)
+        #expect(await model.save(expectedID: second.id, expectedRevision: baseline))
+        #expect(await store.inputs == [second])
+    }
+    @Test func staleRevisionConfirmationCannotAcquireTheNewLibraryRevision() async throws {
+        let (model, store) = await setup(), oldRevision = try #require(model.revision)
+        await store.advance(); await model.load()
+        let currentRevision = try #require(model.revision), input = try OptionLabDemo.input()
+        await model.calculate(input)
+        let reads = await store.reads
+        #expect(currentRevision != oldRevision)
+        #expect(await model.save(expectedID: input.id, expectedRevision: oldRevision) == false)
+        #expect(await store.saves == 0)
+        #expect(await store.reads == reads)
+        #expect(model.report?.input == input && model.revision == currentRevision && model.canSave)
+        #expect(await model.save(expectedID: input.id, expectedRevision: currentRevision))
+        #expect(await store.baselines == [currentRevision])
+    }
+    @Test func exactConfirmationSavesOnceAndRejectsConcurrentOrCompletedReuse() async throws {
+        let (model, store) = await setup(), input = try OptionLabDemo.input(), baseline = try #require(model.revision)
+        let gate = OptionWorkspaceGate()
+        await model.calculate(input); await store.gate("save", gate)
+        let first = Task { await model.save(expectedID: input.id, expectedRevision: baseline) }
+        await gate.wait()
+        #expect(await model.save(expectedID: input.id, expectedRevision: baseline) == false)
+        #expect(await store.saves == 1)
+        await gate.release(); #expect(await first.value)
+        #expect(model.savedID == input.id && model.report?.input == input && !model.canSave)
+        #expect(await model.save(expectedID: input.id, expectedRevision: baseline) == false)
+        #expect(await model.save() == false)
+        #expect(await store.saves == 1)
+        #expect(await store.inputs == [input])
+        #expect(await store.baselines == [baseline])
     }
     @Test func staleSaveDoesNotAcquireNewWritingBaseline() async throws {
         let (model, store) = await setup(), input = try OptionLabDemo.input()
@@ -185,8 +228,9 @@ struct OptionLabWorkspaceTests {
     }
     @Test func leavingDuringSaveDoesNotPublishAndReentryLoadsFreshStateAfterCompletion() async throws {
         let (model, store) = await setup(), input = try OptionLabDemo.input(), gate = OptionWorkspaceGate()
+        let baseline = try #require(model.revision)
         await model.calculate(input); await store.gate("save", gate)
-        let saving = Task { await model.save() }; await gate.wait()
+        let saving = Task { await model.save(expectedID: input.id, expectedRevision: baseline) }; await gate.wait()
         model.disappear(); await model.load()
         #expect(model.isBusy && model.report == nil)
         await gate.release(); #expect(await saving.value)
@@ -195,8 +239,9 @@ struct OptionLabWorkspaceTests {
     }
     @Test func leavingDuringFailedSaveDoesNotPublishOldErrorIntoReenteredSession() async throws {
         let (model, store) = await setup(), input = try OptionLabDemo.input(), gate = OptionWorkspaceGate()
+        let baseline = try #require(model.revision)
         await model.calculate(input); await store.gate("save", gate); await store.fail("save")
-        let saving = Task { await model.save() }; await gate.wait()
+        let saving = Task { await model.save(expectedID: input.id, expectedRevision: baseline) }; await gate.wait()
         model.disappear(); await model.load(); await gate.release()
         #expect(await saving.value == false)
         #expect(!model.hasError && model.message == nil && model.report == nil && !model.isBusy)
