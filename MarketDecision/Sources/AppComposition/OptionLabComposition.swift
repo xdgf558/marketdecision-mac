@@ -46,6 +46,9 @@ extension AppEnvironment {
         let evidenceStore = try await store.makeEvidenceStore()
         try Task.checkCancellation()
         model.installEvidence(OptionEvidenceWorkspaceModel(storage: evidenceStore, coordinator: optionTransferCoordinator))
+        model.installPersonalHistory(OptionPersonalHistoryWorkspaceModel(storageFactory: {
+            try await ledgerFactory.performanceStore()
+        }, coordinator: ledgerTransferCoordinator))
         return model
     }
 }

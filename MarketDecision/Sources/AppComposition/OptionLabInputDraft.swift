@@ -247,31 +247,80 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         let values = try chartPricesFromEnteredInputs()
         scenarioPrices = values.map(\.decimalString).joined(separator: "\n")
     }
-    /// Guidance only; the existing builder and engine remain the authority.
-    public var dailyInputIssues: [String] {
+    /// Evaluate once on an explicit preparation action or calculation failure,
+    /// then let the page render that value. These are editable-input hints, not a
+    /// substitute for the unchanged builder, quality checks or pricing engine.
+    public func dailyInputChecklist() -> OptionDailyChecklist {
         func blank(_ value: String) -> Bool { value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         func number(_ value: String) -> Bool { (try? Money(value)) != nil }
-        var issues: [String] = []
-        if blank(symbol) { issues.append("标的代码") }
-        if !number(underlyingBid) || !number(underlyingAsk) { issues.append("标的买卖价") }
-        let legs = [("卖出合约", shortLeg)] + (hasLongLeg ? [("保护合约", longLeg)] : [])
-        for (name, leg) in legs {
-            if !number(leg.strike) || Int(leg.quantity) == nil || !number(leg.bid) || !number(leg.ask) { issues.append(name + "行权价、张数与买卖价") }
-            if Int(leg.bidSize) == nil || Int(leg.askSize) == nil { issues.append(name + "双边报价张数") }
-            if !number(leg.tick) { issues.append(name + "最小报价单位 tick（未知不能猜）") }
-            if blank(leg.contractID) || (try? optionDraftDate(leg.quotedAt, original: nil)) == nil || (try? optionDraftDate(leg.receivedAt, original: nil)) == nil { issues.append(name + "报价时间，可使用手工辅助填写") }
+        func axis(_ value: String) -> Bool {
+            let rows = value.components(separatedBy: CharacterSet(charactersIn: ",\n"))
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            return !rows.isEmpty && rows.allSatisfy { !$0.isEmpty && number($0) }
+        }
+        var grouped: [OptionDailySection: [OptionDailyIssue]] = [:]
+        func issue(_ section: OptionDailySection, _ field: String, _ message: String) {
+            grouped[section, default: []].append(.init(id: section.rawValue + "." + field, message: message))
+        }
+        if blank(symbol) { issue(.underlying, "symbol", "填写标的代码。") }
+        if !number(underlyingBid) || !number(underlyingAsk) { issue(.underlying, "prices", "补齐标的买卖价；不使用单边价格猜填。") }
+        let legs: [(OptionDailySection, String, OptionLabLegDraft)] = [(.shortLeg, "卖出合约", shortLeg)]
+            + (hasLongLeg ? [(.longLeg, "保护合约", longLeg)] : [])
+        for (section, name, leg) in legs {
+            if !number(leg.strike) || Int(leg.quantity) == nil || !number(leg.bid) || !number(leg.ask) {
+                issue(section, "trade", name + "行权价、张数与买卖价未填完整或格式无效。")
+            }
+            if Int(leg.multiplier) == nil { issue(section, "multiplier", name + "合约乘数必须明确填写，不能从报价推断。") }
+            if Int(leg.bidSize) == nil || Int(leg.askSize) == nil { issue(section, "sizes", name + "双边报价张数需要整数；未知值不会补成零。") }
+            if !number(leg.tick) { issue(section, "tick", name + "最小报价单位 tick 未知或格式无效，不能猜填。") }
+            if blank(leg.contractID) || (try? optionDraftDate(leg.quotedAt, original: nil)) == nil || (try? optionDraftDate(leg.receivedAt, original: nil)) == nil {
+                issue(.timing, section.rawValue, name + "合约标识与报价时间未完整；手工输入可显式采用共同时间。")
+            }
+        }
+        if hasLongLeg, let shortQuantity = Int(shortLeg.quantity), let longQuantity = Int(longLeg.quantity), shortQuantity != longQuantity {
+            issue(.longLeg, "quantityMatch", "保护合约与卖出合约张数不同；可手动修改，或明确选择同步保护腿张数。")
         }
         if (try? evaluationDate()) == nil || (try? MarketDate(iso8601: expirationDate)) == nil
             || (try? optionDraftDate(settlementAt, original: originalSettlementAt)) == nil
             || (try? optionDraftDate(underlyingQuotedAt, original: originalUnderlyingQuotedAt)) == nil
             || (try? optionDraftDate(underlyingReceivedAt, original: originalUnderlyingReceivedAt)) == nil
-            || blank(sourceReference) || blank(expiryReference) { issues.append("评估／到期时间与依据，可使用手工辅助填写") }
-        if ![cashBeforeTrade, committedCash, availableShares, committedShares].allSatisfy(number) || blank(capitalReference) { issues.append("现金、已承诺额度、持股与资金说明（零也要明确填写）") }
-        if ![lambda, openingFeePerContract, ticketFee, terminalFeeTotal].allSatisfy(number) { issues.append("费用与滑点") }
-        if blank(scenarioPrices) { issues.append("损益图采样点，可采用当前已填价格") }
-        if pricing.enabled && (![pricing.rate, pricing.dividendYield, pricing.volatility].allSatisfy(number) || blank(pricing.sourceReference)) { issues.append("模型利率、股息率、理论波动率与假设说明") }
-        return issues
+            || blank(sourceReference) || blank(expiryReference) {
+            issue(.timing, "common", "评估／到期时间与依据未完整；只有明确确认后才会采用手工共同时间。")
+        }
+        if ![cashBeforeTrade, committedCash, availableShares, committedShares].allSatisfy(number) || blank(capitalReference) {
+            issue(.capital, "balances", "补齐现金、已承诺额度、持股与资金说明；零也要明确填写。")
+        }
+        if ![lambda, openingFeePerContract, ticketFee, terminalFeeTotal].allSatisfy(number) {
+            issue(.costs, "fees", "费用与滑点需要明确数值；不会把空白当成免费。")
+        }
+        let samples = scenarioPrices.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if samples.isEmpty || !samples.allSatisfy(number) {
+            issue(.chart, "samples", "填写有效损益图采样点，或明确采用当前已填价格；采样不是预测。")
+        }
+        if pricing.enabled && (![pricing.rate, pricing.dividendYield, pricing.volatility].allSatisfy(number) || blank(pricing.sourceReference)) {
+            issue(.pricing, "assumptions", "补齐模型利率、股息率、理论波动率与假设说明；未知值不会补成零。")
+        }
+        if risk.enabled && blank(risk.sourceReference) { issue(.risk, "source", "已启用风险研究，请填写风险资料来源。") }
+        if risk.enabled && risk.earnings.enabled && (blank(risk.earnings.eventVersion) || blank(risk.earnings.sourceReference)
+            || (try? optionDraftDate(risk.earnings.announcedAt, original: nil)) == nil
+            || (try? MarketDate(iso8601: risk.earnings.eventDate)) == nil) {
+            issue(.risk, "earnings", "已启用财报事件，请补齐事件版本、来源、公布时刻与事件日期。")
+        }
+        if risk.enabled && risk.dividend.enabled && (blank(risk.dividend.eventVersion) || blank(risk.dividend.sourceReference)
+            || (try? optionDraftDate(risk.dividend.announcedAt, original: nil)) == nil
+            || (try? MarketDate(iso8601: risk.dividend.exDate)) == nil) {
+            issue(.risk, "dividend", "已启用除息事件，请补齐事件版本、来源、公布时刻与除息日期。")
+        }
+        if scenario.enabled && (!axis(scenario.spotShocks) || !axis(scenario.volatilityPointShocks) || blank(scenario.sourceReference)) {
+            issue(.scenario, "axes", "补齐瞬时价格冲击、IV 百分点冲击与来源；不会自动启用或增加情景。")
+        }
+        return .init(groups: OptionDailySection.allCases.compactMap { section in
+            guard let issues = grouped[section], !issues.isEmpty else { return nil }
+            return .init(section: section, issues: issues)
+        })
     }
+    /// Compatibility for existing callers. New pages cache dailyInputChecklist().
+    public var dailyInputIssues: [String] { dailyInputChecklist().groups.flatMap { $0.issues.map(\.message) } }
     public func evaluationDate() throws -> Date { try optionDraftDate(asOf, original: originalAsOf) }
     public func build(createdAt: Date = Date()) throws -> OptionLabInput {
         let evaluation = try evaluationDate(), expiry = try MarketDate(iso8601: expirationDate)

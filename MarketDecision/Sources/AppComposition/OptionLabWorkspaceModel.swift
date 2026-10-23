@@ -11,6 +11,7 @@ import Persistence
     public private(set) var evidence: OptionEvidenceWorkspaceModel?
     public private(set) var chain: OptionChainWorkspaceModel?
     public private(set) var history: OptionHistoryWorkspaceModel?
+    public private(set) var personalHistory: OptionPersonalHistoryWorkspaceModel?
     public private(set) var transfer: OptionArchiveTransferModel?
     private var coordinator: OptionTransferCoordinator?
     private var transferOperation: UUID?
@@ -102,10 +103,21 @@ import Persistence
     }
 
     @discardableResult public func save() async -> Bool {
-        guard canSave, let candidate = report, let baseline = revision else { return false }
+        guard let expectedID = report?.input.id, let expectedRevision = revision else { return false }
+        return await save(expectedID: expectedID, expectedRevision: expectedRevision)
+    }
+
+    /// A confirmation authorizes only this calculated candidate and its original
+    /// option-library revision. A stale confirmation performs no storage work.
+    /// True means storage accepted the write; a page that left during that write
+    /// still receives no report, message or approval in its new visible session.
+    @discardableResult public func save(expectedID: UUID, expectedRevision: UUID) async -> Bool {
+        guard visible, !Task.isCancelled, canSave, let candidate = report, let baseline = revision,
+              candidate.input.id == expectedID, baseline == expectedRevision else { return false }
+        let ledgerBasis = reportLedgerBasis
         let token = begin(), commit = UUID(); committing = commit
         do {
-            let value = try await storage.save(id: candidate.input.id, input: candidate.input, ledgerBasis: reportLedgerBasis, expectedRevision: baseline)
+            let value = try await storage.save(id: candidate.input.id, input: candidate.input, ledgerBasis: ledgerBasis, expectedRevision: baseline)
             guard owns(token), !Task.isCancelled else { await finishSave(token, commit); return true }
             guard value.id == candidate.input.id, value.replayMatched, value.report == candidate else {
                 throw OptionLabStoreError.corruptedStorage
@@ -181,6 +193,7 @@ import Persistence
         generation = UUID(); operation = nil; isBusy = false; clearReport(); message = nil; hasError = false
     }
     public func disappear() {
+        personalHistory?.disappear()
         visible = false; pendingReload = false; generation = UUID(); operation = nil
         clearReport(); revision = nil; saved = []; ledgerSnapshot = nil
         message = nil; hasError = false; listError = nil; ledgerError = nil
@@ -189,6 +202,7 @@ import Persistence
     public func installPortfolioGreeks(_ model: PortfolioGreeksWorkspaceModel) { portfolioGreeks = model }
     public func installEvidence(_ model: OptionEvidenceWorkspaceModel) { evidence = model }
     public func installChain(_ model: OptionChainWorkspaceModel) { chain = model }
+    public func installPersonalHistory(_ model: OptionPersonalHistoryWorkspaceModel) { personalHistory = model }
     public func install(history: OptionHistoryWorkspaceModel, transfer: OptionArchiveTransferModel,
                         coordinator: OptionTransferCoordinator) {
         self.history = history; self.transfer = transfer; self.coordinator = coordinator
