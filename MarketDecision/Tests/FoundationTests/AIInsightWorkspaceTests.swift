@@ -183,6 +183,27 @@ struct AIInsightWorkspaceTests {
         #expect(await probe.closes == 1)
     }
 
+    @Test func returningToSameVerifiedSummaryKeepsAnswerWithoutAnotherRequest() async throws {
+        let probe = AIWorkspaceProbe(), model = workspace(probe: probe), id = UUID(), revision = UUID()
+        model.select(reportID: id, revision: revision)
+        await (try start(model, id: id, probe: probe)).value
+        let digest = try #require(model.result?.inputDigest)
+        // The company page retains this selection while a detail section hides the card.
+        model.select(reportID: id, revision: revision)
+        #expect(model.result?.inputDigest == digest && model.input != nil)
+        #expect(await probe.sends == 1)
+        #expect(await probe.keyReads == 1)
+        #expect(await probe.factories == 1)
+        // Rechecking the same immutable report or leaving the company page invalidates it.
+        model.select(reportID: nil, revision: nil)
+        #expect(model.result == nil && model.input == nil)
+        model.select(reportID: id, revision: UUID())
+        #expect(model.result == nil)
+        model.disappear()
+        #expect(model.selectedReportID == nil)
+        #expect(await probe.sends == 1)
+    }
+
     @Test func switchingReportsRejectsLateSuccessAndFailureFromPreviousReport() async throws {
         for fail in [false, true] {
             let probe = AIWorkspaceProbe(), sent = AIWorkspaceGate(), oldID = UUID(), newID = UUID()
