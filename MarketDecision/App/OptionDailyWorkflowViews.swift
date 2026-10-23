@@ -2,6 +2,267 @@ import SwiftUI
 import AppComposition
 import PortfolioEngine
 
+/// Presentation-only controls for the compact contract form. Parsing and
+/// acceptance remain with the existing option draft and calculation engine.
+struct OptionReferenceField<Content: View>: View {
+    let title: String
+    let hint: String?
+    private let content: Content
+
+    init(_ title: String, hint: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.hint = hint
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 14)).foregroundStyle(.secondary)
+            content
+            if let hint {
+                Text(hint).font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct OptionReferenceTextField: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    @Binding var text: String
+    let unit: String?
+    let hint: String?
+    let accessibilityIdentifier: String?
+
+    init(_ title: String, text: Binding<String>, unit: String? = nil,
+         hint: String? = nil, accessibilityIdentifier: String? = nil) {
+        self.title = title
+        self._text = text
+        self.unit = unit
+        self.hint = hint
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
+
+    var body: some View {
+        OptionReferenceField(title, hint: hint) {
+            HStack(spacing: 0) {
+                identifiedInput
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity)
+                if let unit {
+                    Rectangle().fill(Color.primary.opacity(0.10)).frame(width: 1)
+                    Text(unit).font(.system(size: 13)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .frame(maxHeight: .infinity)
+                        .background(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.025))
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(height: 42)
+            .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.20 : 0.13), lineWidth: 1)
+            }
+        }
+    }
+
+    private var input: some View {
+        TextField(title, text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 16))
+            .accessibilityLabel(unit.map { "\(title)，\($0)" } ?? title)
+    }
+
+    @ViewBuilder private var identifiedInput: some View {
+        if let accessibilityIdentifier {
+            input.accessibilityIdentifier(accessibilityIdentifier)
+        } else {
+            input
+        }
+    }
+}
+
+struct OptionReferenceInputSurface: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .font(.system(size: 16))
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+            .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.20 : 0.13), lineWidth: 1)
+            }
+    }
+}
+
+/// Keeps both manually entered sides of a quote visible. This control does not
+/// infer a midpoint, duplicate one side, or normalize the input strings.
+struct OptionReferenceQuoteField: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    @Binding var bid: String
+    @Binding var ask: String
+    let accessibilityPrefix: String
+
+    init(_ title: String, bid: Binding<String>, ask: Binding<String>, accessibilityPrefix: String) {
+        self.title = title
+        self._bid = bid
+        self._ask = ask
+        self.accessibilityPrefix = accessibilityPrefix
+    }
+
+    var body: some View {
+        OptionReferenceField(title) {
+            HStack(spacing: 7) {
+                Text("Bid").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Bid", text: $bid)
+                    .textFieldStyle(.plain).font(.system(size: 15))
+                    .accessibilityLabel("\(title) Bid，USD 每股")
+                    .accessibilityIdentifier(accessibilityPrefix + "Bid")
+                Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1, height: 18)
+                    .accessibilityHidden(true)
+                Text("Ask").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Ask", text: $ask)
+                    .textFieldStyle(.plain).font(.system(size: 15))
+                    .accessibilityLabel("\(title) Ask，USD 每股")
+                    .accessibilityIdentifier(accessibilityPrefix + "Ask")
+                Text("USD / 股").font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize().accessibilityHidden(true)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 42)
+            .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.20 : 0.13), lineWidth: 1)
+            }
+        }
+    }
+}
+
+extension View {
+    func optionReferenceInputSurface() -> some View {
+        modifier(OptionReferenceInputSurface())
+    }
+}
+
+struct OptionReferenceMetric: View {
+    enum Tone { case standard, positive, negative }
+
+    @Environment(\.colorScheme) private var colorScheme
+    let title: String
+    let value: String
+    let footnote: String?
+    let tone: Tone
+    let accessibilityIdentifier: String?
+
+    init(title: String, value: String, footnote: String? = nil,
+         tone: Tone = .standard, accessibilityIdentifier: String? = nil) {
+        self.title = title
+        self.value = value
+        self.footnote = footnote
+        self.tone = tone
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
+            identifiedValue
+            Text(footnote ?? " ")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(footnote == nil)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var valueText: some View {
+        Text(value)
+            .font(.system(size: 32, weight: .semibold).monospacedDigit())
+            .foregroundStyle(valueColor)
+            .lineLimit(1).minimumScaleFactor(0.65)
+            .help(value).textSelection(.enabled)
+            .accessibilityLabel("\(title)：\(value)")
+    }
+
+    @ViewBuilder private var identifiedValue: some View {
+        if let accessibilityIdentifier {
+            valueText.accessibilityIdentifier(accessibilityIdentifier)
+        } else {
+            valueText
+        }
+    }
+
+    private var valueColor: Color {
+        switch tone {
+        case .standard: return .primary
+        case .positive:
+            return colorScheme == .dark
+                ? Color(red: 0.48, green: 0.77, blue: 0.68)
+                : Color(red: 0.10, green: 0.34, blue: 0.31)
+        case .negative:
+            return colorScheme == .dark
+                ? Color(red: 0.95, green: 0.53, blue: 0.39)
+                : Color(red: 0.67, green: 0.23, blue: 0.13)
+        }
+    }
+}
+
+struct OptionReferenceButtonStyle: ButtonStyle {
+    enum Kind: Equatable { case primary, outline, subtle }
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+    let kind: Kind
+
+    init(_ kind: Kind) { self.kind = kind }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 15, weight: .semibold))
+            .padding(.horizontal, 22)
+            .padding(.vertical, 11)
+            .frame(minHeight: 42)
+            .foregroundStyle(kind == .primary ? Color.white : accent)
+            .background {
+                RoundedRectangle(cornerRadius: 8).fill(background)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(kind == .outline ? accent.opacity(0.75) : .clear, lineWidth: 1.2)
+            }
+            .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.40)
+    }
+
+    private var accent: Color {
+        colorScheme == .dark
+            ? Color(red: 0.48, green: 0.77, blue: 0.68)
+            : Color(red: 0.10, green: 0.34, blue: 0.31)
+    }
+
+    private var background: Color {
+        switch kind {
+        case .primary:
+            return colorScheme == .dark
+                ? Color(red: 0.17, green: 0.42, blue: 0.36)
+                : Color(red: 0.10, green: 0.34, blue: 0.31)
+        case .outline: return .clear
+        case .subtle: return accent.opacity(colorScheme == .dark ? 0.13 : 0.065)
+        }
+    }
+}
+
 /// The checklist is prepared on an explicit action, not reparsed on every field
 /// render. It guides editing; only the existing builder/engine accepts inputs.
 struct OptionDailyChecklistView: View {
