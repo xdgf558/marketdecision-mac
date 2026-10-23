@@ -104,7 +104,7 @@ struct AIInsightCard: View {
                         }.font(.caption)
                     }
                 }
-                Text("本次回答只留在当前页面，不写回财报、不加入研究归档。取消后已发出的请求仍可能计费。")
+                Text("本次回答仅在当前股票页面保留；切换报告或离开页面会清除。保存分析不包含 AI 回答，研究归档也不包含。取消后已发出的请求仍可能计费。")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }.padding(20)
@@ -115,7 +115,8 @@ struct AIInsightCard: View {
             .onChange(of: reportRevision) { _, revision in model.select(reportID: report.id, revision: revision) }
             .onChange(of: model.credentials.revision) { _, _ in model.credentialsChanged() }
             .onChange(of: modelName) { _, _ in model.cancel() }
-            .onDisappear { model.disappear() }
+            // SECResearchContent owns selection and SECResearchPage owns disappearance.
+            // Hiding this card in another section must not discard the same report's answer.
     }
     private var matchesSelection: Bool {
         model.selectedReportID == report.id && model.selectedReportRevision == reportRevision

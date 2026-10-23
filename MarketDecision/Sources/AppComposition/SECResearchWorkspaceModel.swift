@@ -50,6 +50,24 @@ public enum SECFinancialReportDisplayState: Sendable, Equatable {
     case notVerified, generated, matched, mismatched, failed
 }
 
+/// Daily actions name one immutable local selection. They do not grant network or AI access.
+public enum SECStockDailyAction: Sendable, Equatable {
+    case analyzeResearch(UUID), openResearch(UUID), openReport(UUID), replayReport(UUID), saveReport(UUID)
+    case reloadLists
+}
+
+/// Created synchronously at the user's click, before the caller schedules asynchronous work.
+/// The opaque context cannot be rebuilt after suspension to authorize a changed selection.
+public struct SECStockDailyRequest: Sendable {
+    public let action: SECStockDailyAction
+    fileprivate let pageSession: UUID
+    fileprivate let generation: UUID
+    fileprivate let ticker: String
+    fileprivate let documentID: UUID?
+    fileprivate let reportID: UUID?
+    fileprivate let reportRevision: UUID
+}
+
 /// Native form values retain explicit source excerpts. No share count, class universe or
 /// split basis is inferred from ticker metadata or a weighted-average EPS denominator.
 public struct SECValuationShareClassDraft: Sendable, Identifiable {
@@ -86,7 +104,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     public private(set) var hasError = false
     public private(set) var recomputationState: OfflineIssuerRecomputationState = .notVerified
     public var canDisplayValues: Bool { document != nil && recomputationState == .matched }
-    /// Every replacement, including the same immutable ID, invalidates dependent page results.
+    /// Every replacement or explicit replay, including the same immutable ID, invalidates dependent page results.
     public private(set) var financialReportRevision = UUID()
     public private(set) var financialReport: SECFinancialReportDocument? {
         didSet { financialReportRevision = UUID() }
@@ -139,6 +157,8 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     private var archiveRestoreOperation: UUID?
     private var archiveRefreshedGeneration: UUID?
     private var isPageVisible = true
+    // Legacy callers may operate before load(). Daily actions require an actual page session.
+    private var dailyPageSession: UUID?
 
     public init(storage: any SECResearchWorkspaceStorage, networkAvailable: Bool,
                 importer: @escaping SECResearchImport,
@@ -228,6 +248,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
 
     public func load() async {
         isPageVisible = true
+        if dailyPageSession == nil { dailyPageSession = UUID() }
         guard !isBusy else { return }
         let token = begin(clear: false)
         defer { finish(token) }
@@ -237,8 +258,112 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         _ = await (research, reports, supplements)
     }
 
+    public func makeDailyRequest(_ action: SECStockDailyAction) -> SECStockDailyRequest? {
+        guard isPageVisible, let dailyPageSession, !isBusy,
+              archiveRestoreOperation == nil else { return nil }
+        switch action {
+        case .reloadLists, .openResearch: break
+        default: guard financialStorage != nil else { return nil }
+        }
+        let catalog = SECStockDailyCatalog(ticker: ticker, research: saved, reports: savedFinancialReports)
+        switch action {
+        case .analyzeResearch(let id), .openResearch(let id):
+            // An already-open record is not an escape hatch for a conflicting catalog ID.
+            guard !saved.contains(where: { $0.id == id })
+                || catalog.research.contains(where: { $0.id == id }) else { return nil }
+            let boundReportParent = action == .openResearch(id)
+                && financialReport?.parentDocumentID == id && financialReport?.ticker == ticker
+            guard (document?.id == id && document?.ticker == ticker)
+                || catalog.research.contains(where: { $0.id == id }) || boundReportParent else { return nil }
+        case .openReport(let id):
+            guard !savedFinancialReports.contains(where: { $0.id == id })
+                || catalog.reports.contains(where: { $0.id == id }) else { return nil }
+            guard (financialReport?.id == id && financialReport?.ticker == ticker && financialReportIsSaved)
+                || catalog.reports.contains(where: { $0.id == id }) else { return nil }
+        case .replayReport(let id):
+            guard financialReport?.id == id, financialReport?.ticker == ticker else { return nil }
+        case .saveReport(let id):
+            guard financialReport?.id == id, financialReport?.ticker == ticker,
+                  canSaveFinancialReport else { return nil }
+        case .reloadLists:
+            break
+        }
+        return SECStockDailyRequest(action: action, pageSession: dailyPageSession,
+            generation: generation, ticker: ticker, documentID: document?.id,
+            reportID: financialReport?.id, reportRevision: financialReportRevision)
+    }
+
+    /// All stages use one generation. In particular, an open cannot return and acquire a
+    /// fresh authorization for a different source/report through another public method.
+    public func performDaily(_ request: SECStockDailyRequest) async {
+        guard !Task.isCancelled, isPageVisible, !isBusy, archiveRestoreOperation == nil,
+              dailyPageSession == request.pageSession, generation == request.generation,
+              ticker == request.ticker, document?.id == request.documentID,
+              financialReport?.id == request.reportID,
+              financialReportRevision == request.reportRevision else { return }
+        switch request.action {
+        case .reloadLists:
+            let token = begin(clear: false)
+            defer { finish(token) }
+            async let research: Void = reloadList(token)
+            async let reports: Void = reloadFinancialList(token)
+            async let supplements: Void = reloadValuationList(token)
+            _ = await (research, reports, supplements)
+        case .analyzeResearch(let id), .openResearch(let id):
+            let token = begin(clear: true)
+            defer { finish(token) }
+            do {
+                let storage = storage
+                let source = try await financialOperation { try await storage.open(id: id) }
+                guard generation == token else { return }
+                try Task.checkCancellation(); try source.validate()
+                guard source.id == id, source.ticker == request.ticker else { throw ContractError.mismatchedSource }
+                document = source
+                if request.action == .analyzeResearch(id) {
+                    message = "已打开选定财报来源；正在按原有模型整理基本面摘要。"
+                    await prepareFinancialReport(from: source, token: token)
+                } else {
+                    message = "已打开冻结研究；数值缓存仍待显式重算核对。"
+                }
+            } catch {
+                guard generation == token else { return }
+                hasError = true
+                message = "选定财报未能打开或未通过完整性检查；未生成报告，也未发起网络请求。"
+            }
+        case .openReport(let id):
+            let token = beginFinancial(clearReport: true)
+            defer { finish(token) }
+            if await readFinancialReport(id, expectedTicker: request.ticker, token: token),
+               generation == token, let financialReport {
+                await replayFinancialReport(financialReport, token: token)
+            }
+        case .replayReport:
+            guard let financialReport else { return }
+            let token = beginFinancial()
+            defer { finish(token) }
+            await replayFinancialReport(financialReport, token: token)
+        case .saveReport:
+            guard canSaveFinancialReport, let financialReport,
+                  let financialDraftRevision else { return }
+            let token = beginFinancial()
+            defer { finish(token) }
+            await persistFinancialReport(financialReport, expectedRevision: financialDraftRevision, token: token)
+        }
+    }
+
+    /// The sole daily network entry is this explicit action. A successful import saves its
+    /// source research under the existing contract, then prepares an unsaved local report.
+    @discardableResult public func startDailyUpdate(email: String) -> Task<Void, Never>? {
+        guard isPageVisible, dailyPageSession != nil, financialStorage != nil else { return nil }
+        return startImport(email: email, prepareDailyReport: true)
+    }
+
     /// Called only by the explicit import action. A busy page does not start a second task.
     @discardableResult public func startImport(email: String) -> Task<Void, Never>? {
+        startImport(email: email, prepareDailyReport: false)
+    }
+
+    private func startImport(email: String, prepareDailyReport: Bool) -> Task<Void, Never>? {
         guard !isBusy else { return nil }
         let contact: SECContactIdentity
         do {
@@ -253,6 +378,8 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         let token = begin(clear: true), symbol = ticker
         task = Task { [weak self, importer] in
             do {
+                guard self?.generation == token else { return }
+                try Task.checkCancellation()
                 let result = try await importer(symbol, contact) { [weak self] value in
                     await self?.receive(value, token: token)
                 }
@@ -263,6 +390,16 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
                 self.document = result; self.ticker = result.ticker
                 self.message = "导入研究已保存；请显式重算核对后查看标准化数值。缺项与访问范围保留。"
                 await self.reloadList(token, committed: true)
+                guard self.generation == token else { return }
+                if prepareDailyReport {
+                    self.progress = nil
+                    await self.prepareFinancialReport(from: result, token: token)
+                    guard self.generation == token else { return }
+                    self.message = self.financialReport == nil
+                        ? "财报来源已更新并保存，但基本面摘要尚未生成；可使用本地来源重试，未保存分析报告。"
+                        : "财报来源已更新并保存；基本面摘要已生成，分析报告尚未保存。"
+                    if self.listError != nil { self.message = (self.message ?? "") + "来源列表刷新失败，可稍后重新载入。" }
+                }
                 self.finish(token)
             } catch {
                 guard let self, self.generation == token else { return }
@@ -317,10 +454,16 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     /// Preparation captures the original store revision before report generation. Save
     /// uses that exact draft baseline, including after a recoverable storage failure.
     public func generateFinancialReport() async {
-        guard canGenerateFinancialReport, let document, let financialStorage else { return }
+        guard canGenerateFinancialReport, let document else { return }
         let token = beginFinancial(clearReport: true)
         defer { finish(token) }
+        await prepareFinancialReport(from: document, token: token)
+    }
+
+    private func prepareFinancialReport(from document: SECResearchDocument, token: UUID) async {
+        guard generation == token, let financialStorage else { return }
         do {
+            try Task.checkCancellation()
             let executionDate = now()
             let draft = try await financialOperation {
                 try await financialStorage.prepareFinancialReport(parentID: document.id, executionDate: executionDate)
@@ -339,13 +482,19 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     }
 
     public func saveFinancialReport() async {
-        guard canSaveFinancialReport, let financialReport, let financialDraftRevision, let financialStorage else { return }
+        guard canSaveFinancialReport, let financialReport, let financialDraftRevision else { return }
         let token = beginFinancial()
         defer { finish(token) }
+        await persistFinancialReport(financialReport, expectedRevision: financialDraftRevision, token: token)
+    }
+
+    private func persistFinancialReport(_ financialReport: SECFinancialReportDocument,
+                                       expectedRevision: UUID, token: UUID) async {
+        guard generation == token, let financialStorage else { return }
         do {
             try Task.checkCancellation()
             try await financialOperation {
-                try await financialStorage.saveFinancialReport(financialReport, expectedRevision: financialDraftRevision)
+                try await financialStorage.saveFinancialReport(financialReport, expectedRevision: expectedRevision)
             }
         } catch {
             guard generation == token else { return }
@@ -365,32 +514,51 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     }
 
     public func openFinancialReport(_ id: UUID) async {
-        guard !isBusy, let financialStorage else { return }
+        guard !isBusy, financialStorage != nil else { return }
         let token = beginFinancial(clearReport: true)
         defer { finish(token) }
+        _ = await readFinancialReport(id, expectedTicker: nil, token: token)
+    }
+
+    private func readFinancialReport(_ id: UUID, expectedTicker: String?, token: UUID) async -> Bool {
+        guard generation == token, let financialStorage else { return false }
         do {
+            try Task.checkCancellation()
             let result = try await financialOperation { try await financialStorage.openFinancialReport(id: id) }
-            guard generation == token else { return }
+            guard generation == token else { return false }
             try Task.checkCancellation(); try result.validate()
-            guard result.id == id else { throw ContractError.mismatchedSource }
+            guard result.id == id, expectedTicker == nil || result.ticker == expectedTicker else {
+                throw ContractError.mismatchedSource
+            }
             if document?.id != result.parentDocumentID {
                 document = nil; recomputationState = .notVerified
             }
             financialReport = result; financialReportIsSaved = true; ticker = result.ticker
             financialMessage = "已打开保存的财务报告；缓存数值在显式重算核对前保持隐藏。"
+            return true
         } catch {
-            guard generation == token else { return }
+            guard generation == token else { return false }
             financialHasError = true
             financialMessage = "财务报告或绑定源研究未通过检查；未显示旧报告，源研究列表仍可使用。"
+            return false
         }
     }
 
     public func recomputeFinancialReport() async {
         guard !isBusy, let financialReport else { return }
         let token = beginFinancial()
-        financialReportState = .notVerified
         defer { finish(token) }
+        await replayFinancialReport(financialReport, token: token)
+    }
+
+    private func replayFinancialReport(_ financialReport: SECFinancialReportDocument, token: UUID) async {
+        guard generation == token else { return }
+        // Advance independently of temporary state: SwiftUI may coalesce notVerified →
+        // matched in one render, but a prior AI selection must still become obsolete.
+        financialReportRevision = UUID()
+        financialReportState = .notVerified
         do {
+            try Task.checkCancellation()
             let replay = financialReplay
             let matches = try await financialOperation { try await replay(financialReport) }
             guard generation == token else { return }
@@ -625,6 +793,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     }
     public func disappear() {
         isPageVisible = false
+        dailyPageSession = nil
         cancel(); message = nil; saved = []; listError = nil
         savedFinancialReports = []; financialListError = nil
         savedValuationSupplements = []; valuationListError = nil
@@ -711,7 +880,7 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         case SECFinancialError.insufficientPeriods: "冻结研究缺少足够的连续季度证据，暂不能生成财务报告；不会推测财年或补齐期间。"
         case SECFinancialError.ambiguousPeriods: "冻结研究的财务期间证据有歧义，暂不能生成财务报告；请先核查来源。"
         case SnapshotError.stalePlan: "生成期间研究库已变化，请重新打开源研究后再生成。"
-        default: "财务报告未能生成；请检查冻结研究及期间证据。已有研究未修改，也未发起网络请求。"
+        default: "财务报告未能生成；请检查冻结研究及期间证据。原财报来源已保留，报告未保存。"
         }
     }
     private static func failureMessage(_ error: any Error) -> String {

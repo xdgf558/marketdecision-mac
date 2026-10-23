@@ -42,22 +42,24 @@ private actor FinancialWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
     var prepared: SECFinancialReportDocument
     var stored: [SECFinancialReportDocument]
     var revision = UUID()
-    var researchListReads = 0, reportListReads = 0, reportOpenReads = 0, preparations = 0, commits = 0
+    var researchListReads = 0, researchOpenReads = 0, reportListReads = 0, reportOpenReads = 0, preparations = 0, commits = 0
     var attemptedRevisions: [UUID] = []
-    private var researchListFails = false, reportListFails = false, saveFails = false
+    private var researchListFails = false, researchOpenFails = false, reportListFails = false, reportOpenFails = false, saveFails = false
     private var preparationError: SECFinancialError?
     private var prepareGate: FinancialWorkspaceGate?, saveGate: FinancialWorkspaceGate?
-    private var openGate: FinancialWorkspaceGate?, listGate: FinancialWorkspaceGate?
+    private var openGate: FinancialWorkspaceGate?, researchOpenGate: FinancialWorkspaceGate?, listGate: FinancialWorkspaceGate?
     init(parent: SECResearchDocument, report: SECFinancialReportDocument, stored: Bool = true) {
         self.parent = parent; prepared = report; self.stored = stored ? [report] : []
     }
-    func configure(researchListFails: Bool = false, reportListFails: Bool = false, saveFails: Bool = false,
+    func configure(researchListFails: Bool = false, researchOpenFails: Bool = false, reportListFails: Bool = false,
+                   reportOpenFails: Bool = false, saveFails: Bool = false,
                    preparationError: SECFinancialError? = nil, prepareGate: FinancialWorkspaceGate? = nil,
                    saveGate: FinancialWorkspaceGate? = nil, openGate: FinancialWorkspaceGate? = nil,
-                   listGate: FinancialWorkspaceGate? = nil) {
-        self.researchListFails = researchListFails; self.reportListFails = reportListFails; self.saveFails = saveFails
+                   researchOpenGate: FinancialWorkspaceGate? = nil, listGate: FinancialWorkspaceGate? = nil) {
+        self.researchListFails = researchListFails; self.researchOpenFails = researchOpenFails
+        self.reportListFails = reportListFails; self.reportOpenFails = reportOpenFails; self.saveFails = saveFails
         self.preparationError = preparationError; self.prepareGate = prepareGate; self.saveGate = saveGate
-        self.openGate = openGate; self.listGate = listGate
+        self.openGate = openGate; self.researchOpenGate = researchOpenGate; self.listGate = listGate
     }
     func replacePrepared(_ report: SECFinancialReportDocument) { prepared = report }
     func replaceStored(_ reports: [SECFinancialReportDocument]) { stored = reports }
@@ -68,6 +70,11 @@ private actor FinancialWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
         return [SECResearchSummary(document: parent)]
     }
     func open(id: UUID) async throws -> SECResearchDocument {
+        researchOpenReads += 1
+        let gate = researchOpenGate, failing = researchOpenFails
+        researchOpenGate = nil
+        if let gate { await gate.hold() }
+        if failing { throw FinancialWorkspaceFailure.injected }
         guard id == parent.id else { throw SnapshotError.missingReference }
         return parent
     }
@@ -103,9 +110,10 @@ private actor FinancialWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
     }
     func openFinancialReport(id: UUID) async throws -> SECFinancialReportDocument {
         reportOpenReads += 1
-        let result = stored.first { $0.id == id }, gate = openGate
+        let result = stored.first { $0.id == id }, gate = openGate, failing = reportOpenFails
         openGate = nil
         if let gate { await gate.hold() }
+        if failing { throw FinancialWorkspaceFailure.injected }
         guard let result else { throw SnapshotError.missingReference }
         return result
     }
@@ -113,7 +121,32 @@ private actor FinancialWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
 
 private actor FinancialWorkspaceNetworkProbe {
     var calls = 0
-    func importCompany() throws -> SECResearchDocument { calls += 1; throw FinancialWorkspaceFailure.injected }
+    private let result: SECResearchDocument?
+    private let gate: FinancialWorkspaceGate?
+    init(result: SECResearchDocument? = nil, gate: FinancialWorkspaceGate? = nil) {
+        self.result = result; self.gate = gate
+    }
+    func importCompany() async throws -> SECResearchDocument {
+        calls += 1
+        if let gate { await gate.hold() }
+        guard let result else { throw FinancialWorkspaceFailure.injected }
+        return result
+    }
+}
+
+private actor FinancialDailyReplayProbe {
+    var calls = 0
+    private let result: Bool, fails: Bool
+    private let gate: FinancialWorkspaceGate?
+    init(result: Bool = true, fails: Bool = false, gate: FinancialWorkspaceGate? = nil) {
+        self.result = result; self.fails = fails; self.gate = gate
+    }
+    func run() async throws -> Bool {
+        calls += 1
+        if let gate { await gate.hold() }
+        if fails { throw FinancialWorkspaceFailure.injected }
+        return result
+    }
 }
 
 private func financialWorkspaceReportCopy(_ report: SECFinancialReportDocument, parentID: UUID? = nil) throws -> SECFinancialReportDocument {
@@ -336,4 +369,300 @@ private func financialWorkspaceReportCopy(_ report: SECFinancialReportDocument, 
         #expect(model.document == nil && model.financialReport == nil && !model.canSaveFinancialReport)
         #expect(await network.calls == 0)
     }
+}
+
+/// Daily orchestration regressions are source only until explicitly authorized to execute.
+/// Import and replay dependencies below are local actors; none installs a network transport.
+@Suite @MainActor struct SECStockDailyFlowTests {
+    @Test func selectedSourceAnalysisSaveAndReopenUseLocalEvidenceAndHideUncheckedValues() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report, stored: false)
+        let network = FinancialWorkspaceNetworkProbe(), gate = FinancialWorkspaceGate()
+        let replay = FinancialDailyReplayProbe(gate: gate)
+        let model = financialWorkspace(storage, network: network, replay: { _ in try await replay.run() })
+        let sourceBytes = try ResearchDocument.encoded(parent), baseline = await storage.revision
+        await model.load(); model.chooseTicker(parent.ticker)
+        await model.performDaily(try #require(model.makeDailyRequest(.analyzeResearch(parent.id))))
+        #expect(model.document?.id == parent.id && model.financialReport?.id == report.id)
+        #expect(model.canDisplayFinancialReport && model.canSaveFinancialReport && !model.financialReportIsSaved)
+        #expect(await storage.researchOpenReads == 1)
+        #expect(await storage.preparations == 1)
+        #expect(await storage.commits == 0)
+        await model.performDaily(try #require(model.makeDailyRequest(.saveReport(report.id))))
+        #expect(model.financialReportIsSaved && !model.canSaveFinancialReport)
+        #expect(await storage.attemptedRevisions == [baseline])
+        let request = try #require(model.makeDailyRequest(.openReport(report.id)))
+        let previousReportRevision = model.financialReportRevision
+        let opening = Task { await model.performDaily(request) }
+        await gate.waitUntilEntered()
+        #expect(model.isBusy && model.financialReport?.id == report.id)
+        #expect(model.financialReportState == .notVerified && !model.canDisplayFinancialReport)
+        #expect(model.financialReportRevision != previousReportRevision)
+        await gate.release(); await opening.value
+        #expect(model.financialReportState == .matched && model.canDisplayFinancialReport)
+        #expect(model.financialReportIsSaved && !model.isBusy)
+        #expect(await replay.calls == 1)
+        #expect(await network.calls == 0)
+        #expect(try ResearchDocument.encoded(try #require(model.document)) == sourceBytes)
+        let beforeReplay = model.financialReportRevision
+        await model.performDaily(try #require(model.makeDailyRequest(.replayReport(report.id))))
+        #expect(model.financialReportRevision != beforeReplay && model.canDisplayFinancialReport)
+        #expect(await replay.calls == 2)
+    }
+
+    @Test(arguments: ["open", "replay", "save"])
+    func sameImmutableReportReselectionRejectsPreviouslyCapturedAction(action: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report)
+        let replay = FinancialDailyReplayProbe()
+        let model = financialWorkspace(storage, replay: { _ in try await replay.run() })
+        await model.load(); model.chooseTicker(parent.ticker)
+        await model.performDaily(try #require(model.makeDailyRequest(.analyzeResearch(parent.id))))
+        let command: SECStockDailyAction = action == "open" ? .openReport(report.id)
+            : action == "replay" ? .replayReport(report.id) : .saveReport(report.id)
+        let stale = try #require(model.makeDailyRequest(command))
+        let originalRevision = model.financialReportRevision
+        await model.openFinancialReport(report.id)
+        let reopenedRevision = model.financialReportRevision
+        #expect(reopenedRevision != originalRevision && model.financialReport?.id == report.id)
+        await model.performDaily(stale)
+        #expect(await storage.reportOpenReads == 1)
+        #expect(await storage.commits == 0)
+        #expect(await replay.calls == 0)
+        #expect(model.financialReportRevision == reopenedRevision)
+        #expect(model.financialReportState == .notVerified && !model.canDisplayFinancialReport)
+    }
+
+    @Test(arguments: ["ticker", "leaveAndReturn"])
+    func queuedDailyActionsCannotFollowChangedTickerOrPageSession(change: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), network = FinancialWorkspaceNetworkProbe()
+        let replay = FinancialDailyReplayProbe()
+        let model = financialWorkspace(storage, network: network, replay: { _ in try await replay.run() })
+        await model.load(); model.chooseTicker(parent.ticker)
+        await model.performDaily(try #require(model.makeDailyRequest(.analyzeResearch(parent.id))))
+        let actions: [SECStockDailyAction] = [.analyzeResearch(parent.id), .openReport(report.id),
+            .replayReport(report.id), .saveReport(report.id)]
+        let queued = try actions.map { try #require(model.makeDailyRequest($0)) }
+        if change == "ticker" { model.chooseTicker("MSFT") }
+        else {
+            model.disappear()
+            #expect(model.makeDailyRequest(.openReport(report.id)) == nil)
+            await model.load()
+        }
+        for request in queued { await model.performDaily(request) }
+        #expect(await storage.researchOpenReads == 1)
+        #expect(await storage.preparations == 1)
+        #expect(await storage.reportOpenReads == 0)
+        #expect(await storage.commits == 0)
+        #expect(await replay.calls == 0)
+        #expect(await network.calls == 0)
+        #expect(model.document == nil && model.financialReport == nil && !model.isBusy)
+    }
+
+    @Test(arguments: ["sourceOpen", "prepare"])
+    func leavingDuringDailyAnalysisPreventsLateResultAndFollowOnWork(stage: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), gate = FinancialWorkspaceGate()
+        let model = financialWorkspace(storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        if stage == "sourceOpen" { await storage.configure(researchOpenGate: gate) }
+        else { await storage.configure(prepareGate: gate) }
+        let request = try #require(model.makeDailyRequest(.analyzeResearch(parent.id)))
+        let old = Task { await model.performDaily(request) }
+        await gate.waitUntilEntered(); model.disappear()
+        await model.load()
+        await gate.release(); await old.value
+        #expect(model.document == nil && model.financialReport == nil && !model.isBusy)
+        #expect(!model.canDisplayFinancialReport && model.financialMessage == nil)
+        #expect(await storage.preparations == (stage == "sourceOpen" ? 0 : 1))
+        #expect(await storage.commits == 0)
+    }
+
+    @Test func unreadableSelectedSourceStopsBeforeAnalysisWithoutImportFallback() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), network = FinancialWorkspaceNetworkProbe()
+        let model = financialWorkspace(storage, network: network)
+        await model.load(); model.chooseTicker(parent.ticker)
+        await storage.configure(researchOpenFails: true)
+        await model.performDaily(try #require(model.makeDailyRequest(.analyzeResearch(parent.id))))
+        #expect(model.document == nil && model.financialReport == nil && !model.canDisplayFinancialReport)
+        #expect(model.hasError || model.financialHasError)
+        #expect(await storage.researchOpenReads == 1)
+        #expect(await storage.preparations == 0)
+        #expect(await storage.commits == 0)
+        #expect(await network.calls == 0)
+    }
+
+    @Test(arguments: ["open", "mismatch", "replayFailure"])
+    func savedReportFailuresNeverExposeCachedNumbersOrImportAgain(failure: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), network = FinancialWorkspaceNetworkProbe()
+        let replay = FinancialDailyReplayProbe(result: failure != "mismatch", fails: failure == "replayFailure")
+        let model = financialWorkspace(storage, network: network, replay: { _ in try await replay.run() })
+        await model.load(); model.chooseTicker(parent.ticker)
+        if failure == "open" { await storage.configure(reportOpenFails: true) }
+        await model.performDaily(try #require(model.makeDailyRequest(.openReport(report.id))))
+        #expect(!model.canDisplayFinancialReport && !model.canSaveFinancialReport && model.financialHasError)
+        if failure == "open" {
+            #expect(model.financialReport == nil)
+            #expect(await replay.calls == 0)
+        } else {
+            #expect(model.financialReport?.id == report.id && model.financialReportIsSaved)
+            #expect(model.financialReportState == (failure == "mismatch" ? .mismatched : .failed))
+            #expect(await replay.calls == 1)
+        }
+        #expect(await storage.preparations == 0)
+        #expect(await storage.commits == 0)
+        #expect(await network.calls == 0)
+    }
+
+    @Test func explicitUpdateReusesImportedCompanyAndGeneratesOnlyAnUnsavedReport() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report, stored: false)
+        let network = FinancialWorkspaceNetworkProbe(result: parent)
+        let model = SECResearchWorkspaceModel(storage: storage, networkAvailable: true,
+            importer: { _, _, _ in try await network.importCompany() }, financialStorage: storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        #expect(await network.calls == 0)
+        let update = try #require(model.startDailyUpdate(email: "researcher@example.invalid"))
+        await update.value
+        #expect(await network.calls == 1)
+        #expect(await storage.preparations == 1)
+        #expect(await storage.commits == 0)
+        #expect(model.document?.id == parent.id && model.saved.map(\.id) == [parent.id])
+        #expect(model.financialReport?.id == report.id && model.financialReportState == .generated)
+        #expect(model.canSaveFinancialReport && !model.financialReportIsSaved)
+        #expect(model.savedFinancialReports.isEmpty && !model.isBusy)
+    }
+
+    @Test(arguments: ["import", "prepare"])
+    func updateFailureKeepsOnlyCompletedSourceWorkAndNeverSavesAReport(stage: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report, stored: false)
+        let network = FinancialWorkspaceNetworkProbe(result: stage == "prepare" ? parent : nil)
+        let model = SECResearchWorkspaceModel(storage: storage, networkAvailable: true,
+            importer: { _, _, _ in try await network.importCompany() }, financialStorage: storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        if stage == "prepare" { await storage.configure(preparationError: .insufficientPeriods) }
+        let update = try #require(model.startDailyUpdate(email: "researcher@example.invalid"))
+        await update.value
+        #expect(await network.calls == 1)
+        #expect(await storage.preparations == (stage == "prepare" ? 1 : 0))
+        #expect(await storage.commits == 0)
+        #expect(model.financialReport == nil && !model.canDisplayFinancialReport && !model.isBusy)
+        #expect(model.hasError || model.financialHasError)
+        if stage == "prepare" { #expect(model.document?.id == parent.id) }
+        else { #expect(model.document == nil) }
+    }
+
+    @Test func departedUpdateCannotPrepareOrPublishWhenUncooperativeImporterReturns() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report, stored: false), gate = FinancialWorkspaceGate()
+        let network = FinancialWorkspaceNetworkProbe(result: parent, gate: gate)
+        let model = SECResearchWorkspaceModel(storage: storage, networkAvailable: true,
+            importer: { _, _, _ in try await network.importCompany() }, financialStorage: storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        let old = try #require(model.startDailyUpdate(email: "researcher@example.invalid"))
+        await gate.waitUntilEntered(); model.disappear()
+        await model.load()
+        await gate.release(); await old.value
+        #expect(await network.calls == 1)
+        #expect(await storage.preparations == 0)
+        #expect(await storage.commits == 0)
+        #expect(model.document == nil && model.financialReport == nil && !model.isBusy)
+        #expect(model.financialMessage == nil && model.message == nil)
+    }
+
+    @Test(arguments: ["recoverable", "stale"])
+    func dailySaveKeepsOriginalRevisionAndNeverRetargetsAnInvalidDraft(failure: String) async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report, stored: false)
+        let model = financialWorkspace(storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        await model.performDaily(try #require(model.makeDailyRequest(.analyzeResearch(parent.id))))
+        let baseline = await storage.revision
+        if failure == "stale" { await storage.advanceRevision() }
+        else { await storage.configure(saveFails: true) }
+        await model.performDaily(try #require(model.makeDailyRequest(.saveReport(report.id))))
+        #expect(await storage.attemptedRevisions == [baseline])
+        #expect(await storage.commits == 0)
+        #expect(model.financialHasError && !model.financialReportIsSaved)
+        if failure == "stale" {
+            #expect(!model.canSaveFinancialReport && model.makeDailyRequest(.saveReport(report.id)) == nil)
+        } else {
+            #expect(model.canSaveFinancialReport)
+            await storage.configure()
+            await model.performDaily(try #require(model.makeDailyRequest(.saveReport(report.id))))
+            #expect(await storage.attemptedRevisions == [baseline, baseline])
+            #expect(await storage.commits == 1)
+            #expect(model.financialReportIsSaved && !model.financialHasError)
+        }
+    }
+
+    @Test func dailyReloadKeepsListFailuresIndependentAndCannotReviveDepartedPage() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), model = financialWorkspace(storage)
+        await model.load(); model.chooseTicker(parent.ticker)
+        await storage.configure(researchListFails: true)
+        await model.performDaily(try #require(model.makeDailyRequest(.reloadLists)))
+        #expect(model.saved.isEmpty && model.listError != nil)
+        #expect(model.savedFinancialReports.map(\.id) == [report.id] && model.financialListError == nil)
+        await storage.configure(reportListFails: true)
+        await model.performDaily(try #require(model.makeDailyRequest(.reloadLists)))
+        #expect(model.saved.map(\.id) == [parent.id] && model.listError == nil)
+        #expect(model.savedFinancialReports.isEmpty && model.financialListError != nil)
+        let queued = try #require(model.makeDailyRequest(.reloadLists))
+        let sourceReads = await storage.researchListReads, reportReads = await storage.reportListReads
+        model.disappear()
+        await model.performDaily(queued)
+        #expect(await storage.researchListReads == sourceReads)
+        #expect(await storage.reportListReads == reportReads)
+        #expect(model.saved.isEmpty && model.savedFinancialReports.isEmpty && !model.isBusy)
+        await storage.configure()
+        await model.load()
+        let gate = FinancialWorkspaceGate()
+        await storage.configure(listGate: gate)
+        let request = try #require(model.makeDailyRequest(.reloadLists))
+        let pending = Task { await model.performDaily(request) }
+        await gate.waitUntilEntered(); model.disappear()
+        await gate.release(); await pending.value
+        #expect(model.saved.isEmpty && model.savedFinancialReports.isEmpty && !model.isBusy)
+        #expect(model.listError == nil && model.financialListError == nil)
+        #expect(await storage.researchOpenReads == 0)
+        #expect(await storage.preparations == 0)
+    }
+
+    @Test func openingBoundSourceIsOfflineAndAlsoWorksWithoutFinancialStorage() async throws {
+        let (parent, report) = try await FinancialWorkspaceFixture.shared.value()
+        let storage = FinancialWorkspaceStorage(parent: parent, report: report), network = FinancialWorkspaceNetworkProbe()
+        let model = financialWorkspace(storage, network: network)
+        await storage.configure(researchListFails: true)
+        await model.load(); model.chooseTicker(parent.ticker)
+        await model.openFinancialReport(report.id)
+        #expect(model.saved.isEmpty && model.financialReport?.parentDocumentID == parent.id)
+        await model.performDaily(try #require(model.makeDailyRequest(.openResearch(parent.id))))
+        #expect(model.document?.id == parent.id && model.financialReport == nil && !model.canDisplayValues)
+        await storage.configure()
+        let sourceOnly = SECResearchWorkspaceModel(storage: storage, networkAvailable: false,
+            importer: { _, _, _ in try await network.importCompany() })
+        await sourceOnly.load(); sourceOnly.chooseTicker(parent.ticker)
+        await sourceOnly.performDaily(try #require(sourceOnly.makeDailyRequest(.openResearch(parent.id))))
+        #expect(sourceOnly.document?.id == parent.id && !sourceOnly.canGenerateFinancialReport)
+        #expect(!sourceOnly.canDisplayValues && sourceOnly.financialReport == nil)
+        let wrongTicker = try #require(sourceOnly.makeDailyRequest(.openResearch(parent.id)))
+        sourceOnly.chooseTicker("MSFT")
+        await sourceOnly.performDaily(wrongTicker)
+        #expect(sourceOnly.document == nil)
+        sourceOnly.chooseTicker(parent.ticker)
+        let departed = try #require(sourceOnly.makeDailyRequest(.openResearch(parent.id)))
+        sourceOnly.disappear(); await sourceOnly.load()
+        await sourceOnly.performDaily(departed)
+        #expect(sourceOnly.document == nil && !sourceOnly.isBusy)
+        #expect(await storage.researchOpenReads == 2)
+        #expect(await storage.preparations == 0)
+        #expect(await storage.commits == 0)
+        #expect(await network.calls == 0)
+    }
+
 }
