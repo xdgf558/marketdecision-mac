@@ -77,12 +77,15 @@ private actor PersonalHistoryStorage: PerformanceStorage {
 
 @MainActor @Suite("Personal option history read ownership")
 struct OptionPersonalHistoryWorkspaceTests {
-    private func saved(account: String = "personal", count: Int = 1, synthetic: Bool = false) throws -> SavedPerformanceReport {
-        let report = try OptionPersonalHistoryFixture().report(count: count, synthetic: synthetic, accountID: account)
+    private func savedReport(_ report: PerformanceReport) -> SavedPerformanceReport {
         let id = UUID()
         return .init(id: id, createdAt: report.input.request.calculatedAt, report: report,
             inputHash: "input-" + id.uuidString, reportHash: "report-" + id.uuidString,
             ledgerRevision: report.input.ledgerRevision, isCurrentLedger: true, replayMatched: true)
+    }
+    private func saved(account: String = "personal", count: Int = 1, synthetic: Bool = false) throws -> SavedPerformanceReport {
+        let report = try OptionPersonalHistoryFixture().report(count: count, synthetic: synthetic, accountID: account)
+        return savedReport(report)
     }
 
     @Test func constructionAndAppearanceDoNotOpenLedgerAndExplicitReadNeverWrites() async throws {
@@ -194,5 +197,29 @@ struct OptionPersonalHistoryWorkspaceTests {
         await gate.waitUntilEntered(); queued.cancel(); await gate.release(); await queued.value
         #expect(await storage.factoryCalls == 0)
         #expect(!model.hasLoadedAccounts && model.result == nil && !model.isBusy)
+    }
+
+    @Test func coexistingAccountsKeepHistoryAndFailuresIsolated() async throws {
+        let pair = try OptionPersonalHistoryFixture().coexistingReports(otherAccountName: "SYNTHETIC second account", otherHasEvents: true)
+        let personal = savedReport(pair.personal), other = savedReport(pair.other)
+        let storage = try PersonalHistoryStorage([personal, other])
+        let model = OptionPersonalHistoryWorkspaceModel(storageFactory: { await storage.factory() })
+        let secondPage = OptionPersonalHistoryWorkspaceModel(storageFactory: { await storage.factory() })
+        model.appear(); secondPage.appear()
+        await model.loadAccounts(); await model.selectAccount("personal"); await model.openSelected(personal.id)
+        await secondPage.loadAccounts(); await secondPage.selectAccount("personal"); await secondPage.openSelected(personal.id)
+        let expected = try #require(model.result)
+        #expect(expected.statistics.eligibleN == 30 && expected.statistics.winRate.value == 0.5)
+        #expect(expected.reportID == personal.id && expected.accountID == "personal")
+        #expect(secondPage.result == expected)
+
+        await model.selectAccount("other"); await model.openSelected(other.id)
+        #expect(model.selectedAccountID == "other" && model.result == nil && model.hasError)
+        #expect(model.message?.contains("合成") == true)
+        #expect(secondPage.result == expected && !secondPage.hasError)
+
+        await model.selectAccount("personal"); await model.openSelected(personal.id)
+        #expect(model.result == expected && !model.hasError && !model.isBusy)
+        #expect(await storage.writeCalls == 0)
     }
 }

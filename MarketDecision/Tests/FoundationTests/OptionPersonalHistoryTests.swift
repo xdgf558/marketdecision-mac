@@ -61,6 +61,33 @@ struct OptionPersonalHistoryFixture {
         return try PerformanceEngine.calculate(.init(request: request, ledgerRevision: ledgerRevision ?? self.ledgerRevision,
                                                       accounts: [account], events: events))
     }
+
+    /// Both reports retain exactly the same complete frozen account/event input;
+    /// only the explicitly selected account in the request differs.
+    func coexistingReports(otherAccountName: String, otherHasEvents: Bool = false,
+                           count: Int = 30) throws -> (personal: PerformanceReport, other: PerformanceReport) {
+        let original = try report(count: count)
+        let other = LedgerAccount(id: "other", name: otherAccountName)
+        let accounts = original.input.accounts + [other]
+        let extra = otherHasEvents ? [try event("other-deposit", at: 10, accountID: other.id,
+            payload: .cash(.init(kind: .deposit, amount: Money("500"))), synthetic: true)] : []
+        let events = original.input.events + extra, request = original.input.request
+        let personalReport = try PerformanceEngine.calculate(.init(request: request, ledgerRevision: original.input.ledgerRevision,
+                                                                    accounts: accounts, events: events))
+        let otherRequest = PerformanceRequest(accountID: other.id, calculatedAt: request.calculatedAt,
+            calendar: request.calendar, days: request.days)
+        let otherReport = try PerformanceEngine.calculate(.init(request: otherRequest, ledgerRevision: original.input.ledgerRevision,
+                                                                 accounts: accounts, events: events))
+        return (personalReport, otherReport)
+    }
+
+    /// Produces a decodable but deliberately unverified report without allowing
+    /// fixture construction to pre-validate the damaged frozen input.
+    func replacingFrozenInput(of report: PerformanceReport, with input: PerformanceInput) throws -> PerformanceReport {
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any])
+        json["input"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(input))
+        return try JSONDecoder().decode(PerformanceReport.self, from: JSONSerialization.data(withJSONObject: json))
+    }
 }
 
 @Suite("Personal sold-option history projection")
@@ -141,5 +168,93 @@ struct OptionPersonalHistoryTests {
         #expect(projection.statistics.eligibleN == 1)
         #expect(projection.asOf == cutoff)
         #expect(OptionPersonalHistory.statisticsScope.contains("报告期初前"))
+    }
+
+    @Test(arguments: ["SYNTHETIC training account", "合成示例账户"])
+    func unrelatedMarkedAccountDoesNotContaminateSelectedHistory(_ name: String) throws {
+        let f = OptionPersonalHistoryFixture()
+        let original = try OptionPersonalHistory(report: f.report(count: 30))
+        let pair = try f.coexistingReports(otherAccountName: name)
+        let selected = try OptionPersonalHistory(report: pair.personal)
+        #expect(pair.personal.input.accounts.count == 2)
+        #expect(!pair.personal.input.events.contains { $0.accountID == "other" })
+        #expect(selected == original)
+        #expect(selected.statistics.winRate.value == 0.5)
+    }
+
+    @Test func unrelatedSyntheticEventsDoNotContaminateSelectedHistory() throws {
+        let f = OptionPersonalHistoryFixture()
+        let original = try OptionPersonalHistory(report: f.report(count: 30))
+        let pair = try f.coexistingReports(otherAccountName: "Secondary account", otherHasEvents: true)
+        #expect(pair.personal.input.events.contains { $0.accountID == "other" && $0.source.sourceSystem == "synthetic-manual" })
+        #expect(try OptionPersonalHistory(report: pair.personal) == original)
+        #expect(throws: OptionPersonalHistoryError.syntheticEvidence) { try OptionPersonalHistory(report: pair.other) }
+    }
+
+    @Test(arguments: ["accountName", "closingEvent"])
+    func selectedAccountNameAndClosingEvidenceRemainExcluded(_ marker: String) throws {
+        let f = OptionPersonalHistoryFixture(), original = try f.report(count: 1)
+        let accounts = marker == "accountName"
+            ? [LedgerAccount(id: "personal", name: "SYNTHETIC personal account")]
+            : original.input.accounts
+        let events = original.input.events.map { event in
+            guard marker == "closingEvent", event.id == "close-0" else { return event }
+            return f.event(event.id, at: event.effectiveAt.timeIntervalSince(f.base), accountID: event.accountID,
+                           payload: event.payload, synthetic: true)
+        }
+        let report = try PerformanceEngine.calculate(.init(request: original.input.request, ledgerRevision: original.input.ledgerRevision,
+                                                           accounts: accounts, events: events))
+        #expect(throws: OptionPersonalHistoryError.syntheticEvidence) { try OptionPersonalHistory(report: report) }
+    }
+
+    @Test(arguments: ["account", "event"])
+    func malformedOtherAccountStillFailsWholeFrozenReportReplay(_ damage: String) throws {
+        let f = OptionPersonalHistoryFixture()
+        let original = try f.coexistingReports(otherAccountName: "Secondary account", otherHasEvents: true, count: 1).personal
+        let accounts = original.input.accounts.map { account in
+            damage == "account" && account.id == "other"
+                ? LedgerAccount(id: account.id, name: account.name, currency: "EUR", costBasisMethod: account.costBasisMethod)
+                : account
+        }
+        let events = try original.input.events.map { event in
+            guard damage == "event", event.accountID == "other" else { return event }
+            return try f.event(event.id, at: 10, accountID: event.accountID,
+                payload: .cash(.init(kind: .deposit, amount: Money("-1"))), synthetic: true)
+        }
+        let input = PerformanceInput(request: original.input.request, ledgerRevision: original.input.ledgerRevision,
+                                     accounts: accounts, events: events)
+        let damaged = try f.replacingFrozenInput(of: original, with: input)
+        if damage == "account" {
+            #expect(throws: LedgerError.invalidAccount) { try OptionPersonalHistory(report: damaged) }
+        } else {
+            #expect(throws: LedgerError.invalidAmount) { try OptionPersonalHistory(report: damaged) }
+        }
+    }
+
+    @Test(arguments: ["reversed", "afterCutoff"])
+    func inactiveOrLaterSyntheticEventsDoNotContaminateSelectedHistory(_ placement: String) throws {
+        let f = OptionPersonalHistoryFixture(), original = try f.report(count: 30)
+        let at = placement == "reversed" ? 100.0 : 5500.0
+        var events = original.input.events + [try f.event("ignored-entry", at: at, accountID: "personal",
+            payload: .cash(.init(kind: .deposit, amount: Money("1"))), synthetic: true)]
+        if placement == "reversed" {
+            events.append(f.event("ordinary-correction", at: 101, accountID: "personal",
+                payload: .reversal(.init(originalEventID: "ignored-entry", reason: "Cancel mistaken entry"))))
+        }
+        let report = try PerformanceEngine.calculate(.init(request: original.input.request, ledgerRevision: original.input.ledgerRevision,
+                                                           accounts: original.input.accounts, events: events))
+        #expect(try OptionPersonalHistory(report: report) == OptionPersonalHistory(report: original))
+    }
+
+    @Test(arguments: [101.0, 5500.0])
+    func syntheticReversalThatRestatesHistoricalInputIsRejected(_ reversalAt: Double) throws {
+        let f = OptionPersonalHistoryFixture(), original = try f.report(count: 1)
+        let events = original.input.events + [
+            try f.event("restated-entry", at: 100, accountID: "personal", payload: .cash(.init(kind: .deposit, amount: Money("1")))),
+            f.event("marked-correction", at: reversalAt, accountID: "personal",
+                payload: .reversal(.init(originalEventID: "restated-entry", reason: "Cancel mistaken entry")), synthetic: true)]
+        let report = try PerformanceEngine.calculate(.init(request: original.input.request, ledgerRevision: original.input.ledgerRevision,
+                                                           accounts: original.input.accounts, events: events))
+        #expect(throws: OptionPersonalHistoryError.syntheticEvidence) { try OptionPersonalHistory(report: report) }
     }
 }
