@@ -14,6 +14,13 @@ public enum AIInsightError: Error, Equatable, Sendable {
     case invalidInput, invalidModel, budgetExceeded, malformedResponse
     case incompleteResponse, refused, unexpectedOutput, invalidEvidence
     case outputLimitReached, contentFiltered, responseFailed
+    case outputStructure(AIInsightOutputIssue)
+}
+
+/// Closed parser locations only: never carry response text, field values or IDs.
+public enum AIInsightOutputIssue: String, CaseIterable, Equatable, Sendable {
+    case itemType, reasoningMetadata, messageEnvelope, messagePhase
+    case ambiguousMessage, contentBlock, annotations, missingText
 }
 
 public struct AIInsightMetric: Codable, Equatable, Sendable {

@@ -79,7 +79,7 @@ private func aiWorkspaceInput(revenue: String = "100") -> AIInsightInput {
         sources: [.init(id: "s-filing", label: "合成财报摘要")])
 }
 
-private func aiWorkspaceResult(_ request: AIInsightRequest) throws -> AIInsightResult {
+private func aiWorkspaceResult(_ request: AIInsightRequest, encryptedReasoning: Bool = false) throws -> AIInsightResult {
     let analysis: [String: Any] = [
         "summary": ["text": "仅解读当前提供的营收证据。", "evidenceIDs": ["m-revenue"]],
         "strengths": [], "risks": [], "questions": [],
@@ -87,10 +87,15 @@ private func aiWorkspaceResult(_ request: AIInsightRequest) throws -> AIInsightR
     ]
     let encoded = try JSONSerialization.data(withJSONObject: analysis)
     let text = try #require(String(data: encoded, encoding: .utf8))
+    var outputs: [[String: Any]] = [["type": "message", "role": "assistant", "status": "completed",
+        "content": [["type": "output_text", "text": text, "annotations": []]]]]
+    if encryptedReasoning {
+        outputs.insert(["type": "reasoning", "summary": [],
+            "encrypted_content": "SYNTHETIC-OPAQUE-REASONING"], at: 0)
+    }
     let response: [String: Any] = [
         "object": "response", "status": "completed", "model": "gpt-6-luna-2026-10-01",
-        "output": [["type": "message", "role": "assistant", "status": "completed",
-                    "content": [["type": "output_text", "text": text, "annotations": []]]]]
+        "output": outputs
     ]
     return try request.parseResponse(JSONSerialization.data(withJSONObject: response))
 }
@@ -168,6 +173,29 @@ struct AIInsightWorkspaceTests {
         #expect(await probe.closes == 0)
     }
 
+    @Test func encryptedReasoningResponsePublishesOnlyValidatedFinancialAnalysis() async throws {
+        let probe = AIWorkspaceProbe(), id = UUID()
+        let model = workspace(probe: probe, factory: {
+            await probe.factory()
+            return AIInsightSession(send: { request, _ in
+                await probe.send()
+                return try aiWorkspaceResult(request, encryptedReasoning: true)
+            }, close: { await probe.close() })
+        })
+        model.select(reportID: id)
+        await (try start(model, id: id, probe: probe)).value
+        let result = try #require(model.result)
+        #expect(result.analysis.summary.evidenceIDs == ["m-revenue"])
+        #expect(result.inputDigest == (try aiWorkspaceInput().digest()))
+        #expect(result.requestedModel == AIInsightRequest.defaultModel)
+        #expect(!model.hasError && !model.isBusy)
+        #expect(model.message?.contains("AI 解读已完成") == true)
+        let savedText = try #require(String(data: JSONEncoder().encode(result), encoding: .utf8))
+        #expect(!savedText.contains("SYNTHETIC-OPAQUE-REASONING"))
+        #expect(await probe.sends == 1)
+        #expect(await probe.closes == 1)
+    }
+
     @Test func missingOrEmptyKeyClosesPreparedSessionWithoutSending() async throws {
         for key: Data? in [nil, Data()] {
             let probe = AIWorkspaceProbe(), id = UUID()
@@ -241,7 +269,15 @@ struct AIInsightWorkspaceTests {
             (AIInsightError.outputLimitReached, "[AI-OUTPUT-LIMIT]"),
             (AIInsightError.contentFiltered, "[AI-CONTENT-FILTER]"),
             (AIInsightError.responseFailed, "[AI-RESPONSE-FAILED]"),
-            (AIInsightError.invalidEvidence, "[AI-EVIDENCE]")]
+            (AIInsightError.invalidEvidence, "[AI-EVIDENCE]"),
+            (AIInsightError.outputStructure(.itemType), "[AI-OUTPUT-ITEM]"),
+            (AIInsightError.outputStructure(.reasoningMetadata), "[AI-OUTPUT-REASONING]"),
+            (AIInsightError.outputStructure(.messageEnvelope), "[AI-OUTPUT-MESSAGE]"),
+            (AIInsightError.outputStructure(.messagePhase), "[AI-OUTPUT-PHASE]"),
+            (AIInsightError.outputStructure(.ambiguousMessage), "[AI-OUTPUT-AMBIGUOUS]"),
+            (AIInsightError.outputStructure(.contentBlock), "[AI-OUTPUT-CONTENT]"),
+            (AIInsightError.outputStructure(.annotations), "[AI-OUTPUT-ANNOTATIONS]"),
+            (AIInsightError.outputStructure(.missingText), "[AI-OUTPUT-NO-TEXT]")]
         for (failure, marker) in cases {
             let probe = AIWorkspaceProbe(), id = UUID()
             let model = workspace(probe: probe, factory: {

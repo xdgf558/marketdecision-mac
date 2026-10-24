@@ -299,12 +299,13 @@ private struct AppReleaseNotesSection: View {
             DisclosureGroup("更新说明", isExpanded: $showsReleaseNotes) {
                 VStack(alignment: .leading, spacing: 8) {
                     // Content date only; do not present this as the build date.
-                    Text("本版更新内容 · 2026-10-24")
+                    Text("版本 \(bundleValue("CFBundleShortVersionString")) · 2026-10-24")
                         .font(.caption).foregroundStyle(.secondary)
                     note("我的投资", "紧凑投资概览展示累计盈亏、标的贡献和持仓；确认期权实际成交后自动记账，减少重复输入。")
                     note("期权交易", "紧凑展示合约、收益与风险，支持一笔平仓选择多个同合约持仓批次。")
                     note("股票分析", "新增单季度与 TTM 切换，默认单季度，标明统计期间；补充债务字段识别及缺项说明，缺失不填零。")
-                    note("AI 财报解读", "手动发送财报摘要，细化认证、额度、连接及回答核对失败等原因提示。")
+                    note("AI 财报解读修复", "兼容加密推理元信息与分段正文，避免正常回答被误报为内容结构异常；仍核对财务字段、来源引用和当前报告。")
+                    note("错误提示", "区分未返回最终正文、回答阶段异常和额外注释等原因；不会自动重发 API 请求。")
                 }
                 .padding(.vertical, 4)
             }

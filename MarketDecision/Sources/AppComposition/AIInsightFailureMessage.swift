@@ -135,12 +135,35 @@ enum AIInsightFailureMessage {
             return "AI 回答格式未通过本地校验，已拒绝展示；这不表示 Key 无效。[AI-FORMAT]"
         case .unexpectedOutput:
             return "AI 返回了未支持的内容结构，已拒绝展示。[AI-OUTPUT-STRUCTURE]"
+        case .outputStructure(let issue):
+            return outputStructure(issue)
         case .budgetExceeded:
             return "AI 请求或回答超过本地大小、嵌套或内容限制，已停止处理。[AI-CONTENT-LIMIT]"
         case .invalidInput:
             return "AI 请求数据或回答内容未通过本地校验。[AI-CONTENT-VALIDATION]"
         case .invalidModel:
             return "模型 ID 格式无效，请检查 AI 设置。[AI-MODEL-FORMAT]"
+        }
+    }
+
+    private static func outputStructure(_ issue: AIInsightOutputIssue) -> String {
+        switch issue {
+        case .itemType:
+            return "AI 返回了未启用的工具或未知输出类型，已拒绝展示。[AI-OUTPUT-ITEM]"
+        case .reasoningMetadata:
+            return "AI 的推理元数据格式或状态不兼容，已拒绝展示；加密推理字段本身不会阻止正常解读。[AI-OUTPUT-REASONING]"
+        case .messageEnvelope:
+            return "AI 的回答消息未标记为已完成的助手消息，已拒绝展示。[AI-OUTPUT-MESSAGE]"
+        case .messagePhase:
+            return "AI 返回了无法识别的回答阶段，未把中间说明当作最终解读。[AI-OUTPUT-PHASE]"
+        case .ambiguousMessage:
+            return "AI 返回了多份最终回答，无法唯一确定财报解读，已拒绝展示。[AI-OUTPUT-AMBIGUOUS]"
+        case .contentBlock:
+            return "AI 回答包含未支持的正文类型或无效文本结构，已拒绝展示。[AI-OUTPUT-CONTENT]"
+        case .annotations:
+            return "AI 回答携带额外注释或注释格式不符，未将其当作本地财报来源。[AI-OUTPUT-ANNOTATIONS]"
+        case .missingText:
+            return "AI 已结束响应，但没有返回最终解读正文；推理信息和中间说明不会替代正文。[AI-OUTPUT-NO-TEXT]"
         }
     }
 }

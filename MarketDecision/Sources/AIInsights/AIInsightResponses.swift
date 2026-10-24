@@ -68,33 +68,7 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
               let outputs = root["output"] as? [[String: Any]], !outputs.isEmpty, outputs.count <= 4 else {
             throw AIInsightError.malformedResponse
         }
-        var text: String?
-        for item in outputs {
-            guard let type = item["type"] as? String else { throw AIInsightError.unexpectedOutput }
-            if type == "reasoning" {
-                // Reasoning models may emit a metadata item. No summary or encrypted
-                // reasoning was requested; it cannot contribute analysis or evidence.
-                guard let summary = item["summary"] as? [Any], summary.isEmpty,
-                      item["encrypted_content"] == nil || item["encrypted_content"] is NSNull else {
-                    throw AIInsightError.unexpectedOutput
-                }
-                continue
-            }
-            guard type == "message", text == nil, item["role"] as? String == "assistant",
-                  item["status"] as? String == "completed",
-                  let content = item["content"] as? [[String: Any]], content.count == 1 else {
-                throw AIInsightError.unexpectedOutput
-            }
-            let part = content[0]
-            if part["type"] as? String == "refusal" { throw AIInsightError.refused }
-            guard part["type"] as? String == "output_text", let value = part["text"] as? String,
-                  !value.isEmpty, value.utf8.count <= AIInsightLimits.analysisBytes,
-                  (part["annotations"] as? [Any])?.isEmpty == true else {
-                throw AIInsightError.unexpectedOutput
-            }
-            text = value
-        }
-        guard let text, let analysisData = text.data(using: .utf8) else { throw AIInsightError.unexpectedOutput }
+        let analysisData = try Self.analysisText(from: outputs)
         let analysisObject = try Self.object(analysisData, limit: AIInsightLimits.analysisBytes)
         try Self.validateAnalysisShape(analysisObject)
         let analysis: AIInsightAnalysis
@@ -104,6 +78,73 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
         return try AIInsightResult(inputDigest: input.digest(), requestedModel: model,
             model: actualModel, promptVersion: Self.promptVersion, analysis: analysis,
             usage: Self.usage(root["usage"]))
+    }
+
+    private static func analysisText(from outputs: [[String: Any]]) throws -> Data {
+        var finalText: Data?
+        for item in outputs {
+            guard let type = item["type"] as? String else {
+                throw AIInsightError.outputStructure(.itemType)
+            }
+            if type == "reasoning" {
+                // Responses returns encrypted_content by default with store:false.
+                // Validate only metadata shape, then discard it. Neither encrypted
+                // reasoning nor summaries can supply financial text or evidence.
+                // https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses
+                try validateReasoningMetadata(item)
+                continue
+            }
+            guard type == "message" else { throw AIInsightError.outputStructure(.itemType) }
+            guard item["role"] as? String == "assistant", item["status"] as? String == "completed" else {
+                throw AIInsightError.outputStructure(.messageEnvelope)
+            }
+            // Only an explicitly labelled commentary message is non-final. Never
+            // choose first/last among several unlabelled or final answer messages.
+            let isCommentary: Bool
+            if let phase = item["phase"], !(phase is NSNull) {
+                guard let value = phase as? String, value == "commentary" || value == "final_answer" else {
+                    throw AIInsightError.outputStructure(.messagePhase)
+                }
+                isCommentary = value == "commentary"
+            } else { isCommentary = false }
+            guard let content = item["content"] as? [[String: Any]], !content.isEmpty else {
+                throw AIInsightError.outputStructure(.contentBlock)
+            }
+            var messageText = Data()
+            for part in content {
+                if part["type"] as? String == "refusal" { throw AIInsightError.refused }
+                guard part["type"] as? String == "output_text", let value = part["text"] as? String else {
+                    throw AIInsightError.outputStructure(.contentBlock)
+                }
+                // External annotations cannot replace the local evidence IDs.
+                guard let annotations = part["annotations"] as? [Any], annotations.isEmpty else {
+                    throw AIInsightError.outputStructure(.annotations)
+                }
+                guard value.utf8.count <= AIInsightLimits.analysisBytes - messageText.count else {
+                    throw AIInsightError.budgetExceeded
+                }
+                messageText.append(contentsOf: value.utf8)
+            }
+            if isCommentary { continue }
+            guard finalText == nil else { throw AIInsightError.outputStructure(.ambiguousMessage) }
+            guard !messageText.isEmpty else { throw AIInsightError.outputStructure(.missingText) }
+            finalText = messageText
+        }
+        guard let finalText else { throw AIInsightError.outputStructure(.missingText) }
+        return finalText
+    }
+
+    private static func validateReasoningMetadata(_ item: [String: Any]) throws {
+        guard let summaries = item["summary"] as? [[String: Any]],
+              summaries.allSatisfy({ $0["type"] as? String == "summary_text" && $0["text"] is String }) else {
+            throw AIInsightError.outputStructure(.reasoningMetadata)
+        }
+        if let encrypted = item["encrypted_content"], !(encrypted is NSNull), !(encrypted is String) {
+            throw AIInsightError.outputStructure(.reasoningMetadata)
+        }
+        if let status = item["status"], !(status is NSNull), status as? String != "completed" {
+            throw AIInsightError.outputStructure(.reasoningMetadata)
+        }
     }
 
     private static func usage(_ raw: Any?) throws -> AIInsightUsage? {
