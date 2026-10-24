@@ -50,8 +50,11 @@ private struct InvestmentsContent: View {
     @State private var continueToCalculation = false
     @State private var shareError: String?
     private let accent = Color(red: 0.0, green: 0.43, blue: 0.42)
-    private var summary: InvestmentSummary? { model.report.map(InvestmentSummary.init) }
-    private var lots: [LedgerLot] { model.context?.ledger.state.lots.filter { $0.accountID == model.selectedAccountID && !$0.isClosed } ?? [] }
+    private var reportSummary: InvestmentSummary? { model.report.map(InvestmentSummary.init) }
+    private var ledgerSummary: InvestmentLedgerSummary? {
+        guard let ledger = model.context?.ledger, let account = model.selectedAccountID else { return nil }
+        return try? InvestmentLedgerSummary(ledger: ledger, accountID: account)
+    }
     private var events: [LedgerEvent] { Array((model.context?.ledger.events.filter { $0.accountID == model.selectedAccountID } ?? []).sorted { $0.effectiveAt > $1.effectiveAt }.prefix(5)) }
 
     var body: some View {
@@ -111,6 +114,8 @@ private struct InvestmentsContent: View {
                     VStack(alignment: .leading, spacing: 24) { profit; Divider(); holdings }
                 }
                 Divider()
+                periodReport
+                Divider()
                 recentRecords
                 HStack {
                     Text("本地记录 · USD · 缺失数据保留空缺").font(.caption).foregroundStyle(.secondary)
@@ -137,51 +142,98 @@ private struct InvestmentsContent: View {
                     ForEach(model.context?.ledger.accounts ?? []) { Text($0.name).tag($0.id) }
                 }.frame(maxWidth: 260).disabled(model.isBusy).accessibilityIdentifier("investmentAccount")
                 Text("USD").foregroundStyle(.secondary)
-                if summary?.containsSyntheticEvidence == true { Text("合成示例 · 非真实账户业绩").foregroundStyle(.orange) }
                 if model.isBusy { ProgressView().controlSize(.small) }
                 Spacer(minLength: 0)
                 Button { requestReload(account: model.selectedAccountID) } label: { Image(systemName: "arrow.clockwise") }.help("重新读取本地账本与报告").disabled(model.isBusy)
             }
             HStack(spacing: 20) {
-                Button(model.context?.ledger.accounts.isEmpty == true ? "建立账户" : "记录交易") { showDetail(.ledger("手工录入")) }
+                Button(model.context?.ledger.accounts.isEmpty == true ? "建立账户" : "其他记账") { showDetail(.ledger("手工录入")) }
                     .buttonStyle(.borderedProminent).tint(accent).controlSize(.large).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
                 Button("导入交易") { showDetail(.ledger("CSV 导入")) }.buttonStyle(.plain).foregroundStyle(accent).disabled(model.isBusy).accessibilityIdentifier("investmentImport")
                 Button("补齐数据并核算") { showCalculation() }.disabled(!model.canPrepare)
                     .accessibilityIdentifier("investmentStartCalculation")
                 Spacer()
-                Button { prepareShare() } label: { Label("分享盈亏", systemImage: "square.and.arrow.up") }
-                    .disabled(model.isBusy || model.savedReport == nil || summary?.netPnL == nil).accessibilityIdentifier("investmentShare")
             }
+            Text("期权成交在“期权交易”中确认，持仓与已实现盈亏自动汇总到这里，无需重复填写。")
+                .font(.callout).foregroundStyle(.secondary)
         }
     }
 
     private var profit: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("区间净盈亏").font(.title2.bold())
-            Text(InvestmentSummary.amountText(summary?.netPnL))
+        let current = ledgerSummary
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("累计已实现盈亏").font(.title2.bold())
+            Text(InvestmentSummary.amountText(current?.realizedPnL))
                 .font(.system(size: 48, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.55).lineLimit(1)
-                .foregroundStyle((summary?.netPnL?.amount ?? 0) < 0 ? Color.red : accent).accessibilityIdentifier("investmentNetPnL")
-            if let summary {
-                Text("\(summary.startDay) → \(summary.endDay) · USD").font(.callout).foregroundStyle(.secondary)
-                HStack(alignment: .top, spacing: 26) {
-                    metric("区间已实现", value: summary.realizedPnL)
-                    Divider().frame(height: 45)
-                    metric("区间浮动变化", value: summary.changeInUnrealizedPnL)
+                .foregroundStyle((current?.realizedPnL.amount ?? 0) < 0 ? Color.red : accent)
+                .accessibilityIdentifier("investmentRealizedPnL")
+            if let current {
+                Text("当前账户 · 全部已入账记录 · USD").font(.callout).foregroundStyle(.secondary)
+                if current.containsSyntheticRecords { Text("含合成记录 · 非真实账户业绩").foregroundStyle(.orange) }
+                Text("平仓、到期等已入账结果，相关交易费用已计入。期权页记账后自动汇总，无需重复录入。")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("开仓收取的权利金不是已实现利润；未平仓估值、股息、利息和独立现金收支未计入此金额。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if !current.openLots.isEmpty {
+                    Text("仍有未平仓持仓；浮动盈亏待估值，不能据此视为总盈亏。")
+                        .font(.callout).foregroundStyle(.secondary)
                 }
-                Text("已扣外部资金流；总额另含股息、利息、费用、税款及应计变化。").font(.caption).foregroundStyle(.secondary)
+            } else if model.context?.ledger.accounts.isEmpty == true {
+                Text("建立账户后，已确认的交易会在这里自动汇总。").foregroundStyle(.secondary)
+            } else {
+                Text("账本尚未完成读取与校验，暂不显示盈亏金额。").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var periodReport: some View {
+        let summary = reportSummary
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("冻结区间报告").font(.title2.bold())
+                Spacer()
+                Button { prepareShare() } label: { Label("分享区间报告", systemImage: "square.and.arrow.up") }
+                    .disabled(model.isBusy || model.savedReport == nil || summary?.netPnL == nil).accessibilityIdentifier("investmentShare")
+            }
+            if let summary {
+                if summary.containsSyntheticEvidence { Text("合成示例 · 非真实账户业绩").foregroundStyle(.orange) }
+                HStack {
+                    Text("\(summary.startDay) → \(summary.endDay)").foregroundStyle(.secondary)
+                    Spacer()
+                    Text("区间净盈亏")
+                    Text(InvestmentSummary.amountText(summary.netPnL)).monospacedDigit()
+                        .foregroundStyle((summary.netPnL?.amount ?? 0) < 0 ? Color.red : accent)
+                        .accessibilityIdentifier("investmentNetPnL")
+                    Text("USD").foregroundStyle(.secondary)
+                }
                 if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
+                if summary.usesStalePrices { Text("含 STALE 价格，仅用于账本估值。").foregroundStyle(.orange).font(.caption) }
+                DisclosureGroup("查看区间数据") {
+                    reportDetails(summary)
+                }
                 if model.savedReport?.isCurrentLedger == false {
-                    Text("这是历史账本报告；新增交易尚未计入，需重新计算。").foregroundStyle(.orange).font(.callout)
+                    Text("这是历史账本报告；新记账已更新上方汇总，尚未计入这份冻结报告。")
+                        .foregroundStyle(.orange).font(.callout)
                     Button("复用资料，核算新账本") { showCalculation() }.disabled(!model.canPrepare)
                 }
-                if summary.usesStalePrices { Text("含 STALE 价格，仅用于账本估值。").foregroundStyle(.orange).font(.caption) }
-                if let report = model.report { navChart(report) }
             } else {
-                Text("记录交易后，补齐估值日期和价格，就能核对盈亏。现金余额不是利润，缺价格不会显示为零。")
+                Text("如需区间净盈亏和浮动盈亏，请补齐估值与现金流资料并核算；不影响上方已实现盈亏和当前持仓。")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button("补齐数据并核算") { showCalculation() }.foregroundStyle(accent).disabled(!model.canPrepare).accessibilityIdentifier("investmentPrepareReturn")
             }
         }
+    }
+
+    private func reportDetails(_ summary: InvestmentSummary) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 26) {
+                metric("区间已实现", value: summary.realizedPnL)
+                Divider().frame(height: 45)
+                metric("区间浮动变化", value: summary.changeInUnrealizedPnL)
+            }
+            Text("已扣外部资金流；总额另含股息、利息、费用、税款及应计变化。").font(.caption).foregroundStyle(.secondary)
+            if let report = model.report { navChart(report) }
+        }.padding(.top, 16).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func metric(_ title: String, value: Money?) -> some View {
@@ -192,39 +244,36 @@ private struct InvestmentsContent: View {
     }
 
     private var holdings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(model.report == nil ? "我的持仓" : "报告中的持仓").font(.title2.bold())
+        let current = ledgerSummary
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("当前持仓").font(.title2.bold())
             HStack { Text("标的 / 数量"); Spacer(); Text("市值 / 浮动盈亏") }.font(.caption).foregroundStyle(.secondary)
             Divider()
-            if let last = model.report?.daily.last {
-                if last.positions.isEmpty { Text("该报告时点没有未平仓持仓。").foregroundStyle(.secondary) }
-                ForEach(last.positions) { position in
+            if let current {
+                if current.openLots.isEmpty { Text("当前账户没有未平仓持仓。").foregroundStyle(.secondary) }
+                ForEach(current.openLots) { lot in
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(position.instrumentID).font(.headline)
-                            Text(position.quantity.decimalString + (position.side == .long ? " · 多头" : " · 空头")).font(.caption).foregroundStyle(.secondary)
+                            Text(lot.instrument.label).font(.headline)
+                            Text(lotQuantity(lot)).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        VStack(alignment: .trailing, spacing: 5) {
-                            Text(InvestmentSummary.amountText(position.marketValue))
-                            Text(InvestmentSummary.amountText(position.unrealizedPnL)).foregroundStyle((position.unrealizedPnL?.amount ?? 0) < 0 ? Color.red : accent)
-                        }.monospacedDigit()
+                        Text("待估值").foregroundStyle(.secondary)
                     }
                     Divider()
                 }
-                HStack { Text("报告现金"); Spacer(); Text(InvestmentSummary.amountText(last.cash)).monospacedDigit() }
+                HStack { Text("账本现金（不是利润）"); Spacer(); Text(InvestmentSummary.amountText(current.cash)).monospacedDigit() }
             } else {
-                if lots.isEmpty { Text("暂无持仓。先记录买卖或导入交易。").foregroundStyle(.secondary) }
-                ForEach(lots) { lot in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 5) { Text(lot.instrument.label).font(.headline); Text(lot.quantityRemaining.decimalString + (lot.side == .long ? " · 多头" : " · 空头")).font(.caption).foregroundStyle(.secondary) }
-                        Spacer(); Text("待估值").foregroundStyle(.secondary)
-                    }
-                    Divider()
-                }
-                if let id = model.selectedAccountID { HStack { Text("账本现金"); Spacer(); Text(InvestmentSummary.amountText(model.context?.ledger.state.cashByAccount[id])).monospacedDigit() } }
+                Text(model.context?.ledger.accounts.isEmpty == true ? "建立账户后显示持仓。" : "持仓待读取与校验。")
+                    .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func lotQuantity(_ lot: LedgerLot) -> String {
+        let unit: String
+        switch lot.instrument { case .equity: unit = " 股"; case .option: unit = " 张期权" }
+        return lot.quantityRemaining.decimalString + unit + (lot.side == .long ? " · 多头" : " · 空头")
     }
 
     private var recentRecords: some View {

@@ -14,7 +14,7 @@ struct OptionLabPage: View {
     @State private var attempt = UUID()
     var body: some View {
         Group {
-            if let model { OptionLabContent(model: model) }
+            if let model { OptionLabContent(model: model, workspace: workspace) }
             else if failed {
                 ContentUnavailableView("期权交易暂不可用", systemImage: "chart.xyaxis.line", description: Text("本地快照库未能打开，不显示旧计算结果。"))
                 Button("重新打开") { attempt = UUID() }
@@ -34,9 +34,16 @@ struct OptionLabPage: View {
     }
 }
 
+private struct OptionTradePresentation: Identifiable {
+    let id = UUID()
+    let opening: OptionLabInputDraft?
+}
+
 struct OptionLabContent: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var model: OptionLabWorkspaceModel
+    let workspace: WorkspaceModel
+    @State private var tradePresentation: OptionTradePresentation?
     @State private var draft = OptionLabInputDraft()
     @State private var section = "输入"
     @State private var inputError: String?
@@ -65,60 +72,59 @@ struct OptionLabContent: View {
     @State private var ledgerExpanded = false
     @State private var inputTarget = ""
     @State private var inputFocusRequest = UUID()
+    // Bind the editable form to the exact report produced from it. History opens
+    // stay read-only until the user explicitly copies the frozen input to edit.
+    @State private var calculatedDraft: OptionLabInputDraft?
+    @State private var calculatedReportID: UUID?
+    @State private var choosingExpiry = false
+    @State private var proposedExpiry = Date()
+    @State private var expiryDraft: OptionLabInputDraft?
+    @State private var expirySession: UUID?
     private var accent: Color { colorScheme == .dark ? Color(red: 0.48, green: 0.77, blue: 0.68) : Color(red: 0.10, green: 0.34, blue: 0.31) }
     private let advancedSections = ["期权链", "模型分析", "风险与情景", "数据对照", "组合风险", "波动率历史", "期权归档"]
     private var blocked: Bool { model.isBusy || preparingLedger }
+    private var currentDraftReport: OptionLabReport? {
+        guard calculatedDraft == draft, let report = model.report,
+              report.input.id == calculatedReportID else { return nil }
+        return report
+    }
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            if let message = model.message { Text(message).foregroundStyle(model.hasError ? .red : .secondary).accessibilityIdentifier("optionLabMessage") }
-            if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
-            dailyNavigation
-            advancedNavigation
+        GeometryReader { geometry in
             ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    if section == "数据对照", let evidence = model.evidence { OptionEvidenceContent(model: evidence) }
-                    else if section == "组合风险", let portfolio = model.portfolioGreeks { PortfolioGreeksContent(model: portfolio) }
-                    else if section == "期权链", let chain = model.chain {
-                        OptionChainContent(model: chain, history: model.history) { imported, stillCurrent in
-                            let session = visibleSession, navigation = navigationEpoch
-                            guard section == "期权链", stillCurrent(), !Task.isCancelled else { throw CancellationError() }
-                            try await model.prepareChainDraft(imported)
-                            guard visibleSession == session, navigationEpoch == navigation,
-                                  section == "期权链", stillCurrent(), !Task.isCancelled else { return }
-                            draft = imported; ledgerCandidate = nil
-                            inputError = nil; section = "输入"
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        header
+                        if section == "输入" {
+                            referenceWorkspace(wide: geometry.size.width >= 1120)
+                        } else {
+                            dailyNavigation
+                            if model.message != nil || inputError != nil { statusMessages }
+                            sectionContent
+                            advancedNavigation
                         }
                     }
-                    else if section == "波动率历史", let history = model.history { OptionHistoryContent(model: history) }
-                    else if section == "期权归档", let transfer = model.transfer { OptionArchiveTransferContent(model: transfer) }
-                    else if section == "输入" { editor }
-                    else if section == "已保存" { history }
-                    else if section == "结果" { dailyResults }
-                    else if let report = model.report {
-                        if section == "模型分析" { pricingAnalysis(report) }
-                        else if section == "风险与情景" { riskAndScenarioAnalysis(report) }
-                        else { result(report) }
-                    }
-                    else {
-                        ContentUnavailableView("尚无已核对计算", systemImage: "chart.xyaxis.line",
-                            description: Text("填写完整输入并计算，或显式载入合成模板。修改输入后，旧结果立即失效。"))
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
-            }.id(section)
-            .onChange(of: inputFocusRequest) { _, _ in
-                withAnimation { proxy.scrollTo(inputTarget, anchor: .top) }
+                    .frame(maxWidth: 1280, alignment: .leading)
+                    .padding(.horizontal, geometry.size.width >= 1120 ? 36 : 24)
+                    .padding(.top, 22).padding(.bottom, 20)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                }.id(section)
+                .onChange(of: inputFocusRequest) { _, _ in
+                    withAnimation { proxy.scrollTo(inputTarget, anchor: .top) }
+                }
             }
-            }
-        }.padding(28).tint(accent)
+        }.tint(accent)
+        .background(colorScheme == .dark ? Color(nsColor: .windowBackgroundColor) : Color.white)
+        .sheet(item: $tradePresentation) { presentation in
+            OptionTradeSheet(workspace: workspace, opening: presentation.opening)
+        }
         .onAppear { model.personalHistory?.appear() }
         .onChange(of: draft) { _, _ in
+            calculatedDraft = nil; calculatedReportID = nil; choosingExpiry = false
             model.draftChanged(); inputError = nil
             if checkedDraft != draft { checklist = nil; checkedDraft = nil }
             if ledgerCandidate?.capital != draft.ledgerBasis?.capital { ledgerCandidate = nil }
         }
-        .onChange(of: section) { _, _ in navigationEpoch = UUID() }
+        .onChange(of: section) { _, _ in navigationEpoch = UUID(); choosingExpiry = false }
         .onChange(of: model.ledgerSnapshot?.revision) { _, _ in
             ledgerCandidate = nil
             if model.ledgerSnapshot?.accounts.contains(where: { $0.id == ledgerAccount }) != true { ledgerAccount = "" }
@@ -126,45 +132,299 @@ struct OptionLabContent: View {
         .onChange(of: ledgerAccount) { _, _ in ledgerCandidate = nil }
         .onChange(of: ledgerSecurityID) { _, _ in ledgerCandidate = nil }
         .onChange(of: completeness) { _, _ in ledgerCandidate = nil }
-        .onDisappear { visibleSession = UUID(); preparingLedger = false; model.disappear() }
+        .onDisappear { visibleSession = UUID(); choosingExpiry = false; preparingLedger = false; tradePresentation = nil; model.disappear() }
+    }
+    @ViewBuilder private var sectionContent: some View {
+        LazyVStack(alignment: .leading, spacing: 16) {
+            if section == "数据对照", let evidence = model.evidence { OptionEvidenceContent(model: evidence) }
+            else if section == "组合风险", let portfolio = model.portfolioGreeks { PortfolioGreeksContent(model: portfolio) }
+            else if section == "期权链", let chain = model.chain {
+                OptionChainContent(model: chain, history: model.history) { imported, stillCurrent in
+                    let session = visibleSession, navigation = navigationEpoch
+                    guard section == "期权链", stillCurrent(), !Task.isCancelled else { throw CancellationError() }
+                    try await model.prepareChainDraft(imported)
+                    guard visibleSession == session, navigationEpoch == navigation,
+                          section == "期权链", stillCurrent(), !Task.isCancelled else { return }
+                    draft = imported; ledgerCandidate = nil
+                    inputError = nil; section = "输入"
+                }
+            }
+            else if section == "波动率历史", let history = model.history { OptionHistoryContent(model: history) }
+            else if section == "期权归档", let transfer = model.transfer { OptionArchiveTransferContent(model: transfer) }
+            else if section == "已保存" { history }
+            else if section == "结果" { dailyResults }
+            else if let report = model.report {
+                if section == "模型分析" { pricingAnalysis(report) }
+                else if section == "风险与情景" { riskAndScenarioAnalysis(report) }
+                else { result(report) }
+            }
+            else {
+                ContentUnavailableView("尚无已核对计算", systemImage: "chart.xyaxis.line",
+                    description: Text("填写完整输入并计算，或显式载入合成模板。修改输入后，旧结果立即失效。"))
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var header: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("期权交易").font(.system(size: 30, weight: .semibold))
-                    Text("先看能收多少，再看最多可能亏多少。")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if blocked { ProgressView().controlSize(.small) }
-                Button("新建") {
-                    model.draftChanged(); draft = .init(); ledgerCandidate = nil
-                    section = "输入"; quoteDetailsExpanded = false; pricingExpanded = false
-                    manualAssistanceMessage = nil; manualCommonTimeConfirmed = false
-                    checklist = nil; checkedDraft = nil
-                    synchronizeProtectionQuantity = false; useEnteredChartPrices = false
-                }.disabled(blocked).accessibilityIdentifier("optionLabNew")
-                Button("合成示例") {
-                    do {
-                        model.draftChanged(); draft = try .synthetic(strategy: draft.strategy)
-                        section = "输入"; quoteDetailsExpanded = false; pricingExpanded = false
-                    } catch { inputError = "合成模板未能建立，没有填入替代值。" }
-                }.disabled(blocked).accessibilityIdentifier("optionLabTemplate")
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("期权交易").font(.system(size: 28, weight: .bold))
+                Text("合约、收益与风险，一页看清。")
+                    .font(.system(size: 14)).foregroundStyle(.secondary)
             }
+            Spacer()
+            if blocked { ProgressView().controlSize(.small) }
+            Button("我的期权持仓") { tradePresentation = .init(opening: nil) }
+                .buttonStyle(OptionReferenceButtonStyle(.outline)).disabled(blocked)
+                .accessibilityIdentifier("optionTradePositions")
+            Button("载入示例") { loadExample() }
+                .buttonStyle(OptionReferenceButtonStyle(.subtle))
+                .disabled(blocked).accessibilityIdentifier("optionLabTemplate")
+            Label(saveStatus, systemImage: displayedReport != nil && model.savedID != nil ? "checkmark.circle" : "circle.dashed")
+                .font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 9)
+                .accessibilityIdentifier("optionReferenceSaveStatus")
+        }
+    }
+    private var displayedReport: OptionLabReport? { section == "输入" ? currentDraftReport : model.report }
+    private var saveStatus: String {
+        guard displayedReport != nil else { return "待计算" }
+        return model.savedID == nil ? "未保存" : "已保存"
+    }
+    private var statusMessages: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let message = model.message {
+                Text(message).foregroundStyle(model.hasError ? Color.red : Color.secondary)
+                    .accessibilityIdentifier("optionLabMessage")
+            }
+            if let inputError { Text(inputError).foregroundStyle(.red).accessibilityIdentifier("optionLabInputError") }
+        }.font(.callout)
+    }
+    private func loadExample() {
+        guard !blocked else { return }
+        do {
+            let example = try OptionLabInputDraft.synthetic(strategy: draft.strategy)
+            calculatedDraft = nil; calculatedReportID = nil
+            model.draftChanged(); draft = example; ledgerCandidate = nil
+            section = "输入"; quoteDetailsExpanded = false; pricingExpanded = false
+            checklist = nil; checkedDraft = nil
+            manualAssistanceMessage = nil; manualCommonTimeConfirmed = false
+        } catch { inputError = "合成模板未能建立，没有填入替代值。" }
+    }
+    private func resetDraft() {
+        guard !blocked else { return }
+        calculatedDraft = nil; calculatedReportID = nil
+        model.draftChanged(); draft = .init(); ledgerCandidate = nil
+        section = "输入"; quoteDetailsExpanded = false; pricingExpanded = false
+        manualAssistanceMessage = nil; manualCommonTimeConfirmed = false
+        checklist = nil; checkedDraft = nil
+        synchronizeProtectionQuantity = false; useEnteredChartPrices = false
+    }
+    private func referenceWorkspace(wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            referenceSummary(wide: wide).id("option-reference-summary")
+            compactContract(wide: wide)
+            dailyDisclosure("optionLabQuoteDetails", isExpanded: $quoteDetailsExpanded) {
+                editor.padding(.top, 14)
+            } label: {
+                HStack(spacing: 10) {
+                    Text("报价明细与高级参数").font(.system(size: 14, weight: .semibold))
+                    Text("Bid / Ask、成交深度、资金、费用").font(.system(size: 12)).foregroundStyle(.secondary)
+                }
+            }
+            referenceActions
+            if model.message != nil || inputError != nil { statusMessages }
+            VStack(alignment: .leading, spacing: 12) {
+                dailyNavigation
+                advancedNavigation
+            }
+        }
+    }
+    private func referenceSummary(wide: Bool) -> some View {
+        let report = currentDraftReport
+        let outcome = report?.conservative
+        let isPut = draft.strategy == .cashSecuredPut
+        return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Label("离线计算 · 不联网、不下单", systemImage: "desktopcomputer")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                if !advancedSections.contains(section) || section == "模型分析" || section == "风险与情景" {
-                    Button(model.savedID == nil ? "保存本次计算" : "已保存") { saveCurrentReport() }
-                        .disabled(!model.canSave || preparingLedger).accessibilityIdentifier("optionLabSave")
-                    Button("计算收益与风险") { calculate() }
-                        .buttonStyle(.borderedProminent).disabled(blocked)
-                        .keyboardShortcut("r", modifiers: [.command, .shift])
-                        .accessibilityIdentifier("optionLabCalculate")
+                Text("测算结果").font(.system(size: 19, weight: .semibold))
+                Text(draft.origin == .synthetic ? "示例数据" : "手工假设")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(accent)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(accent.opacity(0.08), in: Capsule())
+                    .accessibilityIdentifier("optionLabOrigin")
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: wide ? 4 : 2),
+                      alignment: .leading, spacing: 16) {
+                OptionReferenceMetric(title: "最大收益", value: displayMoney(outcome?.maxProfit),
+                    tone: outcome.map { $0.maxProfit.amount < 0 } == true ? .negative : .positive,
+                    accessibilityIdentifier: "optionLabMaxProfit")
+                referenceMetric(title: "最大亏损", value: displayMoney(outcome?.maxLoss),
+                    footnote: report == nil ? nil : "到期口径 · 已计费用", tone: .negative,
+                    identifier: "optionLabMaxLoss", divider: true, wide: wide)
+                referenceMetric(title: "盈亏平衡价", value: outcome.map { $0.breakEven == nil ? "不存在" : displayMoney($0.breakEven) } ?? "—",
+                    footnote: nil, identifier: "optionLabBreakEven", divider: wide, wide: wide)
+                referenceMetric(title: isPut ? "担保资金" : "净资金需求",
+                    value: displayMoney(isPut ? outcome?.nominalAssignmentPayment : outcome?.capitalRequired),
+                    footnote: isPut ? "指派名义付款；净需求见详情" : (draft.strategy == .coveredCall ? "备兑另需足额覆盖持股" : "已计费用的净需求"),
+                    identifier: "optionLabCapital", divider: true, wide: wide)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Divider()
+                if let report {
+                    Text("基于当前输入的保守成交口径，已计费用 " + displayMoney(report.conservative.totalFees) + "；不代表实际成交。")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                    if !report.conservative.canFund || !report.mid.canFund {
+                        Label("资金或覆盖持股不足，结果不表示这笔交易可执行。", systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.red).accessibilityIdentifier("optionLabFundingGap")
+                    }
+                    if report.expired { Text("合约已到期，仅供历史研究。").font(.caption).foregroundStyle(.secondary) }
+                } else {
+                    Text("填写合约后点击「重新计算」。输入变更后，旧结果立即失效。")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+    private func referenceMetric(title: String, value: String, footnote: String?,
+                                 tone: OptionReferenceMetric.Tone = .standard, identifier: String,
+                                 divider: Bool, wide: Bool) -> some View {
+        OptionReferenceMetric(title: title, value: value, footnote: footnote, tone: tone, accessibilityIdentifier: identifier)
+            .padding(.leading, divider ? (wide ? 20 : 16) : 0)
+            .overlay(alignment: .leading) {
+                if divider { Rectangle().fill(Color.primary.opacity(0.09)).frame(width: 1) }
+            }
+    }
+    /// Group the canonical decimal text for display, without a binary floating
+    /// point conversion or a second rounding policy for financial results.
+    private func displayMoney(_ value: Money?) -> String {
+        guard let value else { return "—" }
+        let raw = value.decimalString
+        let negative = raw.hasPrefix("-")
+        let unsigned = negative ? String(raw.dropFirst()) : raw
+        let parts = unsigned.split(separator: ".", omittingEmptySubsequences: false)
+        guard let integer = parts.first else { return "—" }
+        var grouped = ""
+        for (offset, character) in integer.reversed().enumerated() {
+            if offset > 0 && offset.isMultiple(of: 3) { grouped.insert(",", at: grouped.startIndex) }
+            grouped.insert(character, at: grouped.startIndex)
+        }
+        let fraction = parts.count == 2 ? "." + String(parts[1]) : ""
+        return (negative ? "−$" : "$") + grouped + fraction
+    }
+    private func compactContract(wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Text("合约参数").font(.system(size: 19, weight: .semibold))
+                Text("手动报价 · 本地计算").font(.system(size: 13)).foregroundStyle(.secondary)
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: wide ? 4 : 2),
+                      alignment: .leading, spacing: 16) {
+                OptionReferenceField("策略") {
+                    Picker("策略", selection: $draft.strategy) {
+                        ForEach(OptionLabStrategy.allCases, id: \.self) { Text(strategyName($0)).tag($0) }
+                    }.labelsHidden().pickerStyle(.menu).optionReferenceInputSurface()
+                        .accessibilityIdentifier("optionLabStrategy")
+                }
+                OptionReferenceTextField("标的代码", text: $draft.symbol, accessibilityIdentifier: "optionLabSymbol")
+                OptionReferenceField("标的类型") {
+                    Picker("标的类型", selection: $draft.asset) {
+                        Text("股票").tag(OptionLabAsset.stock); Text("ETF").tag(OptionLabAsset.etf)
+                    }.labelsHidden().pickerStyle(.menu).optionReferenceInputSurface()
+                        .accessibilityIdentifier("optionReferenceAsset")
+                }
+                OptionReferenceTextField("合约张数", text: $draft.shortLeg.quantity, accessibilityIdentifier: "optionReferenceQuantity")
+                OptionReferenceTextField("行权价", text: $draft.shortLeg.strike, unit: "USD / 股", accessibilityIdentifier: "optionReferenceStrike")
+                OptionReferenceQuoteField("标的价格", bid: $draft.underlyingBid, ask: $draft.underlyingAsk, accessibilityPrefix: "optionReferenceUnderlying")
+                OptionReferenceQuoteField("权利金", bid: $draft.shortLeg.bid, ask: $draft.shortLeg.ask, accessibilityPrefix: "optionReferencePremium")
+                compactExpiry
+            }.id(OptionDailySection.underlying.rawValue)
+            if draft.hasLongLeg {
+                dailyLegEditor("买入保护合约", $draft.longLeg).id(OptionDailySection.longLeg.rawValue)
+            }
+            Text("标准合约每张 100 股。Bid / Ask 独立填写，不用单价代替价差；价格为手工假设值。")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        }.disabled(blocked)
+    }
+    private var compactExpiry: some View {
+        OptionReferenceField("到期时间（美东）") {
+            Button {
+                guard !blocked else { return }
+                proposedExpiry = (try? LedgerCSV.timestamp(draft.settlementAt)) ?? manualSettlementAt
+                expiryDraft = draft; expirySession = visibleSession; choosingExpiry = true
+            } label: {
+                HStack {
+                    Text(expiryLabel).lineLimit(1).minimumScaleFactor(0.8)
+                    Spacer(minLength: 4)
+                    Image(systemName: "calendar").foregroundStyle(.secondary)
+                }.contentShape(Rectangle()).optionReferenceInputSurface()
+            }.buttonStyle(.plain).accessibilityIdentifier("optionReferenceExpiry")
+                .accessibilityLabel("到期时间，美东时间，" + expiryLabel)
+                .popover(isPresented: $choosingExpiry) { expirySelection }
+        }
+    }
+    private var expiryLabel: String {
+        guard let date = try? LedgerCSV.timestamp(draft.settlementAt) else {
+            return draft.settlementAt.isEmpty ? "选择到期时间" : "时间格式待修正"
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        formatter.dateFormat = "yyyy/MM/dd HH:mm"
+        return formatter.string(from: date)
+    }
+    private var expirySelection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("到期时间 · 美东").font(.headline)
+            if let zone = TimeZone(identifier: "America/New_York") {
+                DatePicker("到期时间", selection: $proposedExpiry, displayedComponents: [.date, .hourAndMinute])
+                    .environment(\.timeZone, zone).datePickerStyle(.stepperField)
+            }
+            Text("只修改到期时间；报价时间与来源依据仍需在高级参数中核对。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("取消") { choosingExpiry = false }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("应用时间") { applyExpirySelection() }
+                    .disabled(blocked || expiryDraft != draft || expirySession != visibleSession)
+            }
+        }.padding(20).frame(width: 360)
+    }
+    private func applyExpirySelection() {
+        guard !blocked, section == "输入", expiryDraft == draft, expirySession == visibleSession,
+              let zone = TimeZone(identifier: "America/New_York") else { choosingExpiry = false; return }
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX")
+        day.calendar = Calendar(identifier: .gregorian); day.timeZone = zone; day.dateFormat = "yyyy-MM-dd"
+        var changed = draft
+        changed.settlementAt = timestamp.string(from: proposedExpiry)
+        changed.expirationDate = day.string(from: proposedExpiry)
+        draft = changed; manualSettlementAt = proposedExpiry
+        manualCommonTimeConfirmed = false; manualAssistanceMessage = nil; choosingExpiry = false
+    }
+    private var referenceActions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            HStack(spacing: 10) {
+                Button("记录实际成交") { tradePresentation = .init(opening: draft) }
+                    .buttonStyle(OptionReferenceButtonStyle(.outline))
+                    .disabled(blocked || draft.origin == .synthetic)
+                    .help("带入合约，核对实际成交后记入账户；合成示例不入账。")
+                    .accessibilityIdentifier("optionTradeRecord")
+                Button("保存计算") { saveCurrentReport() }
+                    .buttonStyle(OptionReferenceButtonStyle(.outline))
+                    .disabled(currentDraftReport == nil || !model.canSave || preparingLedger)
+                    .accessibilityIdentifier("optionLabSave")
+                Button("重置") { resetDraft() }
+                    .buttonStyle(OptionReferenceButtonStyle(.subtle))
+                    .disabled(blocked).accessibilityIdentifier("optionLabNew")
+                Spacer()
+                Button { calculate() } label: {
+                    Text("重新计算").frame(minWidth: 140)
+                }.buttonStyle(OptionReferenceButtonStyle(.primary)).disabled(blocked)
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    .accessibilityIdentifier("optionLabCalculate")
+            }
+            Text("实际成交只需在这里记录一次，“我的投资”自动汇总。保存计算仅保留测算；本工具不向券商下单。")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
     private var dailyNavigation: some View {
@@ -177,9 +437,12 @@ struct OptionLabContent: View {
         // Identify the three buttons individually; a SwiftUI container ID propagates to child buttons on macOS.
     }
     private func dailyTab(_ title: String, value: String, id: String) -> some View {
-        Button { section = value } label: {
+        Button {
+            if value == "输入", let report = model.report, currentDraftReport == nil { copyToDraft(report) }
+            section = value
+        } label: {
             Text(title).font(.callout.weight(section == value ? .semibold : .regular))
-                .padding(.horizontal, 15).padding(.vertical, 8)
+                .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(section == value ? accent.opacity(0.11) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                 .foregroundStyle(section == value ? accent : Color.secondary)
         }.buttonStyle(.plain).accessibilityIdentifier(id)
@@ -213,57 +476,25 @@ struct OptionLabContent: View {
         }
     }
     private var editor: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(draft.origin == .synthetic ? "SYNTHETIC · 当前为合成示例，修改后仍是合成研究。" : "MANUAL · 当前为手工假设，报价与资金由你核对。")
-                .font(.callout).foregroundStyle(draft.origin == .synthetic ? .orange : .secondary)
-                .accessibilityIdentifier("optionLabOrigin")
+        VStack(alignment: .leading, spacing: 18) {
             dailyPreparation
-            GroupBox("合约与标的") {
-                VStack(alignment: .leading, spacing: 12) {
-                    fields {
-                        Picker("策略", selection: $draft.strategy) {
-                            ForEach(OptionLabStrategy.allCases, id: \.self) { Text(strategyName($0)).tag($0) }
-                        }.accessibilityIdentifier("optionLabStrategy")
-                        field("标的代码", $draft.symbol, id: "optionLabSymbol")
-                        Picker("标的类型", selection: $draft.asset) { Text("股票").tag(OptionLabAsset.stock); Text("ETF").tag(OptionLabAsset.etf) }
-                        if !draft.canUseManualQuoteAssistance {
-                            field("到期日（纽约 YYYY-MM-DD）", $draft.expirationDate)
-                            field("到期时刻（含时区）", $draft.settlementAt, id: "optionLabSettlementAt")
-                        }
-                        field("标的买价 Bid · USD / 股", $draft.underlyingBid)
-                        field("标的卖价 Ask · USD / 股", $draft.underlyingAsk)
-                    }
-                    Text("仅支持标准 100 股合约。到期时刻需明确填写，不能只凭日期猜测。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 6)
-            }.id(OptionDailySection.underlying.rawValue)
-            dailyLegEditor("卖出合约", $draft.shortLeg).id(OptionDailySection.shortLeg.rawValue)
-            if draft.hasLongLeg { dailyLegEditor("买入保护合约", $draft.longLeg).id(OptionDailySection.longLeg.rawValue) }
             if draft.canUseManualQuoteAssistance { manualQuoteAssistance.id(OptionDailySection.timing.rawValue) }
             capitalEditor.id(OptionDailySection.capital.rawValue)
-            dailyDisclosure("optionLabQuoteDetails", isExpanded: $quoteDetailsExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    GroupBox("共同报价与时间依据") {
-                        fields {
-                            field("评估时刻（ISO 8601，含时区）", $draft.asOf)
-                            if draft.canUseManualQuoteAssistance {
-                                field("到期日（纽约 YYYY-MM-DD）", $draft.expirationDate)
-                                field("到期时刻（含时区）", $draft.settlementAt, id: "optionLabSettlementAt")
-                            }
-                            field("报价来源／假设说明", $draft.sourceReference)
-                            field("到期时刻依据", $draft.expiryReference)
-                            field("标的报价时刻", $draft.underlyingQuotedAt)
-                            field("标的接收时刻", $draft.underlyingReceivedAt)
-                        }
-                    }
-                    legEditor("卖出腿", $draft.shortLeg, id: "optionLabShort")
-                    if draft.hasLongLeg { legEditor("买入保护腿", $draft.longLeg, id: "optionLabLong") }
-                    Text("这些字段用于检查同一时刻的报价与合法合约；缺失时计算仍会拒绝。手工来源不代表实时或历史数据资格。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(.top, 10)
-            } label: {
-                Label("报价与时间依据 · 计算前需完整", systemImage: "checkmark.shield")
+            GroupBox("共同报价与时间依据") {
+                fields {
+                    field("评估时刻（ISO 8601，含时区）", $draft.asOf)
+                    field("到期日（纽约 YYYY-MM-DD）", $draft.expirationDate)
+                    field("到期时刻（含时区）", $draft.settlementAt, id: "optionLabSettlementAt")
+                    field("报价来源／假设说明", $draft.sourceReference)
+                    field("到期时刻依据", $draft.expiryReference)
+                    field("标的报价时刻", $draft.underlyingQuotedAt)
+                    field("标的接收时刻", $draft.underlyingReceivedAt)
+                }
             }.id("option-detailed-quotes")
+            legEditor("卖出腿", $draft.shortLeg, id: "optionLabShort").id(OptionDailySection.shortLeg.rawValue)
+            if draft.hasLongLeg { legEditor("买入保护腿", $draft.longLeg, id: "optionLabLong") }
+            Text("完整输入继续用于检查同一时刻的报价与合法合约；缺失时拒绝计算。手工来源不代表实时或历史数据资格。")
+                .font(.caption).foregroundStyle(.secondary)
             dailyDisclosure("optionLabPricingDetails", isExpanded: $pricingExpanded) {
                 pricingEditor.padding(.top, 10)
             } label: {
@@ -342,6 +573,7 @@ struct OptionLabContent: View {
         }
     }
     private func focusInput(_ target: OptionDailySection) {
+        quoteDetailsExpanded = true
         switch target {
         case .timing:
             if !draft.canUseManualQuoteAssistance { quoteDetailsExpanded = true }
@@ -805,7 +1037,7 @@ struct OptionLabContent: View {
                     Button("查看 IV / Greeks 与分布详情") { section = "模型分析"; advancedToolsExpanded = true }
                         .accessibilityIdentifier("optionLabShowPricing")
                 } else {
-                    Button("补充模型假设") { copyToDraft(report); pricingExpanded = true }
+                    Button("补充模型假设") { copyToDraft(report); focusInput(.pricing) }
                         .accessibilityIdentifier("optionLabConfigurePricing")
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
@@ -1273,6 +1505,7 @@ struct OptionLabContent: View {
                         }
                         Spacer()
                         Button("重算并打开") {
+                            calculatedDraft = nil; calculatedReportID = nil; choosingExpiry = false
                             let session = visibleSession, navigation = navigationEpoch
                             Task {
                                 guard visibleSession == session, navigationEpoch == navigation else { return }
@@ -1290,6 +1523,7 @@ struct OptionLabContent: View {
         }
     }
     private func copyToDraft(_ report: OptionLabReport) {
+        calculatedDraft = nil; calculatedReportID = nil; choosingExpiry = false
         var value = OptionLabInputDraft(input: report.input)
         if let basis = model.reportLedgerBasis { try? value.useLedgerBasis(basis) }
         draft = value; model.draftChanged(); section = "输入"
@@ -1301,18 +1535,22 @@ struct OptionLabContent: View {
         synchronizeProtectionQuantity = false; useEnteredChartPrices = false
     }
     private func saveCurrentReport() {
-        guard model.canSave, !preparingLedger, let inputID = model.report?.input.id,
-              let expectedRevision = model.revision else { return }
+        guard section == "输入", let current = currentDraftReport,
+              model.canSave, !preparingLedger, let expectedRevision = model.revision else { return }
+        let inputID = current.input.id
         let session = visibleSession, navigation = navigationEpoch
         Task {
             guard visibleSession == session, navigationEpoch == navigation,
-                  model.report?.input.id == inputID, model.revision == expectedRevision else { return }
+                  currentDraftReport?.input.id == inputID, model.revision == expectedRevision else { return }
             _ = await model.save(expectedID: inputID, expectedRevision: expectedRevision)
             // The model owns publication. A completed commit after leaving does
             // not navigate, select a newer report or authorize another save.
         }
     }
     private func calculate() {
+        guard !blocked else { return }
+        calculatedDraft = nil; calculatedReportID = nil; choosingExpiry = false
+        model.draftChanged()
         do {
             let captured = draft, session = visibleSession, navigation = navigationEpoch
             let input = try captured.build(), basis = captured.ledgerBasis
@@ -1330,7 +1568,9 @@ struct OptionLabContent: View {
                     }
                     return
                 }
-                section = "结果"
+                calculatedDraft = captured; calculatedReportID = input.id
+                section = "输入"
+                inputTarget = "option-reference-summary"; inputFocusRequest = UUID()
             }
         } catch {
             section = "输入"; quoteDetailsExpanded = true; advancedAssumptionsExpanded = true

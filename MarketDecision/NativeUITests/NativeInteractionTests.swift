@@ -108,13 +108,15 @@ import XCTest
             let daily = ["输入": "optionLabInputTab", "结果": "optionLabResultTab", "已保存": "optionLabSavedTab"]
             if let id = daily[title] {
                 let button = mainWindow.buttons[id]
-                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button); button.click()
+                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+                revealOptionControl(button); button.click()
                 return
             }
             if ["数据对照", "组合风险", "期权链", "模型分析", "风险与情景", "波动率历史", "期权归档"].contains(title) {
                 let button = mainWindow.buttons["optionLabAdvanced-" + title]
                 expandDisclosure("optionLabAdvancedTools", revealing: button)
-                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button); button.click()
+                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+                revealOptionControl(button); button.click()
                 return
             }
         }
@@ -128,6 +130,39 @@ import XCTest
             XCTAssertTrue(button.waitForExistence(timeout: 5), mainWindow.debugDescription)
             button.click()
         }
+    }
+    /// The reference layout puts navigation and save actions below the editor.
+    /// Keep targets inside the option page's viewport, including expanded inputs.
+    private func revealOptionControl(_ element: XCUIElement) {
+        let scroll = mainWindow.scrollViews.firstMatch
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        func fullyVisible() -> Bool {
+            guard element.exists else { return false }
+            let viewport = scroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
+            return !element.frame.isEmpty && !viewport.isEmpty
+                && viewport.contains(element.frame) && element.isHittable
+        }
+        for _ in 0..<40 where !fullyVisible() {
+            let distance = element.exists ? scroll.frame.midY - element.frame.midY : -160
+            scroll.scroll(byDeltaX: 0, deltaY: max(-180, min(180, distance)))
+        }
+        XCTAssertTrue(fullyVisible(), "Option control must be visible before interaction: \(element.debugDescription)")
+    }
+    private func waitOptionInputSummary() {
+        // Calculation intentionally stays on the input page. The full result
+        // status is a separate, explicitly selected details view.
+        waitText("示例数据", in: mainWindow.staticTexts["optionLabOrigin"])
+        waitText("$", in: mainWindow.staticTexts["optionLabMaxProfit"])
+        waitText("未保存", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
+        XCTAssertFalse(mainWindow.staticTexts["optionLabReportStatus"].exists)
+        waitEnabled(mainWindow.buttons["optionLabSave"])
+    }
+    private func saveOptionDraftFromInput() {
+        researchTab("输入")
+        let button = mainWindow.buttons["optionLabSave"]
+        XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+        revealOptionControl(button); button.click(); waitEnabled(button, false)
+        waitText("已保存", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
     }
     private func waitText(_ text: String, in element: XCUIElement) {
         // AppKit static text may expose its contents as AXValue, not AXTitle.
@@ -314,13 +349,13 @@ import XCTest
     func testLedgerPreviewCancelCommitAndPageReopenStayLocal() {
         configure(); launchMainWindow()
         navigateInvestmentSection("交易记录")
-        let identifier = mainWindow.textFields["ledgerAccountID"]
-        expandDisclosure("ledgerAccountDetails", revealing: identifier)
-        XCTAssertTrue(identifier.waitForExistence(timeout: 5)); waitEnabled(identifier)
-        identifier.click(); identifier.typeKey("a", modifierFlags: .command); identifier.typeText("synthetic-ledger")
         let name = mainWindow.textFields["ledgerAccountName"]
-        name.click(); name.typeText("Synthetic ledger")
+        XCTAssertTrue(name.waitForExistence(timeout: 10)); waitEnabled(name)
+        XCTAssertFalse(mainWindow.textFields["ledgerAccountID"].exists)
+        XCTAssertFalse(mainWindow.descendants(matching: .any)["ledgerSections"].firstMatch.exists)
         let create = mainWindow.buttons["ledgerCreateAccount"]
+        XCTAssertFalse(create.isEnabled)
+        name.click(); name.typeText("Synthetic ledger")
         waitEnabled(create); create.click()
         let cash = mainWindow.staticTexts["ledgerCash"]
         waitText("0 USD", in: cash)
@@ -382,8 +417,10 @@ import XCTest
         clearText.click(); clearText.typeText("确认"); waitEnabled(clearCommit); clearCommit.click()
         waitAbsent(archiveSheet)
         researchTab("现金与批次")
-        expandDisclosure("ledgerAccountDetails", revealing: mainWindow.textFields["ledgerAccountID"])
-        XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 5))
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertFalse(mainWindow.textFields["ledgerAccountID"].exists)
+        XCTAssertFalse(mainWindow.descendants(matching: .any)["ledgerSections"].firstMatch.exists)
+        XCTAssertFalse(create.isEnabled)
         XCTAssertFalse(cash.exists)
     }
     func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
@@ -596,17 +633,18 @@ import XCTest
         let short = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionChainShort-")).firstMatch
         reveal(short, delta: -80); short.click()
         reveal(handoff, delta: 80); waitEnabled(handoff); handoff.click()
-        waitText("SYNTHETIC", in: mainWindow.staticTexts["optionLabOrigin"])
+        waitText("示例数据", in: mainWindow.staticTexts["optionLabOrigin"])
         let symbol = mainWindow.textFields["optionLabSymbol"]
         XCTAssertTrue(symbol.waitForExistence(timeout: 5))
         XCTAssertFalse((symbol.value as? String ?? "").isEmpty)
         let settlement = mainWindow.textFields["optionLabSettlementAt"]
+        expandDisclosure("optionLabQuoteDetails", revealing: settlement)
         reveal(settlement, delta: -80)
         XCTAssertEqual(settlement.value as? String, "") // No inferred 16:00 settlement.
         let saveExperiment = mainWindow.buttons["optionLabSave"]
         XCTAssertFalse(saveExperiment.isEnabled)
         let calculate = mainWindow.buttons["optionLabCalculate"]
-        waitEnabled(calculate); calculate.click()
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         XCTAssertTrue(mainWindow.staticTexts["optionLabInputError"].waitForExistence(timeout: 5))
         XCTAssertFalse(saveExperiment.isEnabled) // Missing assumptions do not produce a report.
         // No provider request, account, Keychain or file importer/exporter is invoked.
@@ -770,11 +808,13 @@ import XCTest
         let saveSnapshot = mainWindow.buttons["optionLabSave"]
         XCTAssertFalse(saveSnapshot.isEnabled)
         let calculate = mainWindow.buttons["optionLabCalculate"]
-        waitEnabled(calculate); calculate.click()
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
+        researchTab("结果")
         let status = mainWindow.staticTexts["optionLabReportStatus"]
         waitText("SYNTHETIC", in: status)
-        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
-        waitText("已按完整输入重算", in: status)
+        saveOptionDraftFromInput()
+        researchTab("结果"); waitText("已按完整输入重算", in: status)
         let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
         screenshot.name = "Options-lab-synthetic-result"; screenshot.lifetime = .keepAlways
         add(screenshot)
@@ -786,13 +826,14 @@ import XCTest
         let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
         XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
         waitText("已按完整输入重算", in: status)
-        XCTAssertFalse(saveSnapshot.isEnabled)
+        XCTAssertFalse(saveSnapshot.exists) // Saving is available only from the input page.
         let copy = mainWindow.buttons["optionLabCopy"]
         XCTAssertTrue(copy.waitForExistence(timeout: 5)); copy.click()
         // Copy already clears the saved result. Recalculate first so editing,
         // rather than the copy action, must invalidate an available result.
-        waitEnabled(calculate); calculate.click()
-        waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
+        researchTab("结果"); waitText("SYNTHETIC", in: status)
         researchTab("输入")
         let symbol = mainWindow.textFields["optionLabSymbol"]
         XCTAssertTrue(symbol.waitForExistence(timeout: 5)); symbol.click()
@@ -810,14 +851,15 @@ import XCTest
         let template = mainWindow.buttons["optionLabTemplate"]
         XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
         let assumptions = mainWindow.buttons["optionLabPricingSynthetic"]
+        expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabPricingDetails"])
         expandDisclosure("optionLabPricingDetails", revealing: assumptions)
         XCTAssertTrue(assumptions.waitForExistence(timeout: 5))
         for _ in 0..<10 where !assumptions.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
         XCTAssertTrue(assumptions.isHittable); assumptions.click()
         let calculate = mainWindow.buttons["optionLabCalculate"]
         let saveSnapshot = mainWindow.buttons["optionLabSave"]
-        waitEnabled(calculate); calculate.click()
-        waitEnabled(saveSnapshot)
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
         researchTab("模型分析")
         let status = mainWindow.staticTexts["optionLabPricingStatus"]
         waitText("SYNTHETIC", in: status)
@@ -827,8 +869,8 @@ import XCTest
         let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
         screenshot.name = "Options-pricing-synthetic-model-reference"; screenshot.lifetime = .keepAlways
         add(screenshot)
-        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
-        waitText("已按完整输入重算", in: status)
+        saveOptionDraftFromInput()
+        researchTab("模型分析"); waitText("已按完整输入重算", in: status)
         app.typeKey("1", modifierFlags: .command); app.typeKey("2", modifierFlags: .command)
         XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
         researchTab("已保存")
@@ -836,15 +878,17 @@ import XCTest
         XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
         waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
         researchTab("模型分析"); waitText("已按完整输入重算", in: status)
-        XCTAssertFalse(saveSnapshot.isEnabled)
+        XCTAssertFalse(saveSnapshot.exists)
         let copy = mainWindow.buttons["optionLabCopy"]
         for _ in 0..<10 where !copy.isHittable { mainWindow.scrollViews.firstMatch.swipeDown() }
         XCTAssertTrue(copy.isHittable); copy.click()
         // Editing must invalidate a freshly computed result, not an already-cleared copy.
-        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot); researchTab("模型分析")
-        waitText("SYNTHETIC", in: status); waitEnabled(saveSnapshot)
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
+        researchTab("模型分析"); waitText("SYNTHETIC", in: status)
         researchTab("输入")
         let rate = mainWindow.textFields["optionLabPricingRate"]
+        expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabPricingDetails"])
         // copyToDraft restores this report's enabled pricing disclosure. Do not
         // toggle it based on a lazy rate field that is merely below the viewport.
         // Section identity resets the outer viewport, but the field can still
@@ -919,6 +963,7 @@ import XCTest
         let template = mainWindow.buttons["optionLabTemplate"]
         XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
         let example = mainWindow.buttons["optionLabRiskScenarioSynthetic"]
+        expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabAdvancedAssumptions"])
         expandDisclosure("optionLabAdvancedAssumptions", revealing: example)
         XCTAssertTrue(example.waitForExistence(timeout: 5)); waitEnabled(example)
         // This action now lives below the advanced fee, ledger and scenario
@@ -936,7 +981,8 @@ import XCTest
         XCTAssertTrue(example.isHittable); example.click()
         let calculate = mainWindow.buttons["optionLabCalculate"], saveSnapshot = mainWindow.buttons["optionLabSave"]
         XCTAssertFalse(saveSnapshot.isEnabled)
-        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot)
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
         researchTab("风险与情景")
         let status = mainWindow.staticTexts["optionLabRiskScenarioStatus"]
         waitText("SYNTHETIC", in: status)
@@ -955,8 +1001,8 @@ import XCTest
             }
         }
         waitText("INSTANTANEOUS", in: mainWindow.staticTexts["optionLabScenarioBoundary"])
-        waitEnabled(saveSnapshot); saveSnapshot.click(); waitEnabled(saveSnapshot, false)
-        waitText("已按完整输入重算", in: status)
+        saveOptionDraftFromInput()
+        researchTab("风险与情景"); waitText("已按完整输入重算", in: status)
         app.typeKey("1", modifierFlags: .command); app.typeKey("2", modifierFlags: .command)
         XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
         researchTab("已保存")
@@ -964,10 +1010,11 @@ import XCTest
         XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
         waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
         researchTab("风险与情景"); waitText("已按完整输入重算", in: status)
-        XCTAssertFalse(saveSnapshot.isEnabled)
+        XCTAssertFalse(saveSnapshot.exists)
         let copy = mainWindow.buttons["optionLabCopy"]
         XCTAssertTrue(copy.waitForExistence(timeout: 5)); XCTAssertTrue(copy.isHittable); copy.click()
-        waitEnabled(calculate); calculate.click(); waitEnabled(saveSnapshot)
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
+        waitOptionInputSummary()
         researchTab("风险与情景"); waitText("SYNTHETIC", in: status)
         researchTab("输入")
         let symbol = mainWindow.textFields["optionLabSymbol"]
