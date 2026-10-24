@@ -87,6 +87,9 @@ struct LedgerWorkspaceContent: View {
     @State private var fileTask: Task<Void, Never>?
     @State private var visible = false
     @State private var fileMessage: String?
+    @State private var pageSession = UUID()
+    @State private var accountCreation: UUID?
+    @Environment(\.colorScheme) private var colorScheme
 
     init(model: LedgerWorkspaceModel, initialSection: String = "现金与批次", onContinueToCalculation: ((String?) -> Void)? = nil) {
         self.model = model; _section = State(initialValue: initialSection)
@@ -118,15 +121,23 @@ struct LedgerWorkspaceContent: View {
     private var selectableLots: [LedgerLot] {
         (model.snapshot?.state.lots ?? []).filter { $0.accountID == model.selectedAccountID && (showClosedLots || !$0.isClosed) }
     }
-    private var busy: Bool { model.isBusy || fileFlow.isBusy }
+    private var busy: Bool { model.isBusy || fileFlow.isBusy || accountCreation != nil }
+    private var accountAccent: Color {
+        colorScheme == .dark ? Color(red: 0.38, green: 0.78, blue: 0.72) : Color(red: 0.06, green: 0.43, blue: 0.41)
+    }
+    private var canCreateAccount: Bool {
+        !busy && model.snapshot != nil && !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !accountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     // Keep the view and modifier groups in separate expressions for the Swift 6.1 compiler.
     var body: some View {
         draftObservedContent
-        .onAppear { visible = true; accountExpanded = model.snapshot?.accounts.isEmpty != false }
+        .onAppear { visible = true; pageSession = UUID(); accountExpanded = model.snapshot?.accounts.isEmpty != false }
         .onChange(of: model.snapshot?.accounts.count) { _, _ in accountExpanded = model.snapshot?.accounts.isEmpty != false }
         .onDisappear {
-            visible = false; fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); approval = nil
+            visible = false; pageSession = UUID(); accountCreation = nil
+            fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); approval = nil
             model.disappear()
         }
     }
@@ -149,6 +160,7 @@ struct LedgerWorkspaceContent: View {
     private var workspaceObservedContent: some View {
         filePresentationContent
         .onChange(of: model.transferEpoch) { _, _ in
+            accountCreation = nil; resetAccountDraft()
             fileTask?.cancel(); fileTask = nil; fileFlow.dismiss(); importing = false; approval = nil
             staged = []; correctionID = ""; reversalBatchID = ""; form = Self.newManualDraft()
             csvText = ""; selectedCSVBytes = nil; selectedCSVDisplayBytes = nil; parsedHeaders = []; excludedRows = []
@@ -183,7 +195,79 @@ struct LedgerWorkspaceContent: View {
         } onCancellation: { finishFile(.cancelled, request: fileRequest) }
     }
 
-    private var workspaceContent: some View {
+    @ViewBuilder private var workspaceContent: some View {
+        // Recovery must remain mounted while its coordinator temporarily clears
+        // the snapshot. A failed read is never evidence of an empty ledger.
+        if section == "导出与备份" {
+            ledgerContent
+        } else if let snapshot = model.snapshot {
+            if snapshot.accounts.isEmpty { firstAccountContent }
+            else { ledgerContent }
+        } else { unavailableLedgerContent }
+    }
+
+    private var firstAccountContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Image(systemName: "book.closed").font(.system(size: 24, weight: .medium))
+                        .foregroundStyle(accountAccent).accessibilityHidden(true)
+                    Text("建立你的投资账户").font(.system(size: 26, weight: .bold)).accessibilityAddTraits(.isHeader)
+                    Text("起个名字，就可以开始记录交易。").font(.callout).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("账户名称").font(.callout.weight(.medium))
+                    TextField("例如：我的美股账户", text: $accountName)
+                        .textFieldStyle(.roundedBorder).controlSize(.large)
+                        .accessibilityLabel("账户名称").accessibilityIdentifier("ledgerAccountName")
+                        .disabled(busy)
+                    Text("本地记账 · 美元 USD · 无需连接券商")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button { createAccount() } label: {
+                    Text(accountCreation == nil ? "建立账户" : "正在建立…")
+                        .frame(maxWidth: .infinity).padding(.vertical, 4)
+                }.buttonStyle(.borderedProminent).tint(accountAccent).controlSize(.large)
+                    .disabled(!canCreateAccount).accessibilityIdentifier("ledgerCreateAccount")
+                if let message = model.message, model.hasError {
+                    Text(message).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("ledgerMessage")
+                    Button("重新载入") { Task { await model.load() } }.disabled(busy)
+                        .accessibilityIdentifier("ledgerReload")
+                }
+                DisclosureGroup("高级设置", isExpanded: $accountDetailsExpanded) {
+                    accountCostMethod.padding(.top, 8)
+                }.font(.callout).foregroundStyle(.secondary).disabled(busy)
+                    .accessibilityIdentifier("ledgerAccountDetails")
+                if model.transfer != nil {
+                    Button("已有账本备份？从备份恢复") { section = "导出与备份" }
+                        .buttonStyle(.plain).font(.callout).foregroundStyle(accountAccent).disabled(busy)
+                        .accessibilityIdentifier("ledgerSetupRestore")
+                }
+            }
+            .padding(28).frame(maxWidth: 440, alignment: .leading)
+            .background(.background, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.08)))
+            .frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.vertical, 32)
+        }.accessibilityIdentifier("ledgerAccountSetup")
+    }
+
+    private var unavailableLedgerContent: some View {
+        VStack(spacing: 16) {
+            if model.hasError {
+                ContentUnavailableView("暂时无法读取账户", systemImage: "book.closed",
+                    description: Text(model.message ?? "已有记录保留，请重新载入。"))
+                Button("重新载入") { Task { await model.load() } }.disabled(busy)
+                    .accessibilityIdentifier("ledgerReload")
+                if model.transfer != nil {
+                    Button("从账本备份恢复") { section = "导出与备份" }.disabled(busy)
+                        .accessibilityIdentifier("ledgerSetupRestore")
+                }
+            } else { ProgressView("正在读取本地账户…") }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
+    }
+
+    private var ledgerContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
@@ -191,7 +275,10 @@ struct LedgerWorkspaceContent: View {
                     Text("本地 USD 账户 · 先预览再入账 · 事件可追溯").foregroundStyle(.secondary)
                 }
                 Spacer()
-                if let onContinueToCalculation {
+                if model.snapshot?.accounts.isEmpty == true {
+                    Button("返回建立账户") { section = "现金与批次" }.disabled(busy)
+                        .accessibilityIdentifier("ledgerBackToSetup")
+                } else if let onContinueToCalculation {
                     Button("用已入账记录继续核算") { onContinueToCalculation(model.selectedAccountID) }
                         .disabled(busy || model.selectedAccountID == nil || model.preview != nil)
                         .accessibilityIdentifier("ledgerContinueCalculation")
@@ -203,7 +290,7 @@ struct LedgerWorkspaceContent: View {
             Label("记录先预览、确认后入账。出入金不计利润，权利金收入不等于已实现盈亏。", systemImage: "info.circle")
                 .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-            accountSection
+            if model.snapshot?.accounts.isEmpty == false { accountSection }
             if model.isBusy { ProgressView("正在校验本地账本…").controlSize(.small) }
             if let message = model.message {
                 Text(message).font(.callout).foregroundStyle(model.hasError ? Color.red : Color.secondary)
@@ -242,16 +329,10 @@ struct LedgerWorkspaceContent: View {
                         Text("USD").foregroundStyle(.secondary)
                     }
                 }
-                DisclosureGroup(model.snapshot?.accounts.isEmpty == true ? "建立第一个本地账户" : "新增本地账户", isExpanded: $accountExpanded) {
+                DisclosureGroup("新增本地账户", isExpanded: $accountExpanded) {
                     HStack {
                         TextField("账户名称", text: $accountName).textFieldStyle(.roundedBorder).accessibilityIdentifier("ledgerAccountName")
-                        Button("建立账户") {
-                            let account = LedgerAccount(id: accountID, name: accountName, costBasisMethod: basisMethod)
-                            Task {
-                                await model.createAccount(account)
-                                if !model.hasError { accountName = ""; accountID = "local-" + UUID().uuidString }
-                            }
-                        }.disabled(busy || model.snapshot == nil || accountID.isEmpty || accountName.isEmpty)
+                        Button("建立账户") { createAccount() }.disabled(!canCreateAccount)
                             .accessibilityIdentifier("ledgerCreateAccount")
                     }.disabled(busy).padding(.top, 8)
                     Button { accountDetailsExpanded.toggle() } label: {
@@ -265,15 +346,45 @@ struct LedgerWorkspaceContent: View {
                         .accessibilityValue(accountDetailsExpanded ? "已展开" : "已收起")
                     if accountDetailsExpanded {
                         TextField("账户标识", text: $accountID).textFieldStyle(.roundedBorder).accessibilityIdentifier("ledgerAccountID")
-                        Picker("成本方法", selection: $basisMethod) {
-                            Text("FIFO（先买先卖）").tag(LedgerCostBasisMethod.fifo)
-                            Text("指定批次").tag(LedgerCostBasisMethod.specificLot)
-                        }
+                        accountCostMethod
                     }
                     Text("默认使用 FIFO。账户标识自动生成；有交易后成本方法锁定。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(8)
+        }
+    }
+
+    private var accountCostMethod: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("成本方法", selection: $basisMethod) {
+                Text("先买先卖（默认）").tag(LedgerCostBasisMethod.fifo)
+                Text("指定批次").tag(LedgerCostBasisMethod.specificLot)
+            }.accessibilityIdentifier("ledgerAccountCostMethod")
+            Text("用于卖出时匹配买入成本；有交易后锁定。").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func resetAccountDraft() {
+        accountName = ""; accountID = "local-" + UUID().uuidString
+        basisMethod = .fifo; accountDetailsExpanded = false
+    }
+
+    private func createAccount() {
+        guard visible, canCreateAccount else { return }
+        let account = LedgerAccount(id: accountID, name: accountName.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    costBasisMethod: basisMethod)
+        let session = pageSession, epoch = model.transferEpoch, request = UUID()
+        accountCreation = request
+        Task {
+            defer { if accountCreation == request { accountCreation = nil } }
+            guard visible, pageSession == session, model.transferEpoch == epoch,
+                  accountCreation == request, !Task.isCancelled else { return }
+            await model.createAccount(account)
+            guard visible, pageSession == session, model.transferEpoch == epoch,
+                  accountCreation == request, !Task.isCancelled, !model.hasError,
+                  model.snapshot?.accounts.contains(account) == true else { return }
+            resetAccountDraft(); accountExpanded = false
         }
     }
 

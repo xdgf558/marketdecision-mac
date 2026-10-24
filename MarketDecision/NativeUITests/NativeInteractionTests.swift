@@ -314,13 +314,13 @@ import XCTest
     func testLedgerPreviewCancelCommitAndPageReopenStayLocal() {
         configure(); launchMainWindow()
         navigateInvestmentSection("交易记录")
-        let identifier = mainWindow.textFields["ledgerAccountID"]
-        expandDisclosure("ledgerAccountDetails", revealing: identifier)
-        XCTAssertTrue(identifier.waitForExistence(timeout: 5)); waitEnabled(identifier)
-        identifier.click(); identifier.typeKey("a", modifierFlags: .command); identifier.typeText("synthetic-ledger")
         let name = mainWindow.textFields["ledgerAccountName"]
-        name.click(); name.typeText("Synthetic ledger")
+        XCTAssertTrue(name.waitForExistence(timeout: 10)); waitEnabled(name)
+        XCTAssertFalse(mainWindow.textFields["ledgerAccountID"].exists)
+        XCTAssertFalse(mainWindow.descendants(matching: .any)["ledgerSections"].firstMatch.exists)
         let create = mainWindow.buttons["ledgerCreateAccount"]
+        XCTAssertFalse(create.isEnabled)
+        name.click(); name.typeText("Synthetic ledger")
         waitEnabled(create); create.click()
         let cash = mainWindow.staticTexts["ledgerCash"]
         waitText("0 USD", in: cash)
@@ -382,8 +382,10 @@ import XCTest
         clearText.click(); clearText.typeText("确认"); waitEnabled(clearCommit); clearCommit.click()
         waitAbsent(archiveSheet)
         researchTab("现金与批次")
-        expandDisclosure("ledgerAccountDetails", revealing: mainWindow.textFields["ledgerAccountID"])
-        XCTAssertTrue(mainWindow.textFields["ledgerAccountID"].waitForExistence(timeout: 5))
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertFalse(mainWindow.textFields["ledgerAccountID"].exists)
+        XCTAssertFalse(mainWindow.descendants(matching: .any)["ledgerSections"].firstMatch.exists)
+        XCTAssertFalse(create.isEnabled)
         XCTAssertFalse(cash.exists)
     }
     func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
