@@ -213,7 +213,7 @@ struct LedgerWorkspaceContent: View {
                     Image(systemName: "book.closed").font(.system(size: 24, weight: .medium))
                         .foregroundStyle(accountAccent).accessibilityHidden(true)
                     Text("建立你的投资账户").font(.system(size: 26, weight: .bold)).accessibilityAddTraits(.isHeader)
-                    Text("起个名字，就可以开始记录交易。").font(.callout).foregroundStyle(.secondary)
+                    Text("起个名字。期权页确认成交后，持仓与已实现盈亏会自动汇总。").font(.callout).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("账户名称").font(.callout.weight(.medium))

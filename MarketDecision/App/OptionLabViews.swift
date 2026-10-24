@@ -14,7 +14,7 @@ struct OptionLabPage: View {
     @State private var attempt = UUID()
     var body: some View {
         Group {
-            if let model { OptionLabContent(model: model) }
+            if let model { OptionLabContent(model: model, workspace: workspace) }
             else if failed {
                 ContentUnavailableView("期权交易暂不可用", systemImage: "chart.xyaxis.line", description: Text("本地快照库未能打开，不显示旧计算结果。"))
                 Button("重新打开") { attempt = UUID() }
@@ -34,9 +34,16 @@ struct OptionLabPage: View {
     }
 }
 
+private struct OptionTradePresentation: Identifiable {
+    let id = UUID()
+    let opening: OptionLabInputDraft?
+}
+
 struct OptionLabContent: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var model: OptionLabWorkspaceModel
+    let workspace: WorkspaceModel
+    @State private var tradePresentation: OptionTradePresentation?
     @State private var draft = OptionLabInputDraft()
     @State private var section = "输入"
     @State private var inputError: String?
@@ -107,6 +114,9 @@ struct OptionLabContent: View {
             }
         }.tint(accent)
         .background(colorScheme == .dark ? Color(nsColor: .windowBackgroundColor) : Color.white)
+        .sheet(item: $tradePresentation) { presentation in
+            OptionTradeSheet(workspace: workspace, opening: presentation.opening)
+        }
         .onAppear { model.personalHistory?.appear() }
         .onChange(of: draft) { _, _ in
             calculatedDraft = nil; calculatedReportID = nil; choosingExpiry = false
@@ -122,7 +132,7 @@ struct OptionLabContent: View {
         .onChange(of: ledgerAccount) { _, _ in ledgerCandidate = nil }
         .onChange(of: ledgerSecurityID) { _, _ in ledgerCandidate = nil }
         .onChange(of: completeness) { _, _ in ledgerCandidate = nil }
-        .onDisappear { visibleSession = UUID(); choosingExpiry = false; preparingLedger = false; model.disappear() }
+        .onDisappear { visibleSession = UUID(); choosingExpiry = false; preparingLedger = false; tradePresentation = nil; model.disappear() }
     }
     @ViewBuilder private var sectionContent: some View {
         LazyVStack(alignment: .leading, spacing: 16) {
@@ -163,6 +173,9 @@ struct OptionLabContent: View {
             }
             Spacer()
             if blocked { ProgressView().controlSize(.small) }
+            Button("我的期权持仓") { tradePresentation = .init(opening: nil) }
+                .buttonStyle(OptionReferenceButtonStyle(.outline)).disabled(blocked)
+                .accessibilityIdentifier("optionTradePositions")
             Button("载入示例") { loadExample() }
                 .buttonStyle(OptionReferenceButtonStyle(.subtle))
                 .disabled(blocked).accessibilityIdentifier("optionLabTemplate")
@@ -391,6 +404,11 @@ struct OptionLabContent: View {
         VStack(alignment: .leading, spacing: 10) {
             Divider()
             HStack(spacing: 10) {
+                Button("记录实际成交") { tradePresentation = .init(opening: draft) }
+                    .buttonStyle(OptionReferenceButtonStyle(.outline))
+                    .disabled(blocked || draft.origin == .synthetic)
+                    .help("带入合约，核对实际成交后记入账户；合成示例不入账。")
+                    .accessibilityIdentifier("optionTradeRecord")
                 Button("保存计算") { saveCurrentReport() }
                     .buttonStyle(OptionReferenceButtonStyle(.outline))
                     .disabled(currentDraftReport == nil || !model.canSave || preparingLedger)
@@ -405,7 +423,7 @@ struct OptionLabContent: View {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .accessibilityIdentifier("optionLabCalculate")
             }
-            Text("输入变更后请重新计算。本工具不执行交易；来源、资金与费用在高级参数中核对。")
+            Text("实际成交只需在这里记录一次，“我的投资”自动汇总。保存计算仅保留测算；本工具不向券商下单。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
