@@ -253,6 +253,11 @@ import XCTest
     }
     private func navigateInvestmentSection(_ section: String) {
         selectPage("pageInvestments")
+        let id = section == "收益分析" ? "pagePortfolio" : "pageLedger"
+        let title = section == "收益分析" ? "收益、估值证据与历史报告" : "交易账本"
+        openInvestmentTool(id, title: title)
+    }
+    private func openInvestmentTool(_ id: String, title: String) {
         let tools = mainWindow.descendants(matching: .any)["investmentAdvanced"].firstMatch
         let scroll = mainWindow.scrollViews.firstMatch
         func toolsFullyVisible() -> Bool {
@@ -264,8 +269,6 @@ import XCTest
         XCTAssertTrue(tools.waitForExistence(timeout: 10))
         XCTAssertTrue(toolsFullyVisible() && tools.isHittable, mainWindow.debugDescription)
         tools.click()
-        let id = section == "收益分析" ? "pagePortfolio" : "pageLedger"
-        let title = section == "收益分析" ? "收益、估值证据与历史报告" : "交易账本"
         let item = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@", id, title)).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 5)); item.click()
         XCTAssertTrue(mainWindow.waitForExistence(timeout: 15))
@@ -506,8 +509,7 @@ import XCTest
         XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
         // Preview only: no clipboard mutation, browser launch, file panel or post.
         sharing.buttons["完成"].click(); waitAbsent(sharing)
-        let again = mainWindow.buttons["investmentStartCalculation"]
-        waitEnabled(again); again.click()
+        openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]
         XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
         XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))

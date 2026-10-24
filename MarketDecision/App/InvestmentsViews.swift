@@ -121,6 +121,15 @@ private struct InvestmentsContent: View {
                     Text("本地记录 · USD · 缺失数据保留空缺").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Menu {
+                        if model.context?.ledger.accounts.isEmpty == false {
+                            Button("其他记账") { showDetail(.ledger("手工录入")) }
+                                .disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
+                        }
+                        Button("导入交易") { showDetail(.ledger("CSV 导入")) }
+                            .disabled(model.isBusy).accessibilityIdentifier("investmentImport")
+                        Button("补齐数据并核算") { showCalculation() }.disabled(!model.canPrepare)
+                            .accessibilityIdentifier("investmentStartCalculation")
+                        Divider()
                         Button("交易账本") { showDetail(.ledger("现金与批次")) }.accessibilityIdentifier("pageLedger")
                         Button("收益、估值证据与历史报告") { showDetail(.portfolio) }.accessibilityIdentifier("pagePortfolio")
                         Button("账本导出与备份") { showDetail(.ledger("导出与备份")) }
@@ -148,13 +157,9 @@ private struct InvestmentsContent: View {
                 Spacer(minLength: 0)
                 Button { requestReload(account: model.selectedAccountID) } label: { Image(systemName: "arrow.clockwise") }.help("重新读取本地账本与报告").disabled(model.isBusy)
             }
-            HStack(spacing: 14) {
-                Button(model.context?.ledger.accounts.isEmpty == true ? "建立账户" : "其他记账") { showDetail(.ledger("手工录入")) }
+            if model.context?.ledger.accounts.isEmpty == true {
+                Button("建立账户") { showDetail(.ledger("手工录入")) }
                     .buttonStyle(.borderedProminent).tint(accent).controlSize(.regular).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
-                Button("导入交易") { showDetail(.ledger("CSV 导入")) }.buttonStyle(.plain).foregroundStyle(accent).disabled(model.isBusy).accessibilityIdentifier("investmentImport")
-                Button("补齐数据并核算") { showCalculation() }.disabled(!model.canPrepare)
-                    .accessibilityIdentifier("investmentStartCalculation")
-                Spacer()
             }
             Text("期权成交在“期权交易”中确认，持仓与已实现盈亏自动汇总到这里，无需重复填写。")
                 .font(.callout).foregroundStyle(.secondary)
@@ -216,12 +221,10 @@ private struct InvestmentsContent: View {
                 if model.savedReport?.isCurrentLedger == false {
                     Text("这是历史账本报告；新记账已更新上方汇总，尚未计入这份冻结报告。")
                         .foregroundStyle(.orange).font(.callout)
-                    Button("复用资料，核算新账本") { showCalculation() }.disabled(!model.canPrepare)
                 }
             } else {
-                Text("如需区间净盈亏和浮动盈亏，请补齐估值与现金流资料并核算；不影响上方已实现盈亏和当前持仓。")
+                Text("尚无区间报告，不影响上方已实现盈亏和当前持仓的自动汇总。区间净盈亏与浮动盈亏属于高级核算，需要额外的估值和现金流资料。")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button("补齐数据并核算") { showCalculation() }.foregroundStyle(accent).disabled(!model.canPrepare).accessibilityIdentifier("investmentPrepareReturn")
             }
         }
     }
