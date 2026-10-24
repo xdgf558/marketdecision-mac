@@ -16,8 +16,8 @@ struct OptionReferenceField<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.system(size: 14)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 13)).foregroundStyle(.secondary)
             content
             if let hint {
                 Text(hint).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -48,18 +48,18 @@ struct OptionReferenceTextField: View {
         OptionReferenceField(title, hint: hint) {
             HStack(spacing: 0) {
                 identifiedInput
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity)
                 if let unit {
                     Rectangle().fill(Color.primary.opacity(0.10)).frame(width: 1)
-                    Text(unit).font(.system(size: 13)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
+                    Text(unit).font(.system(size: 12)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
                         .frame(maxHeight: .infinity)
                         .background(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.025))
                         .accessibilityHidden(true)
                 }
             }
-            .frame(height: 42)
+            .frame(height: 36)
             .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -72,7 +72,7 @@ struct OptionReferenceTextField: View {
     private var input: some View {
         TextField(title, text: $text)
             .textFieldStyle(.plain)
-            .font(.system(size: 16))
+            .font(.system(size: 14))
             .accessibilityLabel(unit.map { "\(title)，\($0)" } ?? title)
     }
 
@@ -90,9 +90,9 @@ struct OptionReferenceInputSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .font(.system(size: 16))
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+            .font(.system(size: 14))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
             .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -124,7 +124,7 @@ struct OptionReferenceQuoteField: View {
                 Text("Bid").font(.system(size: 11)).foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 TextField("Bid", text: $bid)
-                    .textFieldStyle(.plain).font(.system(size: 15))
+                    .textFieldStyle(.plain).font(.system(size: 14))
                     .accessibilityLabel("\(title) Bid，USD 每股")
                     .accessibilityIdentifier(accessibilityPrefix + "Bid")
                 Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 1, height: 18)
@@ -132,14 +132,14 @@ struct OptionReferenceQuoteField: View {
                 Text("Ask").font(.system(size: 11)).foregroundStyle(.secondary)
                     .accessibilityHidden(true)
                 TextField("Ask", text: $ask)
-                    .textFieldStyle(.plain).font(.system(size: 15))
+                    .textFieldStyle(.plain).font(.system(size: 14))
                     .accessibilityLabel("\(title) Ask，USD 每股")
                     .accessibilityIdentifier(accessibilityPrefix + "Ask")
-                Text("USD / 股").font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("USD / 股").font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize().accessibilityHidden(true)
             }
             .padding(.horizontal, 10)
-            .frame(height: 42)
+            .frame(height: 36)
             .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -176,20 +176,21 @@ struct OptionReferenceMetric: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
             identifiedValue
-            Text(footnote ?? " ")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityHidden(footnote == nil)
+            if let footnote {
+                Text(footnote)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var valueText: some View {
         Text(value)
-            .font(.system(size: 32, weight: .semibold).monospacedDigit())
+            .font(.system(size: 28, weight: .semibold).monospacedDigit())
             .foregroundStyle(valueColor)
             .lineLimit(1).minimumScaleFactor(0.65)
             .help(value).textSelection(.enabled)
@@ -230,10 +231,10 @@ struct OptionReferenceButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .padding(.horizontal, 22)
-            .padding(.vertical, 11)
-            .frame(minHeight: 42)
+            .font(.system(size: 14, weight: .semibold))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .frame(minHeight: 36)
             .foregroundStyle(kind == .primary ? Color.white : accent)
             .background {
                 RoundedRectangle(cornerRadius: 8).fill(background)

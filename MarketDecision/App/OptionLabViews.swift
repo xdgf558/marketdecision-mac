@@ -85,20 +85,20 @@ struct OptionLabContent: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 34) {
+                    VStack(alignment: .leading, spacing: 20) {
                         header
                         if section == "输入" {
                             referenceWorkspace(wide: geometry.size.width >= 1120)
                         } else {
                             dailyNavigation
-                            statusMessages
+                            if model.message != nil || inputError != nil { statusMessages }
                             sectionContent
                             advancedNavigation
                         }
                     }
-                    .frame(maxWidth: 1460, alignment: .leading)
-                    .padding(.horizontal, geometry.size.width >= 1120 ? 58 : 28)
-                    .padding(.top, 34).padding(.bottom, 28)
+                    .frame(maxWidth: 1280, alignment: .leading)
+                    .padding(.horizontal, geometry.size.width >= 1120 ? 36 : 24)
+                    .padding(.top, 22).padding(.bottom, 20)
                     .frame(maxWidth: .infinity, alignment: .top)
                 }.id(section)
                 .onChange(of: inputFocusRequest) { _, _ in
@@ -155,11 +155,11 @@ struct OptionLabContent: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var header: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("期权交易").font(.system(size: 34, weight: .bold))
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("期权交易").font(.system(size: 28, weight: .bold))
                 Text("合约、收益与风险，一页看清。")
-                    .font(.system(size: 16)).foregroundStyle(.secondary)
+                    .font(.system(size: 14)).foregroundStyle(.secondary)
             }
             Spacer()
             if blocked { ProgressView().controlSize(.small) }
@@ -167,7 +167,7 @@ struct OptionLabContent: View {
                 .buttonStyle(OptionReferenceButtonStyle(.subtle))
                 .disabled(blocked).accessibilityIdentifier("optionLabTemplate")
             Label(saveStatus, systemImage: displayedReport != nil && model.savedID != nil ? "checkmark.circle" : "circle.dashed")
-                .font(.system(size: 14)).foregroundStyle(.secondary).padding(.top, 12)
+                .font(.system(size: 13)).foregroundStyle(.secondary).padding(.top, 9)
                 .accessibilityIdentifier("optionReferenceSaveStatus")
         }
     }
@@ -206,20 +206,20 @@ struct OptionLabContent: View {
         synchronizeProtectionQuantity = false; useEnteredChartPrices = false
     }
     private func referenceWorkspace(wide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 32) {
+        VStack(alignment: .leading, spacing: 18) {
             referenceSummary(wide: wide).id("option-reference-summary")
             compactContract(wide: wide)
             dailyDisclosure("optionLabQuoteDetails", isExpanded: $quoteDetailsExpanded) {
-                editor.padding(.top, 22)
+                editor.padding(.top, 14)
             } label: {
-                HStack(spacing: 16) {
-                    Text("报价明细与高级参数").font(.system(size: 16, weight: .semibold))
-                    Text("Bid / Ask、成交深度、资金、费用").font(.system(size: 13)).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Text("报价明细与高级参数").font(.system(size: 14, weight: .semibold))
+                    Text("Bid / Ask、成交深度、资金、费用").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
             }
             referenceActions
-            statusMessages
-            VStack(alignment: .leading, spacing: 18) {
+            if model.message != nil || inputError != nil { statusMessages }
+            VStack(alignment: .leading, spacing: 12) {
                 dailyNavigation
                 advancedNavigation
             }
@@ -229,17 +229,17 @@ struct OptionLabContent: View {
         let report = currentDraftReport
         let outcome = report?.conservative
         let isPut = draft.strategy == .cashSecuredPut
-        return VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 16) {
-                Text("测算结果").font(.system(size: 23, weight: .semibold))
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Text("测算结果").font(.system(size: 19, weight: .semibold))
                 Text(draft.origin == .synthetic ? "示例数据" : "手工假设")
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(accent)
-                    .padding(.horizontal, 14).padding(.vertical, 5)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
                     .background(accent.opacity(0.08), in: Capsule())
                     .accessibilityIdentifier("optionLabOrigin")
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 24, alignment: .leading), count: wide ? 4 : 2),
-                      alignment: .leading, spacing: 24) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: wide ? 4 : 2),
+                      alignment: .leading, spacing: 16) {
                 OptionReferenceMetric(title: "最大收益", value: displayMoney(outcome?.maxProfit),
                     tone: outcome.map { $0.maxProfit.amount < 0 } == true ? .negative : .positive,
                     accessibilityIdentifier: "optionLabMaxProfit")
@@ -253,7 +253,7 @@ struct OptionLabContent: View {
                     footnote: isPut ? "指派名义付款；净需求见详情" : (draft.strategy == .coveredCall ? "备兑另需足额覆盖持股" : "已计费用的净需求"),
                     identifier: "optionLabCapital", divider: true, wide: wide)
             }
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 Divider()
                 if let report {
                     Text("基于当前输入的保守成交口径，已计费用 " + displayMoney(report.conservative.totalFees) + "；不代表实际成交。")
@@ -274,7 +274,7 @@ struct OptionLabContent: View {
                                  tone: OptionReferenceMetric.Tone = .standard, identifier: String,
                                  divider: Bool, wide: Bool) -> some View {
         OptionReferenceMetric(title: title, value: value, footnote: footnote, tone: tone, accessibilityIdentifier: identifier)
-            .padding(.leading, divider ? (wide ? 30 : 22) : 0)
+            .padding(.leading, divider ? (wide ? 20 : 16) : 0)
             .overlay(alignment: .leading) {
                 if divider { Rectangle().fill(Color.primary.opacity(0.09)).frame(width: 1) }
             }
@@ -297,13 +297,13 @@ struct OptionLabContent: View {
         return (negative ? "−$" : "$") + grouped + fraction
     }
     private func compactContract(wide: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack(spacing: 18) {
-                Text("合约参数").font(.system(size: 23, weight: .semibold))
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Text("合约参数").font(.system(size: 19, weight: .semibold))
                 Text("手动报价 · 本地计算").font(.system(size: 13)).foregroundStyle(.secondary)
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 24, alignment: .leading), count: wide ? 4 : 2),
-                      alignment: .leading, spacing: 24) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: wide ? 4 : 2),
+                      alignment: .leading, spacing: 16) {
                 OptionReferenceField("策略") {
                     Picker("策略", selection: $draft.strategy) {
                         ForEach(OptionLabStrategy.allCases, id: \.self) { Text(strategyName($0)).tag($0) }
@@ -331,7 +331,7 @@ struct OptionLabContent: View {
         }.disabled(blocked)
     }
     private var compactExpiry: some View {
-        OptionReferenceField("到期时间") {
+        OptionReferenceField("到期时间（美东）") {
             Button {
                 guard !blocked else { return }
                 proposedExpiry = (try? LedgerCSV.timestamp(draft.settlementAt)) ?? manualSettlementAt
@@ -345,8 +345,6 @@ struct OptionLabContent: View {
             }.buttonStyle(.plain).accessibilityIdentifier("optionReferenceExpiry")
                 .accessibilityLabel("到期时间，美东时间，" + expiryLabel)
                 .popover(isPresented: $choosingExpiry) { expirySelection }
-        }.overlay(alignment: .bottomLeading) {
-            Text("美东时间").font(.system(size: 11)).foregroundStyle(.secondary).offset(y: 20)
         }
     }
     private var expiryLabel: String {
@@ -390,7 +388,7 @@ struct OptionLabContent: View {
         manualCommonTimeConfirmed = false; manualAssistanceMessage = nil; choosingExpiry = false
     }
     private var referenceActions: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        VStack(alignment: .leading, spacing: 10) {
             Divider()
             HStack(spacing: 10) {
                 Button("保存计算") { saveCurrentReport() }
@@ -402,7 +400,7 @@ struct OptionLabContent: View {
                     .disabled(blocked).accessibilityIdentifier("optionLabNew")
                 Spacer()
                 Button { calculate() } label: {
-                    Text("重新计算").frame(minWidth: 160)
+                    Text("重新计算").frame(minWidth: 140)
                 }.buttonStyle(OptionReferenceButtonStyle(.primary)).disabled(blocked)
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .accessibilityIdentifier("optionLabCalculate")
@@ -426,7 +424,7 @@ struct OptionLabContent: View {
             section = value
         } label: {
             Text(title).font(.callout.weight(section == value ? .semibold : .regular))
-                .padding(.horizontal, 15).padding(.vertical, 8)
+                .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(section == value ? accent.opacity(0.11) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
                 .foregroundStyle(section == value ? accent : Color.secondary)
         }.buttonStyle(.plain).accessibilityIdentifier(id)
