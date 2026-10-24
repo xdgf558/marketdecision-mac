@@ -43,14 +43,14 @@ struct AIInsightCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
             Label {
-                Text("AI 财报解读").font(.system(size: 18, weight: .semibold))
+                Text("AI 财报解读").font(.system(size: 16, weight: .semibold))
             } icon: {
                 Image(systemName: "sparkles").foregroundStyle(Color.accentColor)
             }
             if matchesSelection, let result = model.result, let input = model.input {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("数值仍以本地计算为准。")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                     claim(result.analysis.summary, input: input)
@@ -101,8 +101,8 @@ struct AIInsightCard: View {
                 Text("本次回答仅在当前股票页面保留；切换报告或离开页面会清除。保存分析不包含 AI 回答，研究归档也不包含。取消后已发出的请求仍可能计费。")
                     .font(.caption).foregroundStyle(.secondary)
             }.font(.system(size: 12))
-        }.padding(24)
-            .frame(maxWidth: .infinity, minHeight: 340, alignment: .topLeading)
+        }.padding(16)
+            .frame(maxWidth: .infinity, minHeight: 280, alignment: .topLeading)
             .background(Color.accentColor.opacity(colorScheme == .dark ? 0.09 : 0.035),
                         in: RoundedRectangle(cornerRadius: 8))
             .accessibilityIdentifier("aiInsightCard")
@@ -115,9 +115,9 @@ struct AIInsightCard: View {
             // Hiding this card in another section must not discard the same report's answer.
     }
     private var emptyState: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 6) {
             Image(systemName: "doc.text")
-                .font(.system(size: 40, weight: .light))
+                .font(.system(size: 30, weight: .light))
                 .foregroundStyle(.tertiary).padding(.bottom, 4)
             Text(model.isBusy ? "正在生成解读" : "尚未生成解读")
                 .font(.system(size: 16, weight: .semibold))
@@ -126,10 +126,10 @@ struct AIInsightCard: View {
             Text("数值仍以本地计算为准。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
         }.multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, minHeight: 150)
+            .frame(maxWidth: .infinity, minHeight: 100)
     }
     private var analysisActions: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 8) {
             Button {
                 model.select(reportID: report.id, revision: reportRevision)
                 model.startAnalysis(report: report, revision: reportRevision, model: modelName)

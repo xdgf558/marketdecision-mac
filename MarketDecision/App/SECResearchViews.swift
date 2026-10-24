@@ -115,7 +115,7 @@ struct SECResearchContent: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 14) {
                         importControls
                         activityStatus
                         dailyTabs
@@ -128,7 +128,7 @@ struct SECResearchContent: View {
                                 .accessibilityIdentifier("stockResearchLimitations")
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }.frame(maxWidth: 1280, alignment: .leading)
-                        .padding(.horizontal, 24).padding(.top, 24).padding(.bottom, 20)
+                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 14)
                         .frame(maxWidth: .infinity, alignment: .top)
                 }
                 .onChange(of: showsConnectionSettings) { _, open in
@@ -202,12 +202,12 @@ struct SECResearchContent: View {
     }
 
     private var dailyTabs: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 16) {
             ForEach(["分析概览", "财务报告", "已保存"], id: \.self) { item in
                 Button { section = item } label: {
-                    Text(item).font(.system(size: 15, weight: section == item ? .semibold : .medium))
+                    Text(item).font(.system(size: 14, weight: section == item ? .semibold : .medium))
                         .foregroundStyle(section == item ? accent : Color.primary)
-                        .padding(.horizontal, 8).padding(.top, 4).padding(.bottom, 14)
+                        .padding(.horizontal, 6).padding(.top, 2).padding(.bottom, 10)
                         .overlay(alignment: .bottom) {
                             Rectangle().fill(section == item ? accent : Color.clear).frame(height: 3)
                         }.contentShape(Rectangle())
@@ -222,20 +222,20 @@ struct SECResearchContent: View {
     @ViewBuilder private func pageContent(wide: Bool, sidebarWidth: CGFloat) -> some View {
         if section == "分析概览" {
             if wide {
-                HStack(alignment: .top, spacing: 24) {
+                HStack(alignment: .top, spacing: 16) {
                     overviewFinancials.frame(maxWidth: .infinity, alignment: .leading)
                     overviewSidebar.frame(width: sidebarWidth)
-                        .padding(.leading, 24)
+                        .padding(.leading, 16)
                         .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1) }
                 }
             } else {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 12) {
                     overviewFinancials
                     overviewSidebar
                 }
             }
         } else {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 14) {
                 detailedContent
                 advancedPanel
             }
@@ -290,8 +290,8 @@ struct SECResearchContent: View {
                     .accessibilityIdentifier("secFinancialReportUnverified")
             }
         } else if let document = model.document {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("财务概览").font(.system(size: 23, weight: .semibold))
+            VStack(alignment: .leading, spacing: 12) {
+                Text("财务概览").font(.system(size: 20, weight: .semibold))
                 overviewNotice("财报已在本地", systemImage: "doc.text",
                     description: "点击上方“用这份财报生成分析”，查看基本面摘要；缺项将保留提示。")
                 DisclosureGroup("财报覆盖与缺项") {
@@ -308,24 +308,24 @@ struct SECResearchContent: View {
     }
 
     private var overviewSidebar: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             if let report = model.financialReport, model.canDisplayFinancialReport, let aiModel {
                 AIInsightCard(model: aiModel, report: report, reportRevision: model.financialReportRevision).id(report.id)
             } else {
-                VStack(alignment: .leading, spacing: 18) {
-                    Label("AI 财报解读", systemImage: "sparkles").font(.system(size: 18, weight: .semibold))
-                    VStack(spacing: 12) {
-                        Image(systemName: "doc.text").font(.system(size: 40, weight: .light)).foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("AI 财报解读", systemImage: "sparkles").font(.system(size: 16, weight: .semibold))
+                    VStack(spacing: 8) {
+                        Image(systemName: "doc.text").font(.system(size: 30, weight: .light)).foregroundStyle(.tertiary)
                         Text(model.canDisplayFinancialReport ? "AI 解读暂不可用" : "等待财报核对")
                             .font(.system(size: 16, weight: .semibold))
                         Text(model.canDisplayFinancialReport
                              ? "本地财务报告仍可正常查看和保存。"
                              : "先生成或重算一份本地财报分析，再手动发送摘要。")
                             .font(.system(size: 13)).foregroundStyle(.secondary)
-                    }.multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: 180)
+                    }.multilineTextAlignment(.center).frame(maxWidth: .infinity, minHeight: 112)
                     Text("AI 不会自动运行；持仓与交易记录不发送。")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     .background(accent.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
             }
             advancedPanel
@@ -333,28 +333,28 @@ struct SECResearchContent: View {
     }
 
     private var advancedPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Divider()
             Button {
                 showsAdvanced.toggle()
                 if !showsAdvanced { showsConnectionSettings = false }
             } label: {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     Image(systemName: showsAdvanced ? "chevron.down" : "chevron.right")
                         .font(.system(size: 12, weight: .medium))
-                    Text("数据来源与高级设置").font(.system(size: 15, weight: .semibold))
+                    Text("数据来源与高级设置").font(.system(size: 14, weight: .semibold))
                     Spacer(minLength: 0)
-                }.padding(.top, 6).contentShape(Rectangle())
+                }.padding(.top, 4).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("stockAdvancedDetails")
                 .accessibilityValue(showsAdvanced ? "已展开" : "已收起")
             Text("SEC 连接设置、数据来源与其他高级选项。")
-                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 22)
+                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 20)
             if showsAdvanced { advancedControls }
         }.id("stockAdvancedPanel")
     }
 
     private var advancedControls: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
             DisclosureGroup("SEC 连接设置", isExpanded: $showsConnectionSettings) {
                 StockConnectionControls(model: model, contactEmail: $contactEmail).padding(.top, 8)
             }.accessibilityIdentifier("stockConnectionSettings").id("stockConnectionPanel")
@@ -380,18 +380,18 @@ struct SECResearchContent: View {
                     Button("合成研究与自选管理", action: openDemonstration).accessibilityIdentifier("stockOpenDemo")
                 }
             }.menuStyle(.borderlessButton).fixedSize().accessibilityIdentifier("stockAdvancedTools")
-        }.font(.system(size: 13)).padding(.top, 6)
+        }.font(.system(size: 13)).padding(.top, 4)
     }
 
     private func overviewNotice(_ title: String, systemImage: String, description: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: systemImage).font(.system(size: 24)).foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage).font(.system(size: 20)).foregroundStyle(.secondary)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 17, weight: .semibold))
+                Text(title).font(.system(size: 16, weight: .semibold))
                 Text(description).font(.callout).foregroundStyle(.secondary)
             }
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
             .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
     }
     private var progressText: String {
@@ -1283,20 +1283,20 @@ private struct StockFinancialMetrics: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("财务概览").font(.system(size: 23, weight: .semibold))
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("财务概览").font(.system(size: 20, weight: .semibold))
                 Text("金额单位：USD，M 为百万").font(.system(size: 13)).foregroundStyle(.secondary)
             }
             LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
                                 GridItem(.flexible(), alignment: .leading)], alignment: .leading,
-                      spacing: 20) {
+                      spacing: 14) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    metric(row).padding(.leading, index.isMultiple(of: 2) ? 0 : 18)
-                        .padding(.trailing, index.isMultiple(of: 2) ? 18 : 0)
+                    metric(row).padding(.leading, index.isMultiple(of: 2) ? 0 : 12)
+                        .padding(.trailing, index.isMultiple(of: 2) ? 12 : 0)
                         .overlay(alignment: .trailing) {
                             if index.isMultiple(of: 2) {
-                                Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).padding(.bottom, 20)
+                                Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).padding(.bottom, 14)
                             }
                         }
                 }
@@ -1305,11 +1305,11 @@ private struct StockFinancialMetrics: View {
     }
 
     private func metric(_ row: SECFinancialOverview.Row) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(row.title).font(.system(size: 15)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(row.title).font(.system(size: 14)).foregroundStyle(.secondary)
             if let value = row.metric?.value {
                 Text(amountText(row, value: value))
-                    .font(.system(size: row.id == "revenue" || row.id == "netIncome" ? 38 : 32, weight: .semibold))
+                    .font(.system(size: row.id == "revenue" || row.id == "netIncome" ? 32 : 28, weight: .semibold))
                     .monospacedDigit().lineLimit(1).minimumScaleFactor(0.55).textSelection(.enabled)
                     .foregroundStyle(value.amount < 0 ? Color(red: 0.70, green: 0.19, blue: 0.12)
                         : (row.id == "revenue" ? accent : Color.primary))
@@ -1318,7 +1318,7 @@ private struct StockFinancialMetrics: View {
                 Text(periodText(row)).font(.system(size: 13)).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 8) {
-                    Text(missingTitle(row)).font(.system(size: 24, weight: .semibold))
+                    Text(missingTitle(row)).font(.system(size: 21, weight: .semibold))
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 }
                 Text(row.displayValue).font(.system(size: 13)).foregroundStyle(.secondary)
@@ -1329,8 +1329,8 @@ private struct StockFinancialMetrics: View {
                 Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
-            Divider().padding(.top, 12)
-        }.frame(maxWidth: .infinity, minHeight: 128, alignment: .topLeading)
+            Divider().padding(.top, 8)
+        }.frame(maxWidth: .infinity, minHeight: 102, alignment: .topLeading)
             .accessibilityIdentifier("stockMetric-" + row.id)
     }
 

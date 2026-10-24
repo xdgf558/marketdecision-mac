@@ -76,8 +76,8 @@ struct StockActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .semibold))
-            .padding(.horizontal, 18).padding(.vertical, 10)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 14).padding(.vertical, 7)
             .foregroundStyle(kind == .filled ? Color.white : accent)
             .background(backgroundColor)
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -114,13 +114,13 @@ struct StockDailyControls: View {
 
     var body: some View {
         let local = catalog
-        return VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 6) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 28) {
+                HStack(alignment: .top, spacing: 20) {
                     companyHeading(local).frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
                     headerActions(local).fixedSize(horizontal: true, vertical: false)
                 }
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 10) {
                     companyHeading(local)
                     headerActions(local)
                 }
@@ -130,7 +130,7 @@ struct StockDailyControls: View {
                 Text("本构建的 SEC 服务不可用，仍可使用本地财报和已保存分析。")
                     .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("secNetworkDisabled")
             }
-        }.padding(.vertical, 4)
+        }.padding(.vertical, 2)
             .popover(isPresented: $showsCompanyPicker, arrowEdge: .bottom) {
                 companySelection(local)
             }
@@ -157,15 +157,15 @@ struct StockDailyControls: View {
     }
 
     private func companyHeading(_ local: SECStockDailyCatalog) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("股票分析").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("股票分析").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
                 .accessibilityIdentifier("stockAnalysisTitle")
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     companyIdentity(local)
                     companyPicker
                 }
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     companyIdentity(local)
                     companyPicker
                 }
@@ -175,11 +175,11 @@ struct StockDailyControls: View {
     }
 
     private func companyIdentity(_ local: SECStockDailyCatalog) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(companyName(local)).font(.system(size: 29, weight: .bold))
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(companyName(local)).font(.system(size: 25, weight: .bold))
                 .lineLimit(2).accessibilityAddTraits(.isHeader)
             if !selectedTicker.isEmpty && companyName(local) != selectedTicker {
-                Text(selectedTicker).font(.system(size: 16, weight: .semibold)).foregroundStyle(.secondary)
+                Text(selectedTicker).font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)
             }
         }
     }
@@ -190,16 +190,16 @@ struct StockDailyControls: View {
                     ? "财报期末 " + report.financials.baseReport.periodEnd.iso8601 + " · " : "")
                  + "来源截至 " + report.cutoff.formatted(date: .numeric, time: .shortened)
                  + (model.canDisplayFinancialReport ? " · 本地财报" : " · 报告待核对"))
-                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         } else if let source = selectedDocument {
             Text("来源截至 " + source.cutoff.formatted(date: .numeric, time: .shortened) + " · 本地财报")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         } else if let company = local.companies.first(where: { $0.ticker == selectedTicker }) {
             Text("本地记录截至 " + company.cutoff.formatted(date: .numeric, time: .shortened) + " · 尚未打开核对")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         } else {
             Text("选择股票后，更新财报或打开本地记录。")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
         }
     }
 
@@ -239,15 +239,15 @@ struct StockDailyControls: View {
     }
 
     private func headerActions(_ local: SECStockDailyCatalog) -> some View {
-        VStack(alignment: .trailing, spacing: 8) {
+        VStack(alignment: .trailing, spacing: 6) {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     savedRecordsAction
                     primaryAction(local)
                     updateAction
                     cancelAction
                 }
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) { savedRecordsAction; primaryAction(local) }
                     HStack(spacing: 8) { updateAction; cancelAction }
                 }
@@ -358,7 +358,7 @@ struct StockConnectionControls: View {
     @Binding var contactEmail: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder)
                 .disabled(model.isBusy).accessibilityIdentifier("secContactEmail")
             Text("填写一次即可在本机复用。邮箱仅随你发起的 SEC 请求发送，不进入财报、AI 摘要或归档。")
