@@ -232,7 +232,11 @@ import XCTest
     private func openStockDemo() {
         selectPage("pageStocks")
         let tools = mainWindow.descendants(matching: .any)["stockAdvancedTools"].firstMatch
-        XCTAssertTrue(tools.waitForExistence(timeout: 10)); tools.click()
+        expandDisclosure("stockAdvancedDetails", revealing: tools)
+        XCTAssertTrue(tools.waitForExistence(timeout: 10)); waitEnabled(tools)
+        // Stock tools now live inside the same kind of scrolling daily page.
+        // Expand first, then reveal the complete menu before clicking it.
+        revealOptionControl(tools); tools.click()
         let demo = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",
             "stockOpenDemo", "合成研究与自选管理")).firstMatch
         XCTAssertTrue(demo.waitForExistence(timeout: 5)); demo.click()

@@ -10,30 +10,31 @@ struct StockAnalysisPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                if tool != .company {
+            if tool != .company {
+                HStack {
                     Button {
                         tool = .company
                     } label: {
                         Label("返回股票分析", systemImage: "chevron.left")
                     }.buttonStyle(.borderless).accessibilityIdentifier("stockBackToAnalysis")
-                }
-                Spacer()
-                Menu("高级工具") {
-                    Button("公司财报") { tool = .company }
-                        .accessibilityIdentifier("stockOpenCompany")
-                    Button("离线财报摘录") { tool = .offline }
-                        .accessibilityIdentifier("stockOpenOffline")
-                    Button("合成研究与自选管理") { tool = .demonstration }
-                        .accessibilityIdentifier("stockOpenDemo")
-                }.menuStyle(.borderlessButton).fixedSize()
-                    .accessibilityIdentifier("stockAdvancedTools")
-            }.frame(maxWidth: 1280)
-                .padding(.horizontal, 24).padding(.top, 8)
-                .frame(maxWidth: .infinity)
+                    Spacer()
+                    Menu("高级工具") {
+                        Button("公司财报") { tool = .company }
+                            .accessibilityIdentifier("stockOpenCompany")
+                        Button("离线财报摘录") { tool = .offline }
+                            .accessibilityIdentifier("stockOpenOffline")
+                        Button("合成研究与自选管理") { tool = .demonstration }
+                            .accessibilityIdentifier("stockOpenDemo")
+                    }.menuStyle(.borderlessButton).fixedSize()
+                        .accessibilityIdentifier("stockAdvancedTools")
+                }.frame(maxWidth: 1280)
+                    .padding(.horizontal, 24).padding(.top, 8)
+                    .frame(maxWidth: .infinity)
+            }
             switch tool {
             case .company:
-                SECResearchPage(workspace: workspace)
+                SECResearchPage(workspace: workspace, openOffline: { tool = .offline },
+                                openDemonstration: { tool = .demonstration })
             case .offline:
                 OfflineIssuerResearchPage(workspace: workspace)
             case .demonstration:
@@ -60,6 +61,44 @@ private enum StockAnalysisTool: Hashable {
     case company, offline, demonstration
 }
 
+/// Shared visual treatment only; the native Button retains its enabled and keyboard behavior.
+struct StockActionButtonStyle: ButtonStyle {
+    enum Kind: Equatable { case quiet, outline, filled }
+    let kind: Kind
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var accent: Color {
+        colorScheme == .dark
+            ? Color(red: 0.48, green: 0.77, blue: 0.68)
+            : Color(red: 0.10, green: 0.34, blue: 0.31)
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .foregroundStyle(kind == .filled ? Color.white : accent)
+            .background(backgroundColor)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay {
+                if kind == .outline {
+                    RoundedRectangle(cornerRadius: 8).strokeBorder(accent.opacity(0.7), lineWidth: 1)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.78 : 1) : 0.4)
+    }
+
+    private var backgroundColor: Color {
+        switch kind {
+        case .quiet: accent.opacity(colorScheme == .dark ? 0.12 : 0.06)
+        case .outline: Color.clear
+        case .filled: Color(red: 0.10, green: 0.34, blue: 0.31)
+        }
+    }
+}
+
 /// Metadata-only navigation. Choosing a company never opens a body or sends a request.
 struct StockDailyControls: View {
     @Bindable var model: SECResearchWorkspaceModel
@@ -67,6 +106,7 @@ struct StockDailyControls: View {
     @Binding var showsConnectionSettings: Bool
     let showOverview: () -> Void
     let showSaved: () -> Void
+    @State private var showsCompanyPicker = false
 
     private var catalog: SECStockDailyCatalog {
         .init(ticker: model.ticker, research: model.saved, reports: model.savedFinancialReports)
@@ -74,110 +114,225 @@ struct StockDailyControls: View {
 
     var body: some View {
         let local = catalog
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                TextField("股票代码，如 AAPL", text: Binding(get: { model.ticker }, set: { model.chooseTicker($0) }))
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 200).disabled(model.isBusy)
-                    .accessibilityIdentifier("secTicker")
-                Menu("最近公司") {
-                    ForEach(local.companies) { company in
-                        Button(company.ticker + " · " + company.companyName) {
-                            model.chooseTicker(company.ticker)
-                            showOverview()
-                        }
-                    }
-                }.disabled(model.isBusy || local.companies.isEmpty)
-                    .accessibilityIdentifier("stockRecentCompanies")
-                Spacer(minLength: 0)
-                Button("本地记录") { showSaved() }.accessibilityIdentifier("stockOpenSaved")
-            }
+        return VStack(alignment: .leading, spacing: 10) {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { primaryAction(local); updateAction; cancelAction }
-                VStack(alignment: .leading, spacing: 8) { primaryAction(local); updateAction; cancelAction }
+                HStack(alignment: .top, spacing: 28) {
+                    companyHeading(local).frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
+                    headerActions(local).fixedSize(horizontal: true, vertical: false)
+                }
+                VStack(alignment: .leading, spacing: 14) {
+                    companyHeading(local)
+                    headerActions(local)
+                }
             }
             localStatus(local)
-            Text("本地分析与重开不联网。更新只在点击后请求 SEC，保留旧版本；AI 解读另行点击。")
-                .font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("SEC 连接设置", isExpanded: $showsConnectionSettings) {
-                VStack(alignment: .leading, spacing: 6) {
-                    TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder)
-                        .disabled(model.isBusy).accessibilityIdentifier("secContactEmail")
-                    Text("填写一次即可在本机复用。邮箱仅随你发起的 SEC 请求发送，不进入财报、AI 摘要或归档。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 6)
-            }.font(.callout).accessibilityIdentifier("stockConnectionSettings")
             if !model.networkAvailable {
                 Text("本构建的 SEC 服务不可用，仍可使用本地财报和已保存分析。")
                     .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("secNetworkDisabled")
             }
         }.padding(.vertical, 4)
+            .popover(isPresented: $showsCompanyPicker, arrowEdge: .bottom) {
+                companySelection(local)
+            }
+    }
+
+    private var selectedTicker: String {
+        model.ticker.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+
+    private var selectedReport: SECFinancialReportDocument? {
+        guard let report = model.financialReport, report.ticker.uppercased() == selectedTicker else { return nil }
+        return report
+    }
+
+    private var selectedDocument: SECResearchDocument? {
+        guard let document = model.document, document.ticker.uppercased() == selectedTicker else { return nil }
+        return document
+    }
+
+    private func companyName(_ local: SECStockDailyCatalog) -> String {
+        selectedReport?.companyName ?? selectedDocument?.identity.name
+            ?? local.companies.first(where: { $0.ticker == selectedTicker })?.companyName
+            ?? (selectedTicker.isEmpty ? "选择一家公司" : selectedTicker)
+    }
+
+    private func companyHeading(_ local: SECStockDailyCatalog) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("股票分析").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                .accessibilityIdentifier("stockAnalysisTitle")
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    companyIdentity(local)
+                    companyPicker
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    companyIdentity(local)
+                    companyPicker
+                }
+            }
+            companyMetadata(local)
+        }
+    }
+
+    private func companyIdentity(_ local: SECStockDailyCatalog) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(companyName(local)).font(.system(size: 29, weight: .bold))
+                .lineLimit(2).accessibilityAddTraits(.isHeader)
+            if !selectedTicker.isEmpty && companyName(local) != selectedTicker {
+                Text(selectedTicker).font(.system(size: 16, weight: .semibold)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder private func companyMetadata(_ local: SECStockDailyCatalog) -> some View {
+        if let report = selectedReport {
+            Text((model.canDisplayFinancialReport
+                    ? "财报期末 " + report.financials.baseReport.periodEnd.iso8601 + " · " : "")
+                 + "来源截至 " + report.cutoff.formatted(date: .numeric, time: .shortened)
+                 + (model.canDisplayFinancialReport ? " · 本地财报" : " · 报告待核对"))
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        } else if let source = selectedDocument {
+            Text("来源截至 " + source.cutoff.formatted(date: .numeric, time: .shortened) + " · 本地财报")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        } else if let company = local.companies.first(where: { $0.ticker == selectedTicker }) {
+            Text("本地记录截至 " + company.cutoff.formatted(date: .numeric, time: .shortened) + " · 尚未打开核对")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        } else {
+            Text("选择股票后，更新财报或打开本地记录。")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        }
+    }
+
+    private var companyPicker: some View {
+        Button {
+            showsCompanyPicker = true
+        } label: {
+            Label("切换公司", systemImage: "chevron.down")
+        }.buttonStyle(StockActionButtonStyle(kind: .quiet))
+            .disabled(model.isBusy).accessibilityIdentifier("stockSwitchCompany")
+    }
+
+    private func companySelection(_ local: SECStockDailyCatalog) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("选择公司").font(.headline)
+            TextField("股票代码，如 AAPL", text: Binding(get: { model.ticker }, set: { model.chooseTicker($0) }))
+                .textFieldStyle(.roundedBorder).disabled(model.isBusy)
+                .accessibilityIdentifier("secTicker")
+            Menu("最近公司") {
+                ForEach(local.companies) { company in
+                    Button(company.ticker + " · " + company.companyName) {
+                        model.chooseTicker(company.ticker)
+                        showsCompanyPicker = false
+                        showOverview()
+                    }
+                }
+            }.disabled(model.isBusy || local.companies.isEmpty)
+                .accessibilityIdentifier("stockRecentCompanies")
+            Text("切换只选择公司，不会联网或自动生成分析。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("完成") { showsCompanyPicker = false; showOverview() }
+                    .buttonStyle(StockActionButtonStyle(kind: .quiet))
+            }
+        }.padding(18).frame(width: 300)
+    }
+
+    private func headerActions(_ local: SECStockDailyCatalog) -> some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    savedRecordsAction
+                    primaryAction(local)
+                    updateAction
+                    cancelAction
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) { savedRecordsAction; primaryAction(local) }
+                    HStack(spacing: 8) { updateAction; cancelAction }
+                }
+            }
+            if selectedReport != nil && model.canDisplayFinancialReport && !model.financialReportIsSaved {
+                Label("分析未保存", systemImage: "exclamationmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(.orange)
+                    .help("保存后可离线重开；切换公司或更新会放下当前草稿。")
+                    .accessibilityIdentifier("stockUnsavedAnalysis")
+            }
+        }
+    }
+
+    private var savedRecordsAction: some View {
+        Button("本地记录") { showSaved() }
+            .buttonStyle(StockActionButtonStyle(kind: .quiet)).accessibilityIdentifier("stockOpenSaved")
     }
 
     @ViewBuilder private func primaryAction(_ local: SECStockDailyCatalog) -> some View {
-        if let report = model.financialReport {
+        if let report = selectedReport {
             if model.canDisplayFinancialReport {
                 Button(model.financialReportIsSaved ? "分析已保存" : "保存分析") {
                     perform(.saveReport(report.id))
-                }.buttonStyle(.borderedProminent).disabled(!model.canSaveFinancialReport)
+                }.buttonStyle(StockActionButtonStyle(kind: .outline)).disabled(!model.canSaveFinancialReport)
                     .accessibilityIdentifier("stockSaveAnalysis")
             } else {
                 Button("重算并核对报告") { perform(.replayReport(report.id)) }
-                    .buttonStyle(.borderedProminent).disabled(model.isBusy)
+                    .buttonStyle(StockActionButtonStyle(kind: .outline)).disabled(model.isBusy)
                     .accessibilityIdentifier("stockReplayAnalysis")
             }
-        } else if let document = model.document {
+        } else if let document = selectedDocument {
             Button("用这份财报生成分析") { perform(.analyzeResearch(document.id)) }
-                .buttonStyle(.borderedProminent).disabled(!model.canGenerateFinancialReport)
+                .buttonStyle(StockActionButtonStyle(kind: .outline)).disabled(!model.canGenerateFinancialReport)
                 .accessibilityIdentifier("stockGenerateAnalysis")
         } else if let report = local.reports.first {
             Button("打开最近分析并核对") { perform(.openReport(report.id)) }
-                .buttonStyle(.borderedProminent).disabled(model.isBusy)
+                .buttonStyle(StockActionButtonStyle(kind: .outline)).disabled(model.isBusy)
                 .accessibilityIdentifier("stockOpenLatestAnalysis")
         } else if let document = local.research.first {
             Button("用本地财报生成分析") { perform(.analyzeResearch(document.id)) }
-                .buttonStyle(.borderedProminent).disabled(model.isBusy)
+                .buttonStyle(StockActionButtonStyle(kind: .outline)).disabled(model.isBusy)
                 .accessibilityIdentifier("stockGenerateAnalysis")
         }
     }
 
     private var updateAction: some View {
-        Button("更新财报并分析") {
+        Button("更新财报") {
             guard !model.isBusy else { return }
             if contactEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                showOverview()
                 showsConnectionSettings = true
             } else {
                 showOverview()
                 model.startDailyUpdate(email: contactEmail)
             }
-        }.disabled(model.isBusy || !model.networkAvailable).accessibilityIdentifier("secImport")
+        }.buttonStyle(StockActionButtonStyle(kind: .filled))
+            .disabled(model.isBusy || !model.networkAvailable).accessibilityIdentifier("secImport")
+            .help("点击后请求 SEC 更新财报，并用新来源准备本地分析；保留旧版本，不自动发送 AI 请求。")
     }
 
     @ViewBuilder private var cancelAction: some View {
         if model.isBusy && !model.archiveRestoreInProgress {
-            Button("取消") { model.cancel() }.accessibilityIdentifier("secCancel")
+            Button("取消") { model.cancel() }.buttonStyle(StockActionButtonStyle(kind: .quiet))
+                .accessibilityIdentifier("secCancel")
         }
     }
 
     @ViewBuilder private func localStatus(_ local: SECStockDailyCatalog) -> some View {
-        if model.canDisplayFinancialReport && !model.financialReportIsSaved {
-            Text("分析尚未保存。保存后可离线重开；切换公司或更新会放下当前草稿。")
-                .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("stockUnsavedAnalysis")
-        }
-        if let report = local.reports.first {
+        if selectedReport == nil, let report = local.reports.first {
             Text("最近保存的分析 · 来源截止 " + report.cutoff.formatted(date: .numeric, time: .shortened))
                 .font(.caption).foregroundStyle(.secondary)
         }
         if let source = local.research.first {
-            Text("本地财报 · 来源截止 " + source.cutoff.formatted(date: .numeric, time: .shortened))
-                .font(.caption).foregroundStyle(.secondary)
-            if let displayed = model.financialReport, displayed.parentDocumentID != source.id,
+            if selectedReport == nil && selectedDocument == nil {
+                Text("本地财报 · 来源截止 " + source.cutoff.formatted(date: .numeric, time: .shortened))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let displayed = selectedReport, displayed.parentDocumentID != source.id,
                source.cutoff > displayed.cutoff {
                 Button("用较新的本地财报生成分析") { perform(.analyzeResearch(source.id)) }
                     .buttonStyle(.borderless).disabled(model.isBusy)
                     .accessibilityIdentifier("stockAnalyzeNewerLocalSource")
             }
-        } else if local.reports.isEmpty && model.document == nil && model.financialReport == nil {
-            Text("该股票尚无可用的本地记录。可先更新财报，或从“最近公司”选择已有记录。")
+        } else if local.reports.isEmpty && selectedDocument == nil && selectedReport == nil {
+            Text("该股票尚无可用的本地记录。可先更新财报，或在“切换公司”中选择已有记录。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         if model.listError != nil || model.financialListError != nil {
@@ -194,6 +349,23 @@ struct StockDailyControls: View {
         guard let request = model.makeDailyRequest(action) else { return }
         showOverview()
         Task { await model.performDaily(request) }
+    }
+}
+
+/// Explicit connection configuration is displayed inside the page's advanced section.
+struct StockConnectionControls: View {
+    @Bindable var model: SECResearchWorkspaceModel
+    @Binding var contactEmail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder)
+                .disabled(model.isBusy).accessibilityIdentifier("secContactEmail")
+            Text("填写一次即可在本机复用。邮箱仅随你发起的 SEC 请求发送，不进入财报、AI 摘要或归档。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("本地分析与重开不联网。更新只在点击后请求 SEC，保留旧版本；AI 解读另行点击。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
     }
 }
 
