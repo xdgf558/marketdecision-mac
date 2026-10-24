@@ -280,8 +280,12 @@ struct SECResearchContent: View {
     @ViewBuilder private var overviewFinancials: some View {
         if let report = model.financialReport {
             if model.canDisplayFinancialReport {
-                StockFinancialMetrics(report: report, accent: accent, showMissing: { metricID in
-                    reportSection = ["cash", "revenueCAGR3Y"].contains(metricID) ? "现金流与分配" : "基础财务"
+                StockFinancialMetrics(report: report, accent: accent, showMissing: { metricID, period in
+                    if period == .quarter, ["revenue", "netIncome", "fcf"].contains(metricID) {
+                        reportSection = "增长"
+                    } else {
+                        reportSection = ["cash", "revenueCAGR3Y"].contains(metricID) ? "现金流与分配" : "基础财务"
+                    }
                     section = "财务报告"
                 })
             } else {
@@ -688,6 +692,11 @@ struct SECResearchContent: View {
             Text("模型：" + reference.version).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             Text("金额以 USD 原精度显示；比值 0.12 表示 12%。缺项显示原因，口径标记随指标保留。")
                 .font(.caption).foregroundStyle(.secondary)
+            if reportSection == "基础财务" {
+                DisclosureGroup("债务输入与缺项") {
+                    StockDebtBreakdownView(report: financials).padding(.vertical, 8)
+                }.accessibilityIdentifier("secDebtInputs")
+            }
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(metrics.keys.filter { !excluded.contains($0) }.sorted(), id: \.self) { key in
                     VStack(alignment: .leading, spacing: 4) {
@@ -1269,24 +1278,44 @@ private struct StockAIReportSelection: Equatable {
     let revision: UUID
 }
 
-/// Presentation only. The source projection, calculation precision and stored report stay unchanged.
+/// Selects existing verified metrics; never recomputes or mutates the stored report.
 private struct StockFinancialMetrics: View {
     let report: SECFinancialReportDocument
     let accent: Color
-    let showMissing: (String) -> Void
+    let showMissing: (String, SECFinancialOverview.Period) -> Void
+    @State private var period: SECFinancialOverview.Period = .quarter
+    @State private var showsDebtBreakdown = false
+
+    private var debtBreakdown: SECFinancialDebtBreakdown {
+        SECFinancialDebtBreakdown(report: report.financials)
+    }
 
     private var rows: [SECFinancialOverview.Row] {
-        let source = SECFinancialOverview.rows(for: report.financials)
+        let source = SECFinancialOverview.rows(for: report.financials, period: period)
         return ["revenue", "netIncome", "fcf", "revenueCAGR3Y", "cash", "debt"].compactMap { id in
             source.first(where: { $0.id == id })
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("财务概览").font(.system(size: 20, weight: .semibold))
-                Text("金额单位：USD，M 为百万").font(.system(size: 13)).foregroundStyle(.secondary)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("财务概览").font(.system(size: 20, weight: .semibold))
+                        Spacer(minLength: 8)
+                        periodPicker
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("财务概览").font(.system(size: 20, weight: .semibold))
+                        periodPicker
+                    }
+                }
+                Text(SECFinancialOverview.periodSummary(for: report.financials, period: period))
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .textSelection(.enabled).accessibilityIdentifier("stockOverviewPeriod")
+                Text("USD · M 为百万；切换适用于收入、净利润与自由现金流。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
                                 GridItem(.flexible(), alignment: .leading)], alignment: .leading,
@@ -1302,6 +1331,21 @@ private struct StockFinancialMetrics: View {
                 }
             }.accessibilityIdentifier("stockOverviewMetrics")
         }
+        .onChange(of: report.id) { _, _ in
+            period = .quarter
+            showsDebtBreakdown = false
+        }
+    }
+
+    private var periodPicker: some View {
+        Picker("统计期间", selection: $period) {
+            ForEach(SECFinancialOverview.Period.allCases) { choice in
+                Text(choice.title).tag(choice)
+            }
+        }.pickerStyle(.segmented).controlSize(.small).labelsHidden()
+            .frame(width: 154)
+            .accessibilityLabel("财务概览统计期间")
+            .accessibilityIdentifier("stockOverviewPeriodPicker")
     }
 
     private func metric(_ row: SECFinancialOverview.Row) -> some View {
@@ -1315,16 +1359,32 @@ private struct StockFinancialMetrics: View {
                         : (row.id == "revenue" ? accent : Color.primary))
                     .help(value.decimalString + (row.percentage ? "（增长率原始比值）" : " USD"))
                     .accessibilityValue(row.percentage ? row.displayValue : value.decimalString + " USD")
-                Text(periodText(row)).font(.system(size: 13)).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 8) {
                     Text(missingTitle(row)).font(.system(size: 21, weight: .semibold))
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 }
-                Text(row.displayValue).font(.system(size: 13)).foregroundStyle(.secondary)
-                Button("查看缺项") { showMissing(row.id) }.buttonStyle(.link).font(.system(size: 12))
-                    .accessibilityIdentifier("stockMetricMissing-" + row.id)
+                if row.id == "debt" {
+                    Text(debtBreakdown.summary).font(.system(size: 13)).foregroundStyle(.secondary)
+                    Text("缺少或待核对：" + debtBreakdown.missingTitles)
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button("查看缺项") { showsDebtBreakdown = true }
+                        .buttonStyle(.link).font(.system(size: 12))
+                        .accessibilityIdentifier("stockMetricMissing-debt")
+                        .popover(isPresented: $showsDebtBreakdown) {
+                            ScrollView { StockDebtBreakdownView(report: report.financials).padding(16) }
+                                .frame(width: 440, height: 520)
+                        }
+                } else {
+                    Text(row.displayValue).font(.system(size: 13)).foregroundStyle(.secondary)
+                    Button("查看缺项") { showMissing(row.id, period) }.buttonStyle(.link).font(.system(size: 12))
+                        .accessibilityIdentifier("stockMetricMissing-" + row.id)
+                }
             }
+            Text(row.periodLabel).font(.system(size: 12)).foregroundStyle(.secondary)
+                .accessibilityIdentifier("stockMetricPeriod-" + row.id)
+            Text(row.basis).font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let flags = row.metric?.flags, !flags.isEmpty {
                 Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             }
@@ -1342,12 +1402,6 @@ private struct StockFinancialMetrics: View {
         }
     }
 
-    private func periodText(_ row: SECFinancialOverview.Row) -> String {
-        if row.percentage { return "年复合增长率" }
-        if row.id == "cash" || row.id == "debt" { return "截至 " + report.financials.baseReport.periodEnd.iso8601 }
-        return "TTM"
-    }
-
     private func amountText(_ row: SECFinancialOverview.Row, value: Money) -> String {
         if row.percentage { return row.displayValue }
         if value.amount >= 1_000_000 || value.amount <= -1_000_000 {
@@ -1363,5 +1417,49 @@ private struct StockFinancialMetrics: View {
 
     private func dollars(_ value: String) -> String {
         value.hasPrefix("-") ? "-$" + String(value.dropFirst()) : "$" + value
+    }
+}
+
+/// Reads only the already verified report. Opening this explanation never downloads facts or
+/// upgrades a saved report to a different evidence policy.
+private struct StockDebtBreakdownView: View {
+    let report: SECFinancialReport
+
+    var body: some View {
+        let breakdown = SECFinancialDebtBreakdown(report: report)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("债务输入与缺项").font(.headline)
+            Text("截至 " + breakdown.period + " · USD").font(.caption).foregroundStyle(.secondary)
+            Text("完整合计需要下面五项都有明确数据。缺失不等于零；不使用总负债或债券投资资产替代借款。")
+                .font(.callout)
+            if !breakdown.disclosures.isEmpty {
+                Text("已有披露，尚不能分配到期限分项").font(.subheadline).bold()
+                ForEach(breakdown.disclosures) { row in debtRow(row) }
+                Divider()
+            }
+            ForEach(breakdown.components) { row in debtRow(row) }
+            if breakdown.usesLegacyEvidence {
+                Divider()
+                Text("这份保存报告使用原识别规则。从原财报重新生成分析才能应用新增映射；重开核对会保留旧口径，不改写原报告。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("stockDebtBreakdown")
+    }
+
+    private func debtRow(_ row: SECFinancialDebtBreakdown.Row) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(row.title).fontWeight(.medium)
+                Spacer(minLength: 8)
+                Text(row.value.map { "$" + $0.decimalString } ?? "待补充／核对")
+                    .monospacedDigit().textSelection(.enabled)
+            }.font(.callout)
+            Text(row.explanation).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup("字段依据") {
+                Text(row.sourceConcepts.joined(separator: "\n")).font(.caption2).textSelection(.enabled)
+            }.font(.caption)
+        }.accessibilityIdentifier("stockDebtInput-" + row.id)
     }
 }

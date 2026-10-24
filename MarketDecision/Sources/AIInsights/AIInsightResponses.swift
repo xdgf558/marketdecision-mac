@@ -47,7 +47,19 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
         guard root["object"] as? String == "response", let status = root["status"] as? String else {
             throw AIInsightError.malformedResponse
         }
-        guard status == "completed" else { throw AIInsightError.incompleteResponse }
+        guard status == "completed" else {
+            if status == "failed" { throw AIInsightError.responseFailed }
+            if status == "incomplete", let details = root["incomplete_details"] as? [String: Any] {
+                // Only these closed API reasons become diagnostics. Partial output and
+                // remote explanations never become a result or user-facing error text.
+                switch details["reason"] as? String {
+                case "max_output_tokens": throw AIInsightError.outputLimitReached
+                case "content_filter": throw AIInsightError.contentFiltered
+                default: break
+                }
+            }
+            throw AIInsightError.incompleteResponse
+        }
         guard root["error"] == nil || root["error"] is NSNull,
               root["incomplete_details"] == nil || root["incomplete_details"] is NSNull,
               let actualModel = root["model"] as? String,

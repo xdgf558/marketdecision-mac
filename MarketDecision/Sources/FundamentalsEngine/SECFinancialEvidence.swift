@@ -53,13 +53,19 @@ enum SECFinancialEvidenceAdapter {
         "SOURCE_FY_FP_NOT_USED_AS_PERIOD_GEOMETRY", "NO_HISTORICAL_PIT_OR_SUPPLIER_ELIGIBILITY_GRANT"]
 
     static func prepare(cik: String, facts: [SECCompanyFactRecord], submissions: [SECSubmissionRecord],
-                        cutoff: Date, classification: SECFinancialClassificationEvidence?) throws -> SECFinancialPrepared {
+                        cutoff: Date, classification: SECFinancialClassificationEvidence?,
+                        policy: String = SECFinancialReport.legacyPolicyVersion) throws -> SECFinancialPrepared {
         guard SECCompanyIdentityRecord.validCIK(cik), cutoff.timeIntervalSince1970.isFinite,
               facts.allSatisfy({ $0.cik == cik }), submissions.allSatisfy({ $0.cik == cik }) else {
             throw SECFinancialError.inconsistentEvidence
         }
         try classification?.validate()
-        let dictionary = try FinancialFieldDictionary.fundamentalsCompletionV1()
+        let dictionary: FinancialFieldDictionary
+        switch policy {
+        case SECFinancialReport.legacyPolicyVersion: dictionary = try .fundamentalsCompletionV1()
+        case SECFinancialReport.policyVersion: dictionary = try .fundamentalsCompletionV2()
+        default: throw SECFinancialError.unsupportedFormat
+        }
         let usableSubmissions = submissions.filter {
             ["10-K", "10-K/A", "10-Q", "10-Q/A"].contains($0.form)
                 && $0.reportDate != nil && $0.provenance.isAvailable(asOf: cutoff)
@@ -129,7 +135,10 @@ enum SECFinancialEvidenceAdapter {
         let compactFacts = eligible.filter { $0.endDate >= lower && ($0.startDate.map { $0 >= lower } ?? true) }
             .sorted { $0.recordID < $1.recordID }
         guard Set(compactFacts.map(\.recordID)).count == compactFacts.count else { throw SECFinancialError.inconsistentEvidence }
-        let compactReported = try FinancialNormalizer.normalize(compactFacts, dictionary: dictionary, asOf: cutoff)
+        var compactReported = try FinancialNormalizer.normalize(compactFacts, dictionary: dictionary, asOf: cutoff)
+        if policy == SECFinancialReport.policyVersion {
+            compactReported = try SECLeaseDebtNormalizer.complete(compactReported, sourceFacts: compactFacts)
+        }
         let normalized = try normalize(compactReported, quarters: trailing, years: consecutiveYears, allYears: years)
         let input = try FundamentalInput(cik: cik, normalization: normalized, quarters: trailing, fiscalYears: fiscalYears,
             priceDay: latestEnd, expectedClassIDs: [], classes: [], financialCompany: true,

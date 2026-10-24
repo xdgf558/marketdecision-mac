@@ -111,16 +111,65 @@ struct AIInsightsContractTests {
     }
 
     @Test func incompleteAndFailedResponsesCannotPublishPartialJSON() throws {
-        for status in ["incomplete", "failed", "cancelled", "in_progress", "queued"] {
+        for status in ["incomplete", "cancelled", "in_progress", "queued"] {
             var envelope = try responseObject(); envelope["status"] = status
             #expect(throws: AIInsightError.incompleteResponse) {
                 try AIInsightRequest(input: input()).parseResponse(bytes(envelope))
             }
         }
+        var failed = try responseObject(); failed["status"] = "failed"
+        failed["error"] = ["code": "server_error", "message": "Bearer synthetic-secret"]
+        #expect(throws: AIInsightError.responseFailed) {
+            try AIInsightRequest(input: input()).parseResponse(bytes(failed))
+        }
         var contradictory = try responseObject(); contradictory["error"] = ["code": "server_error"]
         #expect(throws: AIInsightError.malformedResponse) {
             try AIInsightRequest(input: input()).parseResponse(bytes(contradictory))
         }
+    }
+
+    @Test func incompleteReasonsDistinguishOutputLimitAndFilteringWithoutPublishingOutput() throws {
+        let reasons: [(String, AIInsightError)] = [
+            ("max_output_tokens", .outputLimitReached), ("content_filter", .contentFiltered)]
+        for (reason, expected) in reasons {
+            // Even a complete-looking analysis inside an incomplete envelope stays unusable.
+            var envelope = try responseObject(); envelope["status"] = "incomplete"
+            envelope["incomplete_details"] = ["reason": reason, "message": "Bearer synthetic-private-text"]
+            #expect(throws: expected) {
+                try AIInsightRequest(input: input()).parseResponse(bytes(envelope))
+            }
+            // Reasons have meaning only for incomplete responses. They do not relax the
+            // completed-response contract or replace a different lifecycle status.
+            envelope["status"] = "completed"
+            #expect(throws: AIInsightError.malformedResponse) {
+                try AIInsightRequest(input: input()).parseResponse(bytes(envelope))
+            }
+            envelope["status"] = "failed"
+            #expect(throws: AIInsightError.responseFailed) {
+                try AIInsightRequest(input: input()).parseResponse(bytes(envelope))
+            }
+            envelope["status"] = "in_progress"
+            #expect(throws: AIInsightError.incompleteResponse) {
+                try AIInsightRequest(input: input()).parseResponse(bytes(envelope))
+            }
+        }
+    }
+
+    @Test func unknownIncompleteReasonsRemainClosedAndDoNotChangeRequestBudget() throws {
+        let details: [Any] = [
+            NSNull(), "max_output_tokens", ["reason": NSNull()], ["reason": 7],
+            ["reason": "MAX_OUTPUT_TOKENS"], ["reason": "Bearer synthetic-secret"],
+            ["reason": "unknown_future_reason", "message": "content_filter"],
+            ["reason": String(repeating: "x", count: 500)]]
+        let request = AIInsightRequest(input: input())
+        for detail in details {
+            var envelope = try responseObject(); envelope["status"] = "incomplete"
+            envelope["incomplete_details"] = detail
+            #expect(throws: AIInsightError.incompleteResponse) { try request.parseResponse(bytes(envelope)) }
+        }
+        let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
+        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["model"] as? String == AIInsightRequest.defaultModel)
     }
 
     @Test func refusalAndToolOutputsAreNeverParsedAsAnalysis() throws {

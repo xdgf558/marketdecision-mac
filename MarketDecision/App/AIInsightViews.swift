@@ -75,10 +75,11 @@ struct AIInsightCard: View {
             analysisActions
             if matchesSelection, let message = model.message {
                 Text(message).font(.callout).foregroundStyle(model.hasError ? Color.red : Color.secondary)
+                    .textSelection(.enabled)
                     .accessibilityIdentifier("aiMessage")
             }
             if !model.networkAvailable {
-                Text("本构建尚未启用 AI 网络服务，本地财务报告可照常使用。")
+                Text("AI 网络服务不可用（服务缺失或校验未通过）。未发送请求，本地财务报告可照常使用。[AI-SERVICE]")
                     .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("aiUnavailable")
             }
             Text("点击后发送财报摘要至 OpenAI，使用你的 API 账户计费。持仓与交易记录不发送。")
@@ -86,7 +87,7 @@ struct AIInsightCard: View {
                 .multilineTextAlignment(.center).frame(maxWidth: .infinity)
             Divider().opacity(0.6)
             DisclosureGroup("发送内容与隐私") {
-                Text("发送 35 项白名单财务指标（包含明确缺项）、单位、所选期间、截止时刻和三个本地计算引用。完整财报与本地报告标识不会发送。")
+                Text("发送 35 项白名单财务指标（包含明确缺项）、单位、各指标期间、截止时刻和三个本地计算引用。摘要同时包含单季度与 TTM；概览切换不会改变发送内容，也不会自动分析。完整财报与本地报告标识不会发送。")
                     .font(.caption).foregroundStyle(.secondary)
                 if matchesSelection, let input = model.input {
                     ForEach(input.metrics, id: \.id) { metric in

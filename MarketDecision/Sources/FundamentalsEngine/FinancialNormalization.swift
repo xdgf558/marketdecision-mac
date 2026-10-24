@@ -15,7 +15,9 @@ public enum FinancialStatement: String, Sendable, Codable {
 public enum FinancialMetricNature: String, Sendable, Codable { case additiveFlow, instant, perShare, nonadditive }
 public enum FinancialPeriodType: String, Sendable, Codable { case instant, quarter, yearToDate, annual, trailingTwelveMonths, unclassified }
 public enum FinancialConfidence: String, Sendable, Codable { case high, medium, low }
-public enum FinancialDerivation: String, Sendable, Codable { case reported, ytdDifference, annualLessYTD, fourQuarterSum }
+public enum FinancialDerivation: String, Sendable, Codable {
+    case reported, ytdDifference, annualLessYTD, fourQuarterSum, leaseComponentsSum
+}
 public enum FinancialIssueSeverity: String, Sendable, Codable { case blocker, high, medium, low }
 
 public struct FinancialMappingRule: Sendable, Codable, Equatable {

@@ -39,7 +39,7 @@ public final class AIAnalysisNetworkBrokerSession: NSObject, AIAnalysisNetworkSe
                 complete(id: id, data: data, code: .success)
             } catch {
                 await transport.close()
-                complete(id: id, data: nil, code: .failed)
+                complete(id: id, data: nil, code: .transportFailure(error))
             }
         }
         pending = (id, task, reply)

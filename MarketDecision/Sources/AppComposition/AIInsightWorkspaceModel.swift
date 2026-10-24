@@ -61,7 +61,7 @@ public struct AIInsightSession: Sendable {
         guard !isBusy, selectedReportID == reportID else { return nil }
         result = nil; input = nil; message = nil; hasError = false
         guard networkAvailable else {
-            message = "本构建尚未启用 AI 网络服务；本地财务分析仍可使用。"; return nil
+            hasError = true; message = AIInsightFailureMessage.serviceUnavailable; return nil
         }
         let token = generation, op = UUID(), credentialRevision = credentials.revision
         operation = op; isBusy = true
@@ -80,23 +80,29 @@ public struct AIInsightSession: Sendable {
         defer {
             if operation == op { operation = nil; isBusy = false; task = nil }
         }
+        var stage = AIInsightFailureMessage.Stage.preparingReport
         do {
             let summary = try await prepare()
+            stage = .validatingRequest
             let request = AIInsightRequest(input: summary, model: model)
             try request.validate()
             try check(token, reportID, credentialRevision)
             // The factory verifies the embedded service BEFORE any secret is read.
+            stage = .openingService
             let session = try await factory()
             do {
                 try check(token, reportID, credentialRevision)
+                stage = .readingCredential
                 guard let key = try await readKey(), !key.isEmpty else { throw AIWorkspaceError.missingKey }
                 try check(token, reportID, credentialRevision)
                 input = summary
+                stage = .requestingAnalysis
                 let received = try await withTaskCancellationHandler {
                     try await session.send(request, key)
                 } onCancel: { Task { await session.close() } }
                 await session.close()
                 try check(token, reportID, credentialRevision)
+                stage = .checkingBinding
                 guard received.inputDigest == (try summary.digest()), received.requestedModel == model else {
                     throw AIWorkspaceError.mismatchedResponse
                 }
@@ -112,11 +118,9 @@ public struct AIInsightSession: Sendable {
             result = nil
             if Task.isCancelled {
                 message = "分析已取消；已发出的请求仍可能产生 API 费用。"
-            } else if error is AIWorkspaceError, case AIWorkspaceError.missingKey = error {
-                hasError = true; message = "请先在 AI 设置中保存自己的 OpenAI API Key。"
             } else {
                 hasError = true
-                message = "未取得可核对的 AI 解读。请检查财报、模型及 API 账户后手动重试；不会自动重发。"
+                message = AIInsightFailureMessage.text(for: error, stage: stage)
             }
         }
     }
@@ -134,7 +138,7 @@ public struct AIInsightSession: Sendable {
     }
 }
 
-private enum AIWorkspaceError: Error { case missingKey, mismatchedResponse }
+enum AIWorkspaceError: Error, Equatable { case missingKey, mismatchedResponse }
 
 extension AppEnvironment {
     @MainActor public func makeAICredentialSettings() -> CredentialSettingsModel {

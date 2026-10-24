@@ -13,6 +13,7 @@ public enum AIInsightLimits {
 public enum AIInsightError: Error, Equatable, Sendable {
     case invalidInput, invalidModel, budgetExceeded, malformedResponse
     case incompleteResponse, refused, unexpectedOutput, invalidEvidence
+    case outputLimitReached, contentFiltered, responseFailed
 }
 
 public struct AIInsightMetric: Codable, Equatable, Sendable {

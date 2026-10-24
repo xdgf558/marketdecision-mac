@@ -101,14 +101,7 @@ final class AIAnalysisXPCChannel: AIAnalysisNetworkChannel, @unchecked Sendable 
                 }
                 remote.analyze(request) { [weak self] data, code in
                     guard code == 0, let data else {
-                        let error: AIAnalysisNetworkError
-                        switch AIAnalysisReplyCode(rawValue: code) {
-                        case .invalidRequest: error = .invalidRequest
-                        case .closed: error = .closed
-                        case .busy: error = .busy
-                        case .limitExceeded: error = .limitExceeded
-                        default: error = .unavailable
-                        }
+                        let error = AIAnalysisReplyCode(rawValue: code)?.networkError ?? .unavailable
                         self?.finish(id, .failure(error)); return
                     }
                     self?.finish(id, .success(data))

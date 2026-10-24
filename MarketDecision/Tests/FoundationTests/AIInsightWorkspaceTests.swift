@@ -1,10 +1,23 @@
 import Foundation
 import Testing
 import AIInsights
+import AIAnalysisNetworkBroker
 import SecuritySupport
 @testable import AppComposition
 
 private enum AIWorkspaceTestFailure: Error { case injected }
+private enum AIWorkspaceFailureStage: Sendable { case preparation, service, credential, request }
+private final class AIWorkspaceDescriptionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.withLock { value += 1 } }
+    var count: Int { lock.withLock { value } }
+}
+private struct AIWorkspaceSecretFailure: LocalizedError, CustomStringConvertible {
+    let descriptions: AIWorkspaceDescriptionCounter
+    var errorDescription: String? { descriptions.increment(); return "Bearer SYNTHETIC-PRIVATE-KEY" }
+    var description: String { descriptions.increment(); return "https://private.invalid/?secret=SYNTHETIC-PRIVATE-KEY" }
+}
 
 /// Explicit entry/release handshake; intentionally ignores task cancellation so
 /// late provider completions exercise the production publication boundary.
@@ -148,6 +161,7 @@ struct AIInsightWorkspaceTests {
         model.select(reportID: id)
         await (try start(model, id: id, probe: probe)).value
         #expect(!model.isBusy && model.result == nil && model.hasError)
+        #expect(model.message?.contains("[AI-SERVICE]") == true)
         #expect(await probe.factories == 1)
         #expect(await probe.keyReads == 0)
         #expect(await probe.sends == 0)
@@ -161,10 +175,130 @@ struct AIInsightWorkspaceTests {
             model.select(reportID: id)
             await (try start(model, id: id, probe: probe)).value
             #expect(!model.isBusy && model.result == nil && model.input == nil && model.hasError)
+            #expect(model.message?.contains("[AI-KEY-MISSING]") == true)
             #expect(await probe.factories == 1)
             #expect(await probe.keyReads == 1)
             #expect(await probe.sends == 0)
             #expect(await probe.closes == 1)
+        }
+    }
+
+    @Test func localPreparationDiagnosticsPrecedeServiceAndCredentialAccess() async throws {
+        let cases: [(AIInsightReportAdapterError, String)] = [
+            (.replayMismatch, "[AI-LOCAL-REPLAY]"), (.missingMetric, "[AI-LOCAL-METRICS]"),
+            (.invalidCutoff, "[AI-LOCAL-CUTOFF]")]
+        for (failure, marker) in cases {
+            let probe = AIWorkspaceProbe(), id = UUID(), model = workspace(probe: probe)
+            model.select(reportID: id)
+            let work = try #require(model.start(reportID: id, model: AIInsightRequest.defaultModel) {
+                await probe.prepare(); throw failure
+            })
+            await work.value
+            #expect(model.message?.contains(marker) == true)
+            #expect(model.result == nil && model.input == nil && model.hasError && !model.isBusy)
+            #expect(await probe.prepared == 1)
+            #expect(await probe.factories == 0)
+            #expect(await probe.keyReads == 0)
+            #expect(await probe.sends == 0)
+            #expect(await probe.closes == 0)
+        }
+    }
+
+    @Test func keychainStatusFailureIsDistinctAndNeverDispatches() async throws {
+        let probe = AIWorkspaceProbe(), id = UUID()
+        let model = workspace(probe: probe, readKey: {
+            await probe.key(); throw CredentialError.status(-34018)
+        })
+        model.select(reportID: id)
+        await (try start(model, id: id, probe: probe)).value
+        #expect(model.message?.contains("[AI-KEYCHAIN]") == true)
+        #expect(model.message?.contains("OSStatus -34018") == true)
+        #expect(model.result == nil && model.input == nil && model.hasError && !model.isBusy)
+        #expect(await probe.prepared == 1)
+        #expect(await probe.factories == 1)
+        #expect(await probe.keyReads == 1)
+        #expect(await probe.sends == 0)
+        #expect(await probe.closes == 1)
+    }
+
+    @Test func manualAPIFailuresPublishSafeDiagnosticsAndNeverRetry() async throws {
+        let cases: [(any Error, String)] = [
+            (AIAnalysisAPIFailure(statusCode: 401, reason: .authentication), "[AI-HTTP-401-AUTH]"),
+            (AIAnalysisAPIFailure(statusCode: 403, reason: .permissionDenied), "[AI-HTTP-403-ACCESS]"),
+            (AIAnalysisAPIFailure(statusCode: 404, reason: .modelUnavailable), "[AI-HTTP-404-MODEL]"),
+            (AIAnalysisAPIFailure(statusCode: 400, reason: .requestRejected), "[AI-HTTP-400-REQUEST]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .creditsExhausted), "[AI-HTTP-429-CREDITS]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .organizationSpendLimit), "[AI-HTTP-429-ORG-SPEND]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .projectSpendLimit), "[AI-HTTP-429-PROJECT-SPEND]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .organizationUsageLimit), "[AI-HTTP-429-ORG-USAGE]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .quotaExceeded), "[AI-HTTP-429-QUOTA]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .rateLimited), "[AI-HTTP-429-RATE]"),
+            (AIAnalysisAPIFailure(statusCode: 429, reason: .rateOrQuota), "[AI-HTTP-429-RATE-OR-QUOTA]"),
+            (AIAnalysisAPIFailure(statusCode: 503, reason: .serverFailure), "[AI-HTTP-503-SERVER]"),
+            (AIAnalysisNetworkError.timedOut, "[AI-TIMEOUT]"),
+            (AIAnalysisNetworkError.connectionFailed, "[AI-CONNECTION]"),
+            (AIAnalysisNetworkError.secureConnectionFailed, "[AI-TLS]"),
+            (AIInsightError.outputLimitReached, "[AI-OUTPUT-LIMIT]"),
+            (AIInsightError.contentFiltered, "[AI-CONTENT-FILTER]"),
+            (AIInsightError.responseFailed, "[AI-RESPONSE-FAILED]"),
+            (AIInsightError.invalidEvidence, "[AI-EVIDENCE]")]
+        for (failure, marker) in cases {
+            let probe = AIWorkspaceProbe(), id = UUID()
+            let model = workspace(probe: probe, factory: {
+                await probe.factory()
+                return AIInsightSession(send: { _, _ in
+                    await probe.send(); throw failure
+                }, close: { await probe.close() })
+            })
+            model.select(reportID: id)
+            await (try start(model, id: id, probe: probe)).value
+            #expect(model.message?.contains(marker) == true)
+            #expect(model.result == nil && model.hasError && !model.isBusy)
+            #expect(model.input == aiWorkspaceInput())
+            #expect(await probe.prepared == 1)
+            #expect(await probe.factories == 1)
+            #expect(await probe.keyReads == 1)
+            #expect(await probe.sends == 1)
+            #expect(await probe.closes == 1)
+        }
+    }
+
+    @Test func arbitraryFailureDescriptionsAreNeitherReadNorDisplayed() async throws {
+        let cases: [(AIWorkspaceFailureStage, String)] = [
+            (.preparation, "[AI-LOCAL-REPORT]"), (.service, "[AI-SERVICE]"),
+            (.credential, "[AI-KEYCHAIN]"), (.request, "[AI-REQUEST-UNKNOWN]")]
+        for (stage, marker) in cases {
+            let probe = AIWorkspaceProbe(), descriptions = AIWorkspaceDescriptionCounter(), id = UUID()
+            let failure = AIWorkspaceSecretFailure(descriptions: descriptions)
+            let model = workspace(probe: probe, readKey: {
+                await probe.key()
+                if stage == .credential { throw failure }
+                return Data("synthetic-ai-key".utf8)
+            }, factory: {
+                await probe.factory()
+                if stage == .service { throw failure }
+                return AIInsightSession(send: { _, _ in
+                    await probe.send(); throw failure
+                }, close: { await probe.close() })
+            })
+            model.select(reportID: id)
+            let work = try #require(model.start(reportID: id, model: AIInsightRequest.defaultModel) {
+                await probe.prepare()
+                if stage == .preparation { throw failure }
+                return aiWorkspaceInput()
+            })
+            await work.value
+            let message = try #require(model.message)
+            #expect(message.contains(marker))
+            #expect(!message.contains("Bearer") && !message.contains("SYNTHETIC-PRIVATE-KEY"))
+            #expect(!message.contains("private.invalid"))
+            #expect(descriptions.count == 0)
+            #expect(model.result == nil && model.hasError && !model.isBusy)
+            #expect(await probe.prepared == 1)
+            #expect(await probe.factories == (stage == .preparation ? 0 : 1))
+            #expect(await probe.keyReads == ((stage == .preparation || stage == .service) ? 0 : 1))
+            #expect(await probe.sends == (stage == .request ? 1 : 0))
+            #expect(await probe.closes == ((stage == .preparation || stage == .service) ? 0 : 1))
         }
     }
 
@@ -211,7 +345,7 @@ struct AIInsightWorkspaceTests {
                 await probe.factory()
                 return AIInsightSession(send: { request, _ in
                     await probe.send(); await sent.hold()
-                    if fail { throw AIWorkspaceTestFailure.injected }
+                    if fail { throw AIAnalysisAPIFailure(statusCode: 401, reason: .authentication) }
                     return try aiWorkspaceResult(request)
                 }, close: { await probe.close() })
             })
@@ -284,7 +418,7 @@ struct AIInsightWorkspaceTests {
                 await probe.factory()
                 return AIInsightSession(send: { request, _ in
                     await probe.send(); await sent.hold()
-                    if fail { throw AIWorkspaceTestFailure.injected }
+                    if fail { throw AIAnalysisAPIFailure(statusCode: 429, reason: .quotaExceeded) }
                     return try aiWorkspaceResult(request)
                 }, close: { await probe.close() })
             })
@@ -398,6 +532,7 @@ struct AIInsightWorkspaceTests {
             model.select(reportID: id)
             await (try start(model, id: id, probe: probe)).value
             #expect(model.result == nil && model.hasError && !model.isBusy)
+            #expect(model.message?.contains("[AI-RESULT-BINDING]") == true)
             #expect(await probe.sends == 1)
             #expect(await probe.closes >= 1)
         }
@@ -415,6 +550,7 @@ struct AIInsightWorkspaceTests {
                 })
             await work.value
             #expect(model.result == nil && model.input == nil && model.hasError && !model.isBusy)
+            #expect(model.message?.contains(invalidSummary ? "[AI-LOCAL-REPORT]" : "[AI-MODEL-FORMAT]") == true)
             #expect(await probe.factories == 0)
             #expect(await probe.keyReads == 0)
             #expect(await probe.sends == 0)

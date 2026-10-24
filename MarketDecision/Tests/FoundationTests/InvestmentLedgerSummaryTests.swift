@@ -49,6 +49,8 @@ struct InvestmentLedgerSummaryTests {
         #expect(value.realizedPnL == (try Money("0")))
         #expect(value.cash == (try Money("0")))
         #expect(value.openLots.isEmpty)
+        #expect(value.realizedTimeline.isEmpty && value.realizedContributions.isEmpty)
+        #expect(value.latestActivityAt == nil)
         #expect(value.ledgerRevision == ledger.revision)
         #expect(throws: LedgerError.missingAccount) { try InvestmentLedgerSummary(ledger: ledger, accountID: "absent") }
     }
@@ -76,6 +78,11 @@ struct InvestmentLedgerSummaryTests {
         #expect(value.cash == (try Money("249.98")))
         #expect(value.openLots.first?.quantityRemaining == (try Money("2")))
         #expect(value.openLots.first?.managementCostRemaining == (try Money("200")))
+        #expect(value.realizedTimeline.count == 1)
+        #expect(value.realizedTimeline.first?.eventPnL == (try Money("49.98")))
+        #expect(value.realizedTimeline.first?.cumulativePnL == value.realizedPnL)
+        #expect(value.realizedContributions.first?.symbol == "ABC")
+        #expect(value.realizedContributions.first?.amount == value.realizedPnL)
     }
 
     @Test func identicalContractsInOtherAccountsDoNotLeakCashLotsOrRealizations() throws {
@@ -92,6 +99,10 @@ struct InvestmentLedgerSummaryTests {
         #expect(b.cash == (try Money("697")))
         #expect(b.openLots.map(\.id) == ["b-open-lot"])
         #expect(b.openLots.first?.quantityRemaining == (try Money("1")))
+        #expect(a.realizedTimeline.map(\.id) == ["a-close"])
+        #expect(b.realizedTimeline.map(\.id) == ["b-close"])
+        #expect(a.realizedContributions.first?.amount == a.realizedPnL)
+        #expect(b.realizedContributions.first?.amount == b.realizedPnL)
     }
 
     @Test func confirmedExpirationRealizesBothLongAndShortResultsIncludingFees() throws {
@@ -133,6 +144,8 @@ struct InvestmentLedgerSummaryTests {
         #expect(after.realizedPnL == (try Money("0")))
         #expect(after.cash == (try Money("198")))
         #expect(after.openLots.map(\.id) == ["open-lot"])
+        #expect(after.realizedTimeline.isEmpty && after.realizedContributions.isEmpty)
+        #expect(after.latestActivityAt == reversal.effectiveAt)
     }
 
     @Test func cashFlowsAndStandaloneIncomeOrExpensesStaySeparateFromRealizedTradingProfit() throws {
@@ -146,6 +159,51 @@ struct InvestmentLedgerSummaryTests {
         #expect(value.realizedPnL == (try Money("0")))
         #expect(value.cash == (try Money("1917")))
         #expect(value.openLots.isEmpty)
+        #expect(value.realizedTimeline.isEmpty && value.realizedContributions.isEmpty)
+    }
+
+    @Test func multiLotCloseCreatesOneTimelinePointWithFeesIncludedOnce() throws {
+        let events = try [
+            trade("first", at: 0, side: .sell, effect: .open, price: "2", fee: "2"),
+            trade("second", at: 1, side: .sell, effect: .open, price: "3", fee: "3"),
+            trade("both", at: 2, side: .buy, effect: .close, quantity: "2", price: "1", fee: "1")
+        ]
+        let value = try summary(events)
+        #expect(value.realizedPnL == (try Money("294")))
+        #expect(value.realizedTimeline.count == 1)
+        #expect(value.realizedTimeline.first?.id == "both")
+        #expect(value.realizedTimeline.first?.eventPnL == value.realizedPnL)
+        #expect(value.realizedTimeline.first?.cumulativePnL == value.realizedPnL)
+        #expect(value.realizedContributions.count == 1)
+        #expect(value.realizedContributions.first?.amount == value.realizedPnL)
+    }
+
+    @Test func contributionYearUsesExplicitTimeZoneWithoutChangingAllTimeTotals() throws {
+        func equity(_ id: String, at timestamp: String, effect: LedgerTradeEffect, price: String) throws -> LedgerEvent {
+            try event(id, at: LedgerCSV.timestamp(timestamp).timeIntervalSince(base),
+                payload: .trade(.init(instrument: .equity(stock), side: effect == .open ? .buy : .sell,
+                    effect: effect, quantity: Money(effect == .open ? "2" : "1"), unitPrice: Money(price),
+                    fee: Money("0"), openingLotID: effect == .open ? id + "-lot" : nil)))
+        }
+        let events = try [
+            equity("open", at: "2023-12-31T20:00:00Z", effect: .open, price: "100"),
+            equity("prior-ny-year", at: "2024-01-01T01:00:00Z", effect: .close, price: "101"),
+            equity("new-ny-year", at: "2024-01-01T06:00:00Z", effect: .close, price: "99")
+        ]
+        let value = try summary(events)
+        let newYork = try #require(TimeZone(identifier: "America/New_York"))
+        let utc = try #require(TimeZone(secondsFromGMT: 0))
+        let prior = try value.realizedContributions(inYear: 2023, timeZone: newYork)
+        let current = try value.realizedContributions(inYear: 2024, timeZone: newYork)
+        let utcYear = try value.realizedContributions(inYear: 2024, timeZone: utc)
+        #expect(prior.first?.amount == (try Money("1")))
+        #expect(current.first?.amount == (try Money("-1")))
+        #expect(utcYear.first?.amount == (try Money("0")))
+        #expect(value.realizedPnL == (try Money("0")))
+        #expect(value.realizedContributions.first?.amount == value.realizedPnL)
+        #expect(value.realizedTimeline.map(\.id) == ["prior-ny-year", "new-ny-year"])
+        #expect(value.realizedTimeline.map(\.cumulativePnL) == (try [Money("1"), Money("0")]))
+        #expect(try value.realizedContributions(inYear: 2022, timeZone: newYork).isEmpty)
     }
 
     @Test func syntheticLabelsFollowActiveRecordsOfTheSelectedAccount() throws {

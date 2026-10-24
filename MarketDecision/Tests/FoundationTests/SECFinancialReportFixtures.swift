@@ -21,7 +21,8 @@ private actor FinancialFixtureTransport: HTTPTransport {
 
 /// Real accept pipeline over synthetic response bytes; no network or answer-key fixture.
 func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String = "<p>QA</p>",
-                                     includeOverviewMetrics: Bool = false) async throws -> SECResearchDocument {
+                                     includeOverviewMetrics: Bool = false,
+                                     includeDebtDisclosure: Bool = false) async throws -> SECResearchDocument {
     let now = Date(timeIntervalSince1970: 1_791_072_000)
     var accessions: [String] = [], dates: [String] = [], reportDates: [String] = []
     var forms: [String] = [], documents: [String] = [], accepted: [String] = []
@@ -64,6 +65,15 @@ func secFinancialReportFixtureParent(sic: String? = "7372", filingHTML: String =
         facts["CashAndCashEquivalentsAtCarryingValue"] = ["label": "Cash", "description": "Synthetic instant cash",
             "units": ["USD": [["end": "2024-12-31", "val": 50, "accn": "0000320193-24-000004",
                                "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"]]]]
+    }
+    if includeDebtDisclosure {
+        // Synthetic shape matching the separately disclosed total lease liability and drawn
+        // line of credit. Neither value fills unknown debt maturity or finance-lease inputs.
+        for (concept, value) in [("OperatingLeaseLiability", 20_000_000), ("LineOfCredit", 206_400_000)] {
+            facts[concept] = ["label": concept, "description": "Synthetic separate debt disclosure",
+                "units": ["USD": [["end": "2024-12-31", "val": value, "accn": "0000320193-24-000004",
+                                   "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"]]]]
+        }
     }
     func payload(_ object: [String: Any]) throws -> HTTPPayload {
         HTTPPayload(statusCode: 200, mediaType: "application/json", body: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]))

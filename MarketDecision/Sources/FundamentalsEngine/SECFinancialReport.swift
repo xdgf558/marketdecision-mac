@@ -13,7 +13,8 @@ public struct SECFinancialRecomputation: Sendable {
 /// Structural validation never promotes stored numeric output to verified output.
 public struct SECFinancialReport: Sendable, Codable {
     public static let formatVersion = "sec-financial-report.v1"
-    public static let policyVersion = "sec-financial-evidence.v1"
+    public static let legacyPolicyVersion = "sec-financial-evidence.v1"
+    public static let policyVersion = "sec-financial-evidence.v2"
     public let format, evidencePolicy: String
     public let evidence: SECFinancialEvidence
     public let inputSnapshot: FundamentalCompletionSnapshot
@@ -30,8 +31,9 @@ public struct SECFinancialReport: Sendable, Codable {
     public var executionDate: Date { inputSnapshot.financials.executionDate }
 
     private init(prepared: SECFinancialPrepared, snapshot: FundamentalCompletionSnapshot,
-                 models: [ModelDefinition], parameters: ParameterSet, reports: SECFinancialRecomputation) {
-        format = Self.formatVersion; evidencePolicy = Self.policyVersion; evidence = prepared.evidence
+                 models: [ModelDefinition], parameters: ParameterSet, reports: SECFinancialRecomputation,
+                 evidencePolicy: String) {
+        format = Self.formatVersion; self.evidencePolicy = evidencePolicy; evidence = prepared.evidence
         inputSnapshot = snapshot; self.models = models; self.parameters = parameters
         baseReport = reports.base; growthReport = reports.growth; completionReport = reports.completion
         researchOnly = true; historicalPITQualified = false; capitalInputsAllowed = false
@@ -41,14 +43,24 @@ public struct SECFinancialReport: Sendable, Codable {
     public static func make(cik: String, facts: [SECCompanyFactRecord], submissions: [SECSubmissionRecord],
                             cutoff: Date, executionDate: Date,
                             classification: SECFinancialClassificationEvidence? = nil) async throws -> Self {
+        try await make(cik: cik, facts: facts, submissions: submissions, cutoff: cutoff,
+                       executionDate: executionDate, classification: classification, evidencePolicy: policyVersion)
+    }
+
+    /// Retained version dispatch also permits a legacy-envelope regression without changing
+    /// the public creation path. Old saved reports validate and replay with their own policy.
+    static func make(cik: String, facts: [SECCompanyFactRecord], submissions: [SECSubmissionRecord],
+                     cutoff: Date, executionDate: Date, classification: SECFinancialClassificationEvidence? = nil,
+                     evidencePolicy: String) async throws -> Self {
         try Task.checkCancellation()
         let prepared = try SECFinancialEvidenceAdapter.prepare(cik: cik, facts: facts, submissions: submissions,
-            cutoff: cutoff, classification: classification)
+            cutoff: cutoff, classification: classification, policy: evidencePolicy)
         let snapshot = try FundamentalCompletionSnapshot(input: prepared.input, executionDate: executionDate)
         let (parameters, base) = try FundamentalModelV1.definitions()
         let models = [base, try FundamentalGrowthModelV1.definitions().1, try FundamentalCompletionModelV1.definitions().1]
         let reports = try await calculate(snapshot: snapshot, models: models, parameters: parameters)
-        let result = Self(prepared: prepared, snapshot: snapshot, models: models, parameters: parameters, reports: reports)
+        let result = Self(prepared: prepared, snapshot: snapshot, models: models, parameters: parameters,
+                          reports: reports, evidencePolicy: evidencePolicy)
         try result.validate()
         return result
     }
@@ -58,17 +70,18 @@ public struct SECFinancialReport: Sendable, Codable {
     public func validateEvidence(facts: [SECCompanyFactRecord], submissions: [SECSubmissionRecord],
                                  classification: SECFinancialClassificationEvidence?) throws {
         let rebuilt = try SECFinancialEvidenceAdapter.prepare(cik: evidence.cik, facts: facts, submissions: submissions,
-            cutoff: evidence.cutoff, classification: classification)
+            cutoff: evidence.cutoff, classification: classification, policy: evidencePolicy)
         try checkPrepared(rebuilt)
     }
 
     public func validate() throws {
-        guard format == Self.formatVersion, evidencePolicy == Self.policyVersion, researchOnly,
+        guard format == Self.formatVersion, [Self.legacyPolicyVersion, Self.policyVersion].contains(evidencePolicy), researchOnly,
               !historicalPITQualified, !capitalInputsAllowed, cacheState == "requires-explicit-recompute" else {
             throw SECFinancialError.unsupportedFormat
         }
         let rebuilt = try SECFinancialEvidenceAdapter.prepare(cik: evidence.cik, facts: evidence.facts,
-            submissions: evidence.submissions, cutoff: evidence.cutoff, classification: evidence.classification)
+            submissions: evidence.submissions, cutoff: evidence.cutoff, classification: evidence.classification,
+            policy: evidencePolicy)
         try checkPrepared(rebuilt)
         let (expectedParameters, base) = try FundamentalModelV1.definitions()
         let expectedModels = [base, try FundamentalGrowthModelV1.definitions().1, try FundamentalCompletionModelV1.definitions().1]

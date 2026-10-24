@@ -231,6 +231,7 @@ struct SettingsContent: View {
     @State private var showsAISettings = false
     var body: some View {
         Form {
+            AppReleaseNotesSection()
             Section("外观") {
                 Picker("显示模式", selection: $appearance) {
                     Text("跟随系统").tag("system")
@@ -271,6 +272,50 @@ struct SettingsContent: View {
         }
         .formStyle(.grouped).navigationTitle("设置")
         .task { await model.refresh() }
+    }
+}
+
+private struct AppReleaseNotesSection: View {
+    @State private var showsReleaseNotes = false
+
+    // Read the running bundle, including when hosted outside the production app.
+    // A missing value must not borrow the version of another build or target.
+    private func bundleValue(_ key: String) -> String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "未标注"
+        }
+        return value
+    }
+
+    var body: some View {
+        Section("关于投资手账") {
+            LabeledContent("应用版本") {
+                Text("\(bundleValue("CFBundleShortVersionString"))（构建 \(bundleValue("CFBundleVersion"))）")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("settingsAppVersion")
+            }
+            DisclosureGroup("更新说明", isExpanded: $showsReleaseNotes) {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Content date only; do not present this as the build date.
+                    Text("本版更新内容 · 2026-10-24")
+                        .font(.caption).foregroundStyle(.secondary)
+                    note("我的投资", "紧凑投资概览展示累计盈亏、标的贡献和持仓；确认期权实际成交后自动记账，减少重复输入。")
+                    note("期权交易", "紧凑展示合约、收益与风险，支持一笔平仓选择多个同合约持仓批次。")
+                    note("股票分析", "新增单季度与 TTM 切换，默认单季度，标明统计期间；补充债务字段识别及缺项说明，缺失不填零。")
+                    note("AI 财报解读", "手动发送财报摘要，细化认证、额度、连接及回答核对失败等原因提示。")
+                }
+                .padding(.vertical, 4)
+            }
+            .accessibilityIdentifier("settingsReleaseNotes")
+        }
+    }
+
+    private func note(_ title: String, _ detail: String) -> some View {
+        (Text("\(title)：").fontWeight(.medium) + Text(detail))
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
