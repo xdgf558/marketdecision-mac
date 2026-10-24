@@ -42,7 +42,7 @@ struct AIInsightCard: View {
     @State private var showsSettings = false
     @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("AI 解读", systemImage: "sparkles").font(.title3.weight(.semibold))
                 Spacer()
@@ -50,8 +50,8 @@ struct AIInsightCard: View {
                     .buttonStyle(.borderless).accessibilityIdentifier("aiSettings")
             }
             Text("让 AI 解释这份财报的优势、风险和待核实问题。数值仍以本地计算为准。")
-                .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
+                .font(.callout).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
                 Button(model.result == nil ? "发送摘要并分析" : "重新分析（发送摘要）") {
                     model.select(reportID: report.id, revision: reportRevision)
                     model.startAnalysis(report: report, revision: reportRevision, model: modelName)
@@ -107,8 +107,8 @@ struct AIInsightCard: View {
                 Text("本次回答仅在当前股票页面保留；切换报告或离开页面会清除。保存分析不包含 AI 回答，研究归档也不包含。取消后已发出的请求仍可能计费。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-        }.padding(20)
-            .background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+        }.padding(14)
+            .background(Color.accentColor.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
             .accessibilityIdentifier("aiInsightCard")
             .sheet(isPresented: $showsSettings) { AISettingsView(credentials: model.credentials) }
             .onAppear { model.select(reportID: report.id, revision: reportRevision) }
@@ -122,7 +122,7 @@ struct AIInsightCard: View {
         model.selectedReportID == report.id && model.selectedReportRevision == reportRevision
     }
     private func claims(_ title: String, _ values: [AIInsightClaim], input: AIInsightInput) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             if !values.isEmpty {
                 Text(title).font(.headline)
                 ForEach(Array(values.enumerated()), id: \.offset) { _, value in claim(value, input: input) }
@@ -130,7 +130,7 @@ struct AIInsightCard: View {
         }
     }
     private func claim(_ value: AIInsightClaim, input: AIInsightInput) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
             // Plain text: model output cannot create active links, rich text or commands.
             Text(verbatim: value.text).textSelection(.enabled)
             Text("依据：" + value.evidenceIDs.map { id in

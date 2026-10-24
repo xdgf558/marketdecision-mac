@@ -101,11 +101,11 @@ struct SECResearchContent: View {
     @State private var splitEvidence = SECValuationSplitEvidenceDraft()
     @State private var includeCapturedPrice = false
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("股票分析").font(.system(size: 32, weight: .semibold)).accessibilityIdentifier("stockAnalysisTitle")
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("股票分析").font(.system(size: 28, weight: .bold)).accessibilityIdentifier("stockAnalysisTitle")
                 Text("看懂收入、利润、现金流和负债。先选公司，再查看本地财报。")
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 14)).foregroundStyle(.secondary)
             }
             importControls
             if model.isBusy {
@@ -116,18 +116,18 @@ struct SECResearchContent: View {
                 Text(message).font(.callout).foregroundStyle(model.hasError ? Color.red : Color.secondary)
                     .accessibilityIdentifier("secMessage")
             }
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ForEach(["分析概览", "财务报告", "已保存"], id: \.self) { item in
                     Button(item) { section = item }
                         .buttonStyle(.borderless)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(section == item ? Color.accentColor.opacity(0.12) : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 8))
                         .accessibilityIdentifier("stockSection-" + item)
                         .accessibilityAddTraits(section == item ? .isSelected : [])
                 }
                 Spacer()
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     Button { showsAdvanced.toggle() } label: {
                         HStack(spacing: 6) {
                             Image(systemName: showsAdvanced ? "chevron.down" : "chevron.right")
@@ -149,7 +149,7 @@ struct SECResearchContent: View {
             }
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     if section == "分析概览" { dailyOverview }
                     else if section == "财务报告" { financialReports }
                     else if section == "行情参考" {
@@ -184,9 +184,11 @@ struct SECResearchContent: View {
                         ContentUnavailableView("导入一家公司开始", systemImage: "building.2",
                             description: Text("也可以在“已保存”中打开本地研究。应用启动和进入本页不会自动联网。"))
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 20)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 16)
             }
-        }.padding(28)
+        }.frame(maxWidth: 1280, alignment: .leading)
+        .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 20)
+        .frame(maxWidth: .infinity, alignment: .top)
         .onChange(of: section) { _, value in
             if !["分析概览", "财务报告", "已保存"].contains(value) { showsAdvanced = true }
         }
@@ -228,13 +230,13 @@ struct SECResearchContent: View {
     }
 
     private var dailyOverview: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 12) {
             if let message = model.financialMessage {
                 Text(message).font(.callout).foregroundStyle(model.financialHasError ? Color.red : Color.secondary)
                     .accessibilityIdentifier("secFinancialMessage")
             }
             if let report = model.financialReport {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(report.ticker + " · " + report.companyName).font(.title2.weight(.semibold))
                     Text("财务期末 " + report.financials.baseReport.periodEnd.iso8601 + " · 来源截止 "
                          + report.cutoff.formatted(date: .numeric, time: .shortened))
@@ -247,13 +249,13 @@ struct SECResearchContent: View {
                     Button("查看完整财务报告") { section = "财务报告" }
                         .accessibilityIdentifier("stockShowFinancialReport")
                 } else {
-                    ContentUnavailableView("先核对这份已保存的分析", systemImage: "checkmark.shield",
-                        description: Text("重算完成前不显示缓存数值，已有报告和原始财报不会被覆盖。"))
+                    overviewNotice("先核对这份已保存的分析", systemImage: "checkmark.shield",
+                        description: "重算完成前不显示缓存数值，已有报告和原始财报不会被覆盖。")
                         .accessibilityIdentifier("secFinancialReportUnverified")
                 }
                 financialEvidence(report)
             } else if let document = model.document {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(document.ticker + " · " + document.identity.name).font(.title2.weight(.semibold))
                     Text("来源截止 " + document.cutoff.formatted(date: .numeric, time: .shortened))
                         .font(.caption).foregroundStyle(.secondary)
@@ -265,8 +267,8 @@ struct SECResearchContent: View {
                     }
                 }
             } else {
-                ContentUnavailableView("从一家公司开始", systemImage: "chart.bar.xaxis",
-                    description: Text("选择最近公司或输入股票代码。已有记录可离线使用，只有点击“更新财报并分析”才联网。"))
+                overviewNotice("从一家公司开始", systemImage: "chart.bar.xaxis",
+                    description: "选择最近公司或输入股票代码。已有记录可离线使用，只有点击“更新财报并分析”才联网。")
                     .accessibilityIdentifier("stockAnalysisEmpty")
             }
             Divider()
@@ -276,11 +278,22 @@ struct SECResearchContent: View {
                 .buttonStyle(.link).accessibilityIdentifier("stockValuationDetails")
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
+    private func overviewNotice(_ title: String, systemImage: String, description: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage).font(.system(size: 24)).foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 17, weight: .semibold))
+                Text(description).font(.callout).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(14)
+            .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+    }
     private func overviewMetrics(_ report: SECFinancialReportDocument) -> some View {
         let rows = SECFinancialOverview.rows(for: report.financials)
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), alignment: .leading)], alignment: .leading, spacing: 22) {
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), alignment: .leading)], alignment: .leading, spacing: 12) {
             ForEach(rows) { row in
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(row.title).font(.callout).foregroundStyle(.secondary)
                     Text(row.displayValue)
                         .font(.title3.weight(.semibold)).monospacedDigit().textSelection(.enabled)
@@ -288,7 +301,7 @@ struct SECResearchContent: View {
                     if let flags = row.metric?.flags, !flags.isEmpty {
                         Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                     }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             }
         }.accessibilityIdentifier("stockOverviewMetrics")
     }

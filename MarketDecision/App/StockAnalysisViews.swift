@@ -28,7 +28,9 @@ struct StockAnalysisPage: View {
                         .accessibilityIdentifier("stockOpenDemo")
                 }.menuStyle(.borderlessButton).fixedSize()
                     .accessibilityIdentifier("stockAdvancedTools")
-            }.padding(.horizontal, 28).padding(.top, 12)
+            }.frame(maxWidth: 1280)
+                .padding(.horizontal, 24).padding(.top, 8)
+                .frame(maxWidth: .infinity)
             switch tool {
             case .company:
                 SECResearchPage(workspace: workspace)
@@ -72,8 +74,8 @@ struct StockDailyControls: View {
 
     var body: some View {
         let local = catalog
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
                 TextField("股票代码，如 AAPL", text: Binding(get: { model.ticker }, set: { model.chooseTicker($0) }))
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 200).disabled(model.isBusy)
                     .accessibilityIdentifier("secTicker")
@@ -90,25 +92,25 @@ struct StockDailyControls: View {
                 Button("本地记录") { showSaved() }.accessibilityIdentifier("stockOpenSaved")
             }
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) { primaryAction(local); updateAction; cancelAction }
-                VStack(alignment: .leading, spacing: 10) { primaryAction(local); updateAction; cancelAction }
+                HStack(spacing: 8) { primaryAction(local); updateAction; cancelAction }
+                VStack(alignment: .leading, spacing: 8) { primaryAction(local); updateAction; cancelAction }
             }
             localStatus(local)
             Text("本地分析与重开不联网。更新只在点击后请求 SEC，保留旧版本；AI 解读另行点击。")
                 .font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("SEC 连接设置", isExpanded: $showsConnectionSettings) {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
                     TextField("SEC 联系邮箱", text: $contactEmail).textFieldStyle(.roundedBorder)
                         .disabled(model.isBusy).accessibilityIdentifier("secContactEmail")
                     Text("填写一次即可在本机复用。邮箱仅随你发起的 SEC 请求发送，不进入财报、AI 摘要或归档。")
                         .font(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 8)
+                }.padding(.vertical, 6)
             }.font(.callout).accessibilityIdentifier("stockConnectionSettings")
             if !model.networkAvailable {
                 Text("本构建的 SEC 服务不可用，仍可使用本地财报和已保存分析。")
                     .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("secNetworkDisabled")
             }
-        }.padding(.vertical, 10)
+        }.padding(.vertical, 4)
     }
 
     @ViewBuilder private func primaryAction(_ local: SECStockDailyCatalog) -> some View {
@@ -202,7 +204,7 @@ struct StockDailySavedRecords: View {
 
     var body: some View {
         let catalog = SECStockDailyCatalog(ticker: model.ticker, research: model.saved, reports: model.savedFinancialReports)
-        return LazyVStack(alignment: .leading, spacing: 16) {
+        return LazyVStack(alignment: .leading, spacing: 10) {
             Text(model.ticker + " · 本地记录").font(.title3.weight(.semibold))
             Text("只列当前股票的版本。打开分析会先核对冻结输入，不更新财报、不发送 AI 请求。")
                 .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("secSavedSummaryNotice")
@@ -211,7 +213,7 @@ struct StockDailySavedRecords: View {
             Text("已保存分析").font(.headline)
             ForEach(catalog.reports) { item in
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(item.companyName)
                         Text("来源截止 " + item.cutoff.formatted(date: .numeric, time: .shortened))
                         Text("生成于 " + item.createdAt.formatted(date: .numeric, time: .shortened))
@@ -229,7 +231,7 @@ struct StockDailySavedRecords: View {
             if let error = model.listError { Text(error).foregroundStyle(.red) }
             ForEach(catalog.research) { item in
                 HStack {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(item.companyName)
                         Text("来源截止 " + item.cutoff.formatted(date: .numeric, time: .shortened))
                             .font(.caption).foregroundStyle(.secondary)

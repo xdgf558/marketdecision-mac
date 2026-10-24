@@ -65,7 +65,7 @@ struct InvestmentCalculationView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 heading
                 if !current && !model.isBusy {
                     ContentUnavailableView("请重新载入账本", systemImage: "arrow.clockwise",
@@ -82,7 +82,7 @@ struct InvestmentCalculationView: View {
                     Text(message).foregroundStyle(model.hasError ? Color.red : Color.secondary)
                         .accessibilityIdentifier("investmentCalculationMessage")
                 }
-            }.padding(32).frame(maxWidth: 1120, alignment: .leading).frame(maxWidth: .infinity)
+            }.padding(24).frame(maxWidth: 1120, alignment: .leading).frame(maxWidth: .infinity)
         }
         .sheet(item: $approval) { saveConfirmation($0) }
         .onAppear { visible = true }
@@ -119,8 +119,8 @@ struct InvestmentCalculationView: View {
     }
 
     private var heading: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("补齐数据，核算盈亏").font(.system(size: 32, weight: .bold)).accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: 6) {
+            Text("补齐数据，核算盈亏").font(.system(size: 28, weight: .bold)).accessibilityAddTraits(.isHeader)
             Text("\(accountName) · USD").foregroundStyle(.secondary)
             Text("记账  →  补齐数据  →  核算并保存  →  分享").font(.callout).foregroundStyle(accent)
             Text("已有资料可以复用；缺项集中补齐。价格、时间和来源不会自动猜填。").foregroundStyle(.secondary)
@@ -129,7 +129,7 @@ struct InvestmentCalculationView: View {
 
     private var reuseSection: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 if let reusable, reusable.replayMatched, reusable.report.input.request.accountID == draft?.accountID {
                     let request = reusable.report.input.request
                     Text("可复用的已核对报告").font(.headline)
@@ -150,19 +150,19 @@ struct InvestmentCalculationView: View {
     }
 
     @ViewBuilder private func inputSections(_ value: Binding<InvestmentCalculationDraft>) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             calendarSection(value)
             dataSection(value)
             flowSection(value)
             Button("核算盈亏") { calculate() }
-                .buttonStyle(.borderedProminent).tint(accent).controlSize(.large)
+                .buttonStyle(.borderedProminent).tint(accent).controlSize(.regular)
                 .disabled(blocked || inspection.isBusy).accessibilityIdentifier("investmentCalculate")
         }.disabled(blocked)
     }
 
     private func calendarSection(_ value: Binding<InvestmentCalculationDraft>) -> some View {
         GroupBox("核算期间") {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     TextField("起始日期 YYYY-MM-DD", text: value.startDay).accessibilityIdentifier("investmentStartDay")
                     Text("至")
@@ -190,7 +190,7 @@ struct InvestmentCalculationView: View {
         let originals = Dictionary((value.wrappedValue.reusedRequest?.days ?? []).map { ($0.day, $0) },
                                    uniquingKeysWith: { first, _ in first })
         return GroupBox("按日期补齐估值数据") {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Button("整理缺项并带入持仓") { inspect() }.disabled(inspection.isBusy)
                         .accessibilityIdentifier("investmentInspectMissing")
@@ -234,7 +234,7 @@ struct InvestmentCalculationView: View {
 
     private func flowSection(_ value: Binding<InvestmentCalculationDraft>) -> some View {
         GroupBox("确认本次资金记录") {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
                 Toggle("我已核对本次期间全部出入金及转仓记录", isOn: value.externalFlowsComplete)
                     .accessibilityIdentifier("investmentConfirmFlows")
                 Text("每次重新核算都需确认。未确认时可以查看缺口，但净盈亏和分享不会被标记为完整。").font(.caption).foregroundStyle(.secondary)
@@ -256,8 +256,8 @@ struct InvestmentCalculationView: View {
         if model.origin == .preview, let report = model.report, let plan = model.preview {
             let summary = InvestmentSummary(report: report)
             GroupBox("核算预览 · 尚未保存") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(InvestmentSummary.amountText(summary.netPnL) + " USD").font(.largeTitle.monospacedDigit())
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(InvestmentSummary.amountText(summary.netPnL) + " USD").font(.system(size: 24, weight: .semibold).monospacedDigit())
                         .accessibilityIdentifier("investmentCalculationPnL")
                     Text("已实现 \(InvestmentSummary.amountText(summary.realizedPnL)) · 浮动变化 \(InvestmentSummary.amountText(summary.changeInUnrealizedPnL))")
                     if let reason = summary.unavailableReason { Text(reason).foregroundStyle(.orange) }

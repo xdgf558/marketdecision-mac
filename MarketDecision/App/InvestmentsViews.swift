@@ -100,18 +100,18 @@ private struct InvestmentsContent: View {
 
     private var dashboard: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 18) {
                 header
                 if let message = model.message, model.hasError { Text(message).foregroundStyle(.red).accessibilityIdentifier("investmentsMessage") }
                 if let error = model.listError { Text(error).foregroundStyle(.red).accessibilityIdentifier("investmentsListError") }
                 if let shareError { Text(shareError).foregroundStyle(.red) }
                 ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 32) {
+                    HStack(alignment: .top, spacing: 24) {
                         profit.frame(minWidth: 330, maxWidth: .infinity)
                         Divider()
                         holdings.frame(minWidth: 350, maxWidth: .infinity)
                     }
-                    VStack(alignment: .leading, spacing: 24) { profit; Divider(); holdings }
+                    VStack(alignment: .leading, spacing: 16) { profit; Divider(); holdings }
                 }
                 Divider()
                 periodReport
@@ -127,14 +127,16 @@ private struct InvestmentsContent: View {
                     } label: { Label("高级详情", systemImage: "slider.horizontal.3") }
                     .menuStyle(.borderlessButton).fixedSize().accessibilityIdentifier("investmentAdvanced")
                 }
-            }.padding(36).frame(maxWidth: 1320, alignment: .leading).frame(maxWidth: .infinity)
+            }.frame(maxWidth: 1280, alignment: .leading)
+                .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 20)
+                .frame(maxWidth: .infinity)
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text("这笔投资，赚了多少？").font(.system(size: 38, weight: .bold)).accessibilityAddTraits(.isHeader)
-            HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("这笔投资，赚了多少？").font(.system(size: 28, weight: .bold)).accessibilityAddTraits(.isHeader)
+            HStack(spacing: 10) {
                 Picker("账户", selection: Binding(get: { model.selectedAccountID ?? "" }, set: { id in
                     requestReload(account: id)
                 })) {
@@ -146,9 +148,9 @@ private struct InvestmentsContent: View {
                 Spacer(minLength: 0)
                 Button { requestReload(account: model.selectedAccountID) } label: { Image(systemName: "arrow.clockwise") }.help("重新读取本地账本与报告").disabled(model.isBusy)
             }
-            HStack(spacing: 20) {
+            HStack(spacing: 14) {
                 Button(model.context?.ledger.accounts.isEmpty == true ? "建立账户" : "其他记账") { showDetail(.ledger("手工录入")) }
-                    .buttonStyle(.borderedProminent).tint(accent).controlSize(.large).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
+                    .buttonStyle(.borderedProminent).tint(accent).controlSize(.regular).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
                 Button("导入交易") { showDetail(.ledger("CSV 导入")) }.buttonStyle(.plain).foregroundStyle(accent).disabled(model.isBusy).accessibilityIdentifier("investmentImport")
                 Button("补齐数据并核算") { showCalculation() }.disabled(!model.canPrepare)
                     .accessibilityIdentifier("investmentStartCalculation")
@@ -161,10 +163,10 @@ private struct InvestmentsContent: View {
 
     private var profit: some View {
         let current = ledgerSummary
-        return VStack(alignment: .leading, spacing: 16) {
-            Text("累计已实现盈亏").font(.title2.bold())
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("累计已实现盈亏").font(.title2.weight(.semibold))
             Text(InvestmentSummary.amountText(current?.realizedPnL))
-                .font(.system(size: 48, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.55).lineLimit(1)
+                .font(.system(size: 38, weight: .semibold, design: .rounded)).monospacedDigit().minimumScaleFactor(0.55).lineLimit(1)
                 .foregroundStyle((current?.realizedPnL.amount ?? 0) < 0 ? Color.red : accent)
                 .accessibilityIdentifier("investmentRealizedPnL")
             if let current {
@@ -188,9 +190,9 @@ private struct InvestmentsContent: View {
 
     private var periodReport: some View {
         let summary = reportSummary
-        return VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("冻结区间报告").font(.title2.bold())
+                Text("冻结区间报告").font(.title2.weight(.semibold))
                 Spacer()
                 Button { prepareShare() } label: { Label("分享区间报告", systemImage: "square.and.arrow.up") }
                     .disabled(model.isBusy || model.savedReport == nil || summary?.netPnL == nil).accessibilityIdentifier("investmentShare")
@@ -225,19 +227,19 @@ private struct InvestmentsContent: View {
     }
 
     private func reportDetails(_ summary: InvestmentSummary) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 26) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 20) {
                 metric("区间已实现", value: summary.realizedPnL)
-                Divider().frame(height: 45)
+                Divider().frame(height: 38)
                 metric("区间浮动变化", value: summary.changeInUnrealizedPnL)
             }
             Text("已扣外部资金流；总额另含股息、利息、费用、税款及应计变化。").font(.caption).foregroundStyle(.secondary)
             if let report = model.report { navChart(report) }
-        }.padding(.top, 16).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(.top, 10).frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func metric(_ title: String, value: Money?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.callout).foregroundStyle(.secondary)
             Text(InvestmentSummary.amountText(value)).font(.title2.weight(.semibold)).monospacedDigit()
         }
@@ -245,15 +247,15 @@ private struct InvestmentsContent: View {
 
     private var holdings: some View {
         let current = ledgerSummary
-        return VStack(alignment: .leading, spacing: 16) {
-            Text("当前持仓").font(.title2.bold())
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("当前持仓").font(.title2.weight(.semibold))
             HStack { Text("标的 / 数量"); Spacer(); Text("市值 / 浮动盈亏") }.font(.caption).foregroundStyle(.secondary)
             Divider()
             if let current {
                 if current.openLots.isEmpty { Text("当前账户没有未平仓持仓。").foregroundStyle(.secondary) }
                 ForEach(current.openLots) { lot in
                     HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(lot.instrument.label).font(.headline)
                             Text(lotQuantity(lot)).font(.caption).foregroundStyle(.secondary)
                         }
@@ -277,11 +279,11 @@ private struct InvestmentsContent: View {
     }
 
     private var recentRecords: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack { Text("最近记录").font(.title2.bold()); Spacer(); Button("查看全部 ›") { showDetail(.ledger("来源与审计")) }.buttonStyle(.plain).foregroundStyle(accent) }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack { Text("最近记录").font(.title2.weight(.semibold)); Spacer(); Button("查看全部 ›") { showDetail(.ledger("来源与审计")) }.buttonStyle(.plain).foregroundStyle(accent) }
             if events.isEmpty { Text("交易、费用与出入金会出现在这里。").foregroundStyle(.secondary) }
             ForEach(events) { event in
-                HStack(spacing: 20) {
+                HStack(spacing: 14) {
                     Text(event.effectiveAt.formatted(date: .abbreviated, time: .omitted)).foregroundStyle(.secondary).frame(width: 130, alignment: .leading)
                     Text(eventTitle(event)).frame(maxWidth: .infinity, alignment: .leading)
                     if model.context?.ledger.state.reversedEventIDs.contains(event.id) == true { Text("已冲销").font(.caption).foregroundStyle(.secondary) }
@@ -331,7 +333,7 @@ private struct InvestmentsContent: View {
                 Button { detail = nil; requestReload(account: detailAccountID) } label: { Label("返回我的投资", systemImage: "chevron.left") }
                     .buttonStyle(.plain).foregroundStyle(accent).accessibilityIdentifier("investmentBack")
                 Spacer()
-            }.padding(.horizontal, 24).padding(.top, 16)
+            }.padding(.horizontal, 24).padding(.top, 10)
             content()
         }
     }
