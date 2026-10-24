@@ -50,13 +50,25 @@ private func optionEntrySnapshot(_ events: [LedgerEvent] = [], accounts: [Ledger
         state: LedgerEngine.replay(accounts: accounts, events: events))
 }
 
-private func optionEntryFinish(_ lot: LedgerLot, action: OptionTradeEntryAction, id: String) throws -> OptionTradeEntryDraft {
-    var draft = try OptionTradeEntryDraft(lot: lot, action: action)
+private func optionEntryFinish(_ lot: LedgerLot, action: OptionTradeEntryAction, id: String,
+                               otherClosingLots: [LedgerLot] = []) throws -> OptionTradeEntryDraft {
+    var draft = try OptionTradeEntryDraft(lot: lot, action: action, otherClosingLots: otherClosingLots)
     draft.timestamp = action == .expiration ? "2026-11-20T22:00:00Z" : "2026-10-26T15:00:00Z"
     draft.sourceSystem = "broker-record"; draft.externalID = id
     draft.evidence = action == .expiration ? "Account activity confirms expired without exercise or assignment" : "User confirmed closing execution receipt"
     draft.legs[0].form.unitPrice = "1.1"; draft.legs[0].form.fee = "0.65"
     return draft
+}
+
+private func optionEntryTwoLots(quantity: String = "1") throws -> LedgerSnapshot {
+    let empty = try optionEntrySnapshot()
+    var first = try optionEntryPrepared(externalID: "open-first")
+    first.legs[0].form.quantity = quantity; first.legs[0].form.fee = "0.65"
+    var second = try optionEntryPrepared(externalID: "open-second")
+    second.timestamp = "2026-10-25T14:00:00Z"
+    second.legs[0].form.quantity = quantity; second.legs[0].form.unitPrice = "3"
+    second.legs[0].form.fee = "0.65"
+    return try optionEntrySnapshot(first.events(in: empty) + second.events(in: empty))
 }
 
 @Suite("Option executions share the ledger without importing research payoffs")
@@ -231,6 +243,168 @@ struct OptionTradeEntryDraftTests {
         #expect(final.state.lots.allSatisfy(\.isClosed))
         #expect(final.state.realizations[1].pnl == (try Money("249.2")))
         #expect(final.state.cashByAccount["A"] == (try Money("387.9")))
+    }
+
+    @Test func oneClosingFillConsumesTwoLotsWithOneFeeAndRetainsLedgerDeduplication() async throws {
+        let store = try LedgerStore(path: ":memory:"), fixture = try optionEntryTwoLots()
+        let initial = try await store.snapshot()
+        let created = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+        let openingPlan = try await store.previewManual(events: fixture.events, expectedRevision: created.revision)
+        #expect(openingPlan.canCommit)
+        let opened = try await store.commit(planID: openingPlan.id, expectedRevision: created.revision)
+        let lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-001", otherClosingLots: [lots[1]])
+        draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]
+        draft.legs[0].form.quantity = "2"; draft.legs[0].form.unitPrice = "1"; draft.legs[0].form.fee = "1.30"
+        let events = try draft.events(in: opened)
+        try #require(events.count == 1)
+        let event = events[0]
+        #expect(event.source.externalTransactionID == "close-001")
+        guard case .trade(let trade) = event.payload else { Issue.record("Expected one closing fill"); return }
+        #expect(trade.quantity == (try Money("2")) && trade.fee == (try Money("1.30")))
+        let expectedSelections = lots.sorted { $0.id < $1.id }.map { LedgerLotSelection(lotID: $0.id, quantity: $0.quantityRemaining) }
+        #expect(trade.selections == expectedSelections)
+        var changedDraft = draft; changedDraft.legs[0].form.fee = "1.31"
+        let changedEvents = try changedDraft.events(in: opened)
+        #expect(changedEvents[0].id == event.id && changedEvents[0].source == event.source)
+        let closingPlan = try await store.previewManual(events: events, expectedRevision: opened.revision)
+        #expect(closingPlan.canCommit && closingPlan.rows.count == 1 && closingPlan.rows[0].disposition == .new)
+        let committed = try await store.commit(planID: closingPlan.id, expectedRevision: opened.revision)
+        #expect(committed.state.lots.allSatisfy(\.isClosed))
+        let realizations = committed.state.realizations.filter { $0.eventID == event.id }
+        #expect(realizations.count == 2)
+        #expect(realizations.first { $0.lotID == lots[0].id }?.pnl == (try Money("148.70")))
+        #expect(realizations.first { $0.lotID == lots[1].id }?.pnl == (try Money("198.70")))
+        #expect(committed.state.cashByAccount["A"] == (try Money("347.40")))
+        let closingPostings = committed.state.postings.filter { $0.eventID == event.id }
+        #expect(closingPostings.count == 1 && closingPostings.first?.transactionFee == (try Money("1.30")))
+        // Retry the original real fill, rather than inventing another ID or
+        // authorizing a fresh draft against the now-closed lots.
+        let duplicate = try await store.previewManual(events: events, expectedRevision: committed.revision)
+        #expect(duplicate.canCommit && duplicate.rows.count == 1 && duplicate.rows[0].disposition == .duplicate)
+        let unchanged = try await store.commit(planID: duplicate.id, expectedRevision: committed.revision)
+        #expect(unchanged.events == committed.events && unchanged.state == committed.state)
+        let conflict = try await store.previewManual(events: changedEvents, expectedRevision: unchanged.revision)
+        #expect(!conflict.canCommit && conflict.rows.contains { $0.disposition == .conflict })
+    }
+
+    @Test func closingCanSelectAnotherLotOrPartiallyConsumeMultipleLots() throws {
+        let opened = try optionEntryTwoLots(quantity: "2"), lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-partial", otherClosingLots: [lots[1]])
+        #expect(draft.closingCandidates == lots && draft.closingAllocations == [lots[0].id: "2"])
+        draft.closingAllocations = [lots[1].id: "2"]
+        draft.legs[0].form.quantity = "1"
+        let subset = try draft.events(in: opened)
+        guard case .trade(let subsetTrade) = subset[0].payload else { Issue.record("Expected selected-lot close"); return }
+        #expect(subsetTrade.selections == [.init(lotID: lots[1].id, quantity: try Money("1"))])
+        let subsetState = try optionEntrySnapshot(opened.events + subset).state
+        #expect(subsetState.lots.first { $0.id == lots[0].id }?.quantityRemaining == (try Money("2")))
+        #expect(subsetState.lots.first { $0.id == lots[1].id }?.quantityRemaining == (try Money("1")))
+        draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]
+        draft.legs[0].form.quantity = "2"
+        let partial = try draft.events(in: opened)
+        let partialState = try optionEntrySnapshot(opened.events + partial).state
+        let remaining = try Money("1")
+        #expect(partialState.lots.count == 2 && partialState.lots.allSatisfy { $0.quantityRemaining == remaining })
+        #expect(partialState.realizations.count == 2)
+    }
+
+    @Test func closingCandidatesRejectMixedAccountsFullContractTermsSidesAndRepeatedIDs() throws {
+        let opened = try optionEntryTwoLots(), lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        let empty = try optionEntrySnapshot()
+        var otherAccount = try optionEntryPrepared(externalID: "account-b-open"); otherAccount.accountID = "B"
+        let accountLot = try #require(optionEntrySnapshot(otherAccount.events(in: empty)).state.lots.first)
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .closing, otherClosingLots: [accountLot])
+        }
+        guard case .option(let contract) = lots[1].instrument,
+              case .trade(let opening) = opened.events[1].payload else { Issue.record("Expected option fixtures"); return }
+        var differentTerms = lots[1]
+        differentTerms.instrument = .option(.init(occSymbol: contract.occSymbol, versionID: contract.versionID,
+            effectiveFrom: contract.effectiveFrom, effectiveTo: contract.effectiveTo, quoteMultiplier: contract.quoteMultiplier,
+            exerciseConsideration: contract.exerciseConsideration, deliverables: contract.deliverables,
+            deliverableCash: contract.deliverableCash, settlementType: contract.settlementType, exerciseStyle: contract.exerciseStyle,
+            tradingEndsAt: contract.tradingEndsAt, exerciseDeadline: contract.exerciseDeadline, settlementAt: contract.settlementAt,
+            memoReferences: contract.memoReferences + ["Different contract evidence"]))
+        // Even the same OCC and version spelling cannot substitute different frozen terms.
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .closing, otherClosingLots: [differentTerms])
+        }
+        let longEvent = LedgerEvent(id: "long-opening", accountID: "A", effectiveAt: opened.events[1].effectiveAt,
+            source: .init(sourceSystem: "broker-record", externalTransactionID: "long-opening", evidence: "Long execution receipt"),
+            payload: .trade(.init(instrument: opening.instrument, side: .buy, effect: .open, quantity: opening.quantity,
+                unitPrice: opening.unitPrice, fee: opening.fee, openingLotID: "long-lot", strategy: opening.strategy)))
+        let longLot = try #require(optionEntrySnapshot([longEvent]).state.lots.first)
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .closing, otherClosingLots: [longLot])
+        }
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .closing, otherClosingLots: [lots[0]])
+        }
+        let closeSecond = try optionEntryFinish(lots[1], action: .closing, id: "close-before-selection")
+        let withClosedLot = try optionEntrySnapshot(opened.events + closeSecond.events(in: opened))
+        let closedCandidate = try #require(withClosedLot.state.lots.first { $0.id == lots[1].id })
+        #expect(closedCandidate.isClosed)
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .closing, otherClosingLots: [closedCandidate])
+        }
+        #expect(throws: OptionTradeEntryError.invalidLot) {
+            try OptionTradeEntryDraft(lot: lots[0], action: .expiration, otherClosingLots: [lots[1]])
+        }
+    }
+
+    @Test func closingAllocationsRejectUnknownEmptyFractionalExcessAndMismatchedTotals() throws {
+        let opened = try optionEntryTwoLots(), lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-invalid", otherClosingLots: [lots[1]])
+        draft.legs[0].form.quantity = "2"
+        draft.closingAllocations = [:]
+        #expect(throws: OptionTradeEntryError.invalidLot) { try draft.events(in: opened) }
+        draft.closingAllocations = [lots[0].id: "1", "not-an-original-lot": "1"]
+        #expect(throws: OptionTradeEntryError.invalidLot) { try draft.events(in: opened) }
+        for allocation in ["0", "-1", "0.5", "2"] {
+            draft.closingAllocations = [lots[0].id: allocation, lots[1].id: "1"]
+            #expect(throws: OptionTradeEntryError.invalidQuantity) { try draft.events(in: opened) }
+        }
+        draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]
+        for total in ["1", "3", "1.5"] {
+            draft.legs[0].form.quantity = total
+            #expect(throws: OptionTradeEntryError.invalidQuantity) { try draft.events(in: opened) }
+        }
+    }
+
+    @Test func closingRejectsChangesToEverySelectedLotWithoutBlockingUnselectedChanges() throws {
+        let opened = try optionEntryTwoLots(quantity: "2"), lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-both", otherClosingLots: [lots[1]])
+        draft.timestamp = "2026-10-27T15:00:00Z"
+        draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]; draft.legs[0].form.quantity = "2"
+        var concurrent = try optionEntryFinish(lots[1], action: .closing, id: "other-close")
+        concurrent.legs[0].form.quantity = "1"
+        let changed = try optionEntrySnapshot(opened.events + concurrent.events(in: opened))
+        #expect(throws: OptionTradeEntryError.changedLot) { try draft.events(in: changed) }
+        draft.closingAllocations = [lots[0].id: "1"]; draft.legs[0].form.quantity = "1"
+        #expect(try draft.events(in: changed).count == 1)
+        draft.closingAllocations = [lots[1].id: "1"]
+        #expect(throws: OptionTradeEntryError.changedLot) { try draft.events(in: changed) }
+    }
+
+    @Test func closingValidatesTheSourceOfEverySelectedLot() throws {
+        let opened = try optionEntryTwoLots(), source = opened.events[1]
+        let marked = LedgerEvent(id: source.id, accountID: source.accountID, effectiveAt: source.effectiveAt,
+            source: .init(sourceSystem: "synthetic-loader", externalTransactionID: source.source.externalTransactionID,
+                evidence: "Synthetic execution illustration"), payload: source.payload, multiLegGroupID: source.multiLegGroupID)
+        let snapshot = try optionEntrySnapshot([opened.events[0], marked])
+        let lots = snapshot.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
+        try #require(lots.count == 2)
+        var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-sources", otherClosingLots: [lots[1]])
+        draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]; draft.legs[0].form.quantity = "2"
+        #expect(throws: OptionTradeEntryError.syntheticEvidence) { try draft.events(in: snapshot) }
+        draft.closingAllocations = [lots[0].id: "1"]; draft.legs[0].form.quantity = "1"
+        #expect(try draft.events(in: snapshot).count == 1)
     }
 
     @Test func closeCannotChangeAccountsOversellUseFractionalContractsOrRebaseChangedLots() throws {

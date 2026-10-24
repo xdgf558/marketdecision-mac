@@ -23,7 +23,7 @@ public enum OptionTradeEntryError: Error, Equatable, LocalizedError {
         case .invalidAccount: "请使用当前账本中的同一账户。"
         case .invalidLot: "请选择仍未结束的期权持仓批次。"
         case .changedLot: "持仓批次已变化，请重新选择；原草稿不会自动改用新的数量或合约。"
-        case .invalidQuantity: "实际张数须为正整数，且不能超过所选批次的剩余张数。"
+        case .invalidQuantity: "实际总张数与各批次平仓张数须为正整数，分配合计须一致，且不能超过各批次的剩余张数。"
         case .changedLegs: "成交腿与原草稿不一致，请重新发起成交记录。"
         case .inconsistentSnapshot: "账本快照未通过重放核对，不能准备成交。"
         }
@@ -101,6 +101,11 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
     public var strategyMaximumAcquisitionPrice = ""
     public var strategyUnassignedCountsAsSuccess = false
     public var legs: [OptionTradeEntryLegDraft]
+    /// Frozen compatible lots, never refreshed to a later ledger revision.
+    public let closingCandidates: [LedgerLot]
+    /// Keys explicitly select lots. With one selection the actual total quantity
+    /// is used; with several selections each allocation must sum to that total.
+    public var closingAllocations: [String: String]
     private let originalLegIDs: [String]
     private let originalLot: LedgerLot?
 
@@ -145,12 +150,18 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
         if draft.hasLongLeg { prepared.append(try leg(draft.longLeg, side: .buy)) }
         guard Set(prepared.map(\.expectedOCC)).count == prepared.count else { throw OptionTradeEntryError.invalidContract }
         id = UUID(); action = .opening; accountID = ""; legs = prepared
+        closingCandidates = []; closingAllocations = [:]
         originalLegIDs = prepared.map(\.id); originalLot = nil
     }
 
-    public init(lot: LedgerLot, action: OptionTradeEntryAction) throws {
+    public init(lot: LedgerLot, action: OptionTradeEntryAction, otherClosingLots: [LedgerLot] = []) throws {
         guard action == .closing || action == .expiration,
               case .option(let contract) = lot.instrument, !lot.isClosed else { throw OptionTradeEntryError.invalidLot }
+        guard action == .closing || otherClosingLots.isEmpty else { throw OptionTradeEntryError.invalidLot }
+        let candidates = [lot] + otherClosingLots
+        guard Set(candidates.map(\.id)).count == candidates.count,
+              candidates.allSatisfy({ $0.accountID == lot.accountID && $0.instrument == lot.instrument
+                  && $0.side == lot.side && !$0.isClosed }) else { throw OptionTradeEntryError.invalidLot }
         try contract.validate(); try optionTradeRejectSynthetic(lot)
         var form = LedgerManualDraft()
         form.kind = action == .closing ? .optionTrade : .optionSettlement
@@ -164,6 +175,10 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             expectedKind: delivery.security.kind, expectedConsideration: contract.exerciseConsideration)
         leg.contractConfirmed = true
         id = UUID(); self.action = action; accountID = lot.accountID; legs = [leg]
+        closingCandidates = action == .closing ? candidates.sorted {
+            $0.acquiredAt == $1.acquiredAt ? $0.id < $1.id : $0.acquiredAt < $1.acquiredAt
+        } : []
+        closingAllocations = action == .closing ? [lot.id: lot.quantityRemaining.decimalString] : [:]
         originalLegIDs = [leg.id]; originalLot = lot
     }
 
@@ -186,8 +201,10 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
         let instant = try LedgerCSV.timestamp(timestamp)
         if let originalLot {
             guard originalLot.accountID == accountID else { throw OptionTradeEntryError.invalidAccount }
-            guard snapshot.state.lots.first(where: { $0.id == originalLot.id }) == originalLot else { throw OptionTradeEntryError.changedLot }
-            try validateLotProvenance(originalLot, in: snapshot)
+            if action == .expiration {
+                guard snapshot.state.lots.first(where: { $0.id == originalLot.id }) == originalLot else { throw OptionTradeEntryError.changedLot }
+                try validateLotProvenance(originalLot, in: snapshot)
+            }
         }
         let groupID = "option-entry-group.v1:" + optionTradeIdentity([accountID, sourceSystem] + executionIDs)
         var result: [LedgerEvent] = []
@@ -224,15 +241,18 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
                 try leg.validateOpeningContract(contract)
                 try optionTradeRejectSynthetic(contract)
             } else {
-                guard let lot = originalLot, quantity <= lot.quantityRemaining,
+                guard let lot = originalLot,
                       case .option(let contract) = lot.instrument, form.existingOption == contract else {
                     throw OptionTradeEntryError.invalidQuantity
                 }
                 form.strategyEnabled = false; form.kind = .optionTrade; form.effect = .close
                 form.side = lot.side == .short ? .buy : .sell; form.openingLotID = ""
-                form.lots = [lot.id: quantity.decimalString]
-                if action == .closing { event = try form.event(accountID: accountID) }
+                if action == .closing {
+                    form.lots = try closingSelections(quantity: quantity, in: snapshot)
+                    event = try form.event(accountID: accountID)
+                }
                 else {
+                    guard quantity <= lot.quantityRemaining else { throw OptionTradeEntryError.invalidQuantity }
                     let sequence: Int?
                     if form.sequence.isEmpty { sequence = nil }
                     else {
@@ -257,6 +277,26 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             guard strategies.count == result.count, strategies.allSatisfy({ $0 == strategies.first }) else { throw LedgerError.invalidStrategy }
         }
         return result
+    }
+
+    private func closingSelections(quantity: Money, in snapshot: LedgerSnapshot) throws -> [String: String] {
+        guard !closingAllocations.isEmpty else { throw OptionTradeEntryError.invalidLot }
+        var selections: [String: String] = [:]
+        var total = try Money("0")
+        for id in closingAllocations.keys.sorted() {
+            guard let lot = closingCandidates.first(where: { $0.id == id }),
+                  let text = closingAllocations[id] else { throw OptionTradeEntryError.invalidLot }
+            guard snapshot.state.lots.first(where: { $0.id == id }) == lot else { throw OptionTradeEntryError.changedLot }
+            try validateLotProvenance(lot, in: snapshot)
+            let amount: Money
+            if closingAllocations.count == 1 { amount = quantity }
+            else { amount = try optionTradeQuantity(text) }
+            guard amount <= lot.quantityRemaining else { throw OptionTradeEntryError.invalidQuantity }
+            total = try total.adding(amount)
+            selections[id] = amount.decimalString
+        }
+        guard total == quantity else { throw OptionTradeEntryError.invalidQuantity }
+        return selections
     }
 
     private func validateLotProvenance(_ lot: LedgerLot, in snapshot: LedgerSnapshot) throws {

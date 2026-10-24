@@ -231,7 +231,14 @@ private struct OptionTradeContent: View {
     }
     private func begin(_ lot: LedgerLot, action: OptionTradeEntryAction) {
         guard !busy, let snapshot = model.snapshot, lot.accountID == model.selectedAccountID else { return }
-        do { entry = try .init(lot: lot, action: action); entryRevision = snapshot.revision; notice = nil }
+        let otherLots = action == .closing ? snapshot.state.lots.filter {
+            $0.id != lot.id && $0.accountID == lot.accountID && $0.instrument == lot.instrument
+                && $0.side == lot.side && !$0.isClosed
+        } : []
+        do {
+            entry = try .init(lot: lot, action: action, otherClosingLots: otherLots)
+            entryRevision = snapshot.revision; notice = nil
+        }
         catch { show(error) }
     }
     private func chooseAccount(_ account: String) {
@@ -339,9 +346,13 @@ private struct OptionTradeEditor: View {
                         field("本腿成交编号", text: $leg.form.externalID, prompt: "填写回单 / CSV 中本腿的唯一编号")
                     }
                     HStack(alignment: .top, spacing: 12) {
-                        field("实际张数", text: $leg.form.quantity)
+                        field(draft.action == .closing ? "实际总张数" : "实际张数", text: $leg.form.quantity)
                         if draft.action != .expiration { field("实际成交价 · USD / 股", text: $leg.form.unitPrice) }
-                        field("本腿总费用 · USD", text: $leg.form.fee, prompt: "无费用请填 0")
+                        field(draft.action == .closing ? "本次总费用 · USD" : "本腿总费用 · USD", text: $leg.form.fee, prompt: "无费用请填 0")
+                    }
+                    if draft.action == .closing, draft.closingCandidates.count > 1 {
+                        OptionTradeLotSelection(candidates: draft.closingCandidates, snapshot: snapshot,
+                            allocations: $draft.closingAllocations, quantity: leg.form.quantity)
                     }
                     DisclosureGroup("同刻成交顺序（按需填写）") {
                         VStack(alignment: .leading, spacing: 5) {
@@ -387,6 +398,51 @@ private struct OptionTradeEditor: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             TextField(prompt, text: text).onSubmit { }.accessibilityLabel(title)
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// One fill can consume several explicitly selected compatible lots. Allocation
+/// changes do not create executions, alter broker IDs or split the total fee.
+private struct OptionTradeLotSelection: View {
+    let candidates: [LedgerLot]
+    let snapshot: LedgerSnapshot
+    @Binding var allocations: [String: String]
+    let quantity: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("选择平仓批次").font(.subheadline.bold())
+            Text("仅显示同账户、同合约版本、同方向的持仓。多选时填写各批次平仓张数，合计须等于上方实际总张数；成交价和总费用只填一次。")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(candidates) { lot in
+                HStack(alignment: .top, spacing: 12) {
+                    Toggle(isOn: Binding(get: { allocations[lot.id] != nil }, set: { selected in
+                        if selected { allocations[lot.id] = lot.quantityRemaining.decimalString }
+                        else { allocations.removeValue(forKey: lot.id) }
+                    })) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("\(lot.acquiredAt.formatted(date: .abbreviated, time: .standard)) · 剩余 \(lot.quantityRemaining.decimalString) 张")
+                            if let event = snapshot.events.first(where: { $0.id == lot.openEventID }),
+                               let reference = event.source.externalTransactionID {
+                                Text("开仓成交：\(reference)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                    }.toggleStyle(.checkbox).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("optionTradeLotSelect_" + lot.id)
+                    if allocations[lot.id] != nil {
+                        if allocations.count > 1 {
+                            TextField("平仓张数", text: Binding(get: { allocations[lot.id] ?? "" }, set: { allocations[lot.id] = $0 }))
+                                .frame(width: 90).onSubmit { }.accessibilityLabel("本批次平仓张数")
+                                .accessibilityIdentifier("optionTradeLotQuantity_" + lot.id)
+                        } else {
+                            Text("本批次平仓 \(quantity) 张").font(.callout).monospacedDigit()
+                        }
+                    }
+                }
+            }
+            Text("批次成本与费用由账本分配；预览通过并确认后才入账。")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(.top, 4)
     }
 }
 
