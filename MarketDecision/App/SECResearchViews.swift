@@ -10,8 +10,6 @@ private struct SECPagePreparation: Hashable { let ready: Bool; let attempt: UUID
 
 struct SECResearchPage: View {
     let workspace: WorkspaceModel
-    var openOffline: (() -> Void)? = nil
-    var openDemonstration: (() -> Void)? = nil
     @Environment(\.scenePhase) private var scenePhase
     @State private var model: SECResearchWorkspaceModel?
     @State private var equityModel: EquityResearchWorkspaceModel?
@@ -25,13 +23,14 @@ struct SECResearchPage: View {
         Group {
             if let model {
                 SECResearchContent(model: model, aiModel: aiModel, equityModel: equityModel, equityError: equityError,
-                    retryEquity: { equityAttempt = UUID() },
-                    openOffline: openOffline, openDemonstration: openDemonstration)
+                    retryEquity: { equityAttempt = UUID() })
             }
             else if let errorMessage {
                 VStack(spacing: 14) {
                     ContentUnavailableView("SEC 研究暂不可用", systemImage: "doc.text.magnifyingglass", description: Text(errorMessage))
+                        .accessibilityIdentifier("secPreparationError")
                     Button("重新打开") { attempt = UUID() }
+                        .accessibilityIdentifier("secPreparationRetry")
                 }.padding(24)
             } else { ProgressView("正在打开本地 SEC 研究…") }
         }
@@ -86,8 +85,6 @@ struct SECResearchContent: View {
     let equityModel: EquityResearchWorkspaceModel?
     let equityError: String?
     let retryEquity: () -> Void
-    var openOffline: (() -> Void)? = nil
-    var openDemonstration: (() -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
     // User-provided contact stays in local preferences. It is excluded from research documents,
     // source provenance, exported material, error messages and diagnostics.
@@ -95,6 +92,7 @@ struct SECResearchContent: View {
     @State private var section = "分析概览"
     @State private var showsConnectionSettings = false
     @State private var showsAdvanced = false
+    @State private var showsActivityDetails = false
     @State private var filter = ""
     @State private var reportSection = "基础财务"
     @State private var industryApplicability: SECIndustryApplicability = .unknown
@@ -115,20 +113,18 @@ struct SECResearchContent: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        importControls
+                    VStack(alignment: .leading, spacing: 8) {
+                        importControls.id("stockPageTop")
                         activityStatus
                         dailyTabs
-                        pageContent(wide: geometry.size.width >= 1040,
-                                    sidebarWidth: min(490, (geometry.size.width - 80) * 0.40))
+                        pageContent(wide: geometry.size.width >= 900,
+                                    sidebarWidth: min(470, (geometry.size.width - 64) * 0.40))
                         Divider()
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("本地分析与重开可离线使用。")
-                            Text("财报研究用途。估值需要另行核对价格、股份和口径；缺项不会自动补成有效判断。")
-                                .accessibilityIdentifier("stockResearchLimitations")
-                        }.font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("本地研究可离线重开 · 缺项不补值；情景价格基于假设，不代表合理价值保证。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("stockResearchLimitations")
                     }.frame(maxWidth: 1280, alignment: .leading)
-                        .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 14)
+                        .padding(.horizontal, 20).padding(.top, 6).padding(.bottom, 8)
                         .frame(maxWidth: .infinity, alignment: .top)
                 }
                 .onChange(of: showsConnectionSettings) { _, open in
@@ -143,6 +139,13 @@ struct SECResearchContent: View {
                     guard !Task.isCancelled, showsConnectionSettings else { return }
                     withAnimation { proxy.scrollTo("stockConnectionPanel", anchor: .top) }
                 }
+                .task(id: section) {
+                    // Overview actions may be below the fold. Reveal the destination's
+                    // controls rather than retaining the previous page's scroll offset.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    proxy.scrollTo("stockPageTop", anchor: .top)
+                }
             }
         }
         .tint(accent)
@@ -153,6 +156,7 @@ struct SECResearchContent: View {
             // The company page owns AI lifetime. Moving between its sections does not
             // discard a response or encourage another paid request for the same report.
             aiModel?.select(reportID: selection?.id, revision: selection?.revision)
+            showsActivityDetails = false
         }
         .onChange(of: model.financialReport?.id) { _, _ in
             industryApplicability = .unknown; industrySource = ""; industryExcerpt = ""; industryRationale = ""
@@ -191,14 +195,36 @@ struct SECResearchContent: View {
             HStack { ProgressView().controlSize(.small); Text(progressText).font(.callout) }
                 .accessibilityIdentifier("secProgress")
         }
-        if let message = model.message {
-            Text(message).font(.callout).foregroundStyle(model.hasError ? Color.red : Color.secondary)
+        if model.hasError, let message = model.message {
+            Text(message).font(.callout).foregroundStyle(Color.red)
                 .accessibilityIdentifier("secMessage")
         }
-        if section == "分析概览", let message = model.financialMessage {
-            Text(message).font(.callout).foregroundStyle(model.financialHasError ? Color.red : Color.secondary)
+        if section == "分析概览", model.financialHasError, let message = model.financialMessage {
+            Text(message).font(.callout).foregroundStyle(Color.red)
                 .accessibilityIdentifier("secFinancialMessage")
         }
+        if section == "分析概览", model.financialReport == nil, model.valuationHasError,
+           let message = model.valuationMessage {
+            Text(message).font(.callout).foregroundStyle(Color.red)
+                .accessibilityIdentifier("stockOverviewValuationStatus")
+            if model.valuationHasError {
+                Button("查看估值记录并重试") { section = "估值与评分" }
+                    .buttonStyle(.link).disabled(model.isBusy)
+            }
+        }
+    }
+
+    // Routine completion messages remain available without adding another row to
+    // every successful overview. Errors and progress always stay visible above.
+    private var routineMessages: [(id: String, text: String)] {
+        var values: [(id: String, text: String)] = []
+        if !model.hasError, let message = model.message { values.append(("secMessage", message)) }
+        if section == "分析概览", !model.financialHasError, let message = model.financialMessage {
+            values.append(("secFinancialMessage", message))
+        }
+        if section == "分析概览", model.financialReport == nil, !model.valuationHasError,
+           let message = model.valuationMessage { values.append(("stockOverviewValuationStatus", message)) }
+        return values
     }
 
     private var dailyTabs: some View {
@@ -207,7 +233,7 @@ struct SECResearchContent: View {
                 Button { section = item } label: {
                     Text(item).font(.system(size: 14, weight: section == item ? .semibold : .medium))
                         .foregroundStyle(section == item ? accent : Color.primary)
-                        .padding(.horizontal, 6).padding(.top, 2).padding(.bottom, 10)
+                        .padding(.horizontal, 6).padding(.top, 2).padding(.bottom, 7)
                         .overlay(alignment: .bottom) {
                             Rectangle().fill(section == item ? accent : Color.clear).frame(height: 3)
                         }.contentShape(Rectangle())
@@ -216,16 +242,32 @@ struct SECResearchContent: View {
                     .accessibilityAddTraits(section == item ? .isSelected : [])
             }
             Spacer(minLength: 0)
+            if !routineMessages.isEmpty {
+                Button { showsActivityDetails = true } label: {
+                    Label("处理记录", systemImage: "info.circle").font(.system(size: 11))
+                }.buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("stockActivityDetails")
+                    .popover(isPresented: $showsActivityDetails) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("本地处理记录").font(.headline)
+                            ForEach(routineMessages, id: \.id) { item in
+                                Text(item.text).font(.callout).textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityIdentifier(item.id)
+                            }
+                        }.padding(16).frame(width: 380)
+                    }
+            }
         }.overlay(alignment: .bottom) { Divider() }
     }
 
     @ViewBuilder private func pageContent(wide: Bool, sidebarWidth: CGFloat) -> some View {
         if section == "分析概览" {
             if wide {
-                HStack(alignment: .top, spacing: 16) {
+                HStack(alignment: .top, spacing: 12) {
                     overviewFinancials.frame(maxWidth: .infinity, alignment: .leading)
                     overviewSidebar.frame(width: sidebarWidth)
-                        .padding(.leading, 16)
+                        .padding(.leading, 12)
                         .overlay(alignment: .leading) { Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1) }
                 }
             } else {
@@ -280,14 +322,17 @@ struct SECResearchContent: View {
     @ViewBuilder private var overviewFinancials: some View {
         if let report = model.financialReport {
             if model.canDisplayFinancialReport {
-                StockFinancialMetrics(report: report, accent: accent, showMissing: { metricID, period in
-                    if period == .quarter, ["revenue", "netIncome", "fcf"].contains(metricID) {
-                        reportSection = "增长"
-                    } else {
-                        reportSection = ["cash", "revenueCAGR3Y"].contains(metricID) ? "现金流与分配" : "基础财务"
-                    }
-                    section = "财务报告"
-                })
+                StockFinancialMetrics(report: report, accent: accent,
+                    aiModel: aiModel, reportRevision: model.financialReportRevision,
+                    isBusy: model.isBusy, showValuation: { section = "估值与评分" },
+                    showMissing: { metricID, period in
+                        if period == .quarter, ["revenue", "netIncome", "fcf"].contains(metricID) {
+                            reportSection = "增长"
+                        } else {
+                            reportSection = ["cash", "revenueCAGR3Y"].contains(metricID) ? "现金流与分配" : "基础财务"
+                        }
+                        section = "财务报告"
+                    })
             } else {
                 overviewNotice("先核对这份已保存的分析", systemImage: "checkmark.shield",
                     description: "重算完成前不显示缓存数值，已有报告和原始财报不会被覆盖。")
@@ -312,9 +357,10 @@ struct SECResearchContent: View {
     }
 
     private var overviewSidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             if let report = model.financialReport, model.canDisplayFinancialReport, let aiModel {
-                AIInsightCard(model: aiModel, report: report, reportRevision: model.financialReportRevision).id(report.id)
+                AIInsightCard(model: aiModel, researchModel: model, report: report,
+                    reportRevision: model.financialReportRevision).id(report.id)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Label("AI 财报解读", systemImage: "sparkles").font(.system(size: 16, weight: .semibold))
@@ -351,9 +397,11 @@ struct SECResearchContent: View {
                 }.padding(.top, 4).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("stockAdvancedDetails")
                 .accessibilityValue(showsAdvanced ? "已展开" : "已收起")
-            Text("SEC 连接设置、数据来源与其他高级选项。")
-                .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 20)
-            if showsAdvanced { advancedControls }
+            if showsAdvanced {
+                Text("SEC 连接设置、数据来源与其他高级选项。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).padding(.leading, 20)
+                advancedControls
+            }
         }.id("stockAdvancedPanel")
     }
 
@@ -375,15 +423,6 @@ struct SECResearchContent: View {
             }
             Button("查看估值与评分的证据要求") { section = "估值与评分" }
                 .buttonStyle(.link).accessibilityIdentifier("stockValuationDetails")
-            Menu("高级工具") {
-                Button("公司财报") { section = "分析概览" }.accessibilityIdentifier("stockOpenCompany")
-                if let openOffline {
-                    Button("离线财报摘录", action: openOffline).accessibilityIdentifier("stockOpenOffline")
-                }
-                if let openDemonstration {
-                    Button("合成研究与自选管理", action: openDemonstration).accessibilityIdentifier("stockOpenDemo")
-                }
-            }.menuStyle(.borderlessButton).fixedSize().accessibilityIdentifier("stockAdvancedTools")
         }.font(.system(size: 13)).padding(.top, 4)
     }
 
@@ -784,7 +823,17 @@ struct SECResearchContent: View {
         return "单位需核对"
     }
     private var valuationReports: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("股价估值").font(.title2.bold())
+                Spacer()
+                Button("返回分析概览") { section = "分析概览" }
+                    .accessibilityIdentifier("stockValuationBackToOverview")
+            }
+            Text("财报只有财务数据，不含当前股价。已保存的估值需单独打开核对；首次生成还需价格、完整股类股数、行业和拆股口径证据。")
+                .font(.callout).foregroundStyle(.secondary)
+                .accessibilityIdentifier("stockValuationRequirements")
+            savedValuationReports
             GroupBox("证据补充与资格检查") {
                 VStack(alignment: .leading, spacing: 12) {
                     if let report = model.financialReport, model.financialReportIsSaved {
@@ -830,36 +879,52 @@ struct SECResearchContent: View {
                         .accessibilityIdentifier("secValuationUnverified")
                 }
             }
-            GroupBox("已保存的估值与评分补充") {
-                VStack(alignment: .leading, spacing: 12) {
-                    Button("重新载入补充报告列表") { Task { await model.loadValuationSupplements() } }
-                        .disabled(model.isBusy).accessibilityIdentifier("secReloadValuationSupplements")
-                    if let error = model.valuationListError {
-                        Text(error).font(.callout).foregroundStyle(.red).accessibilityIdentifier("secValuationListError")
-                    }
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(model.savedValuationSupplements, id: \.id) { report in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(report.ticker + " · " + report.companyName)
-                                    Text("生成 " + report.createdAt.formatted(date: .numeric, time: .standard))
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Text("财务报告：" + report.parentFinancialReportID.uuidString)
-                                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                }
-                                Spacer()
-                                Button("打开补充报告") { Task { await model.openValuationSupplement(report.id) } }
-                                    .disabled(model.isBusy).accessibilityIdentifier("openSECValuationSupplement-" + report.id.uuidString)
-                            }
-                        }
-                    }
-                    if model.savedValuationSupplements.isEmpty && model.valuationListError == nil {
-                        Text("尚无已保存的补充报告。").foregroundStyle(.secondary)
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-            }
         }
     }
+
+    private var visibleSavedValuations: [SECValuationSupplementSummary] {
+        model.financialReport == nil ? model.availableValuationSupplements : model.currentFinancialValuationSupplements
+    }
+
+    private func openAndVerifyValuation(_ id: UUID) {
+        // Capture selection before the Task can yield to another company/report selection.
+        guard let request = model.makeValuationOpenRequest(id: id) else { return }
+        Task { await model.openAndVerifyValuationSupplement(request) }
+    }
+
+    private var savedValuationReports: some View {
+        GroupBox("已保存的估值与评分补充") {
+            VStack(alignment: .leading, spacing: 12) {
+                Button("重新载入补充报告列表") { Task { await model.loadValuationSupplements() } }
+                    .disabled(model.isBusy).accessibilityIdentifier("secReloadValuationSupplements")
+                if let error = model.valuationNavigationError {
+                    Text(error).font(.callout).foregroundStyle(.red).accessibilityIdentifier("secValuationListError")
+                }
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(visibleSavedValuations, id: \.id) { report in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(report.ticker + " · " + report.companyName)
+                                Text("生成 " + report.createdAt.formatted(date: .numeric, time: .standard))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("财务报告：" + report.parentFinancialReportID.uuidString)
+                                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("打开并核对估值") { openAndVerifyValuation(report.id) }
+                                .disabled(model.isBusy).accessibilityIdentifier("verifySECValuationSupplement-" + report.id.uuidString)
+                            Button("仅查看证据") { Task { await model.openValuationSupplement(report.id) } }
+                                .disabled(model.isBusy).accessibilityIdentifier("openSECValuationSupplement-" + report.id.uuidString)
+                        }
+                    }
+                }
+                if visibleSavedValuations.isEmpty && model.valuationNavigationError == nil {
+                    Text(model.financialReport == nil ? "尚无可打开的估值记录。" : "这份财务报告尚无可打开的估值记录。").foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
     private var capturedPrice: SECValuationPriceEvidence? { equityModel?.result?.quoteEvidence }
     private var canSelectCapturedPrice: Bool {
         guard let price = capturedPrice, let parent = model.financialReport, model.financialReportIsSaved,
@@ -1087,10 +1152,8 @@ struct SECResearchContent: View {
                 Button("重算并核对补充报告") { Task { await model.recomputeValuationSupplement() } }
                     .disabled(model.isBusy).accessibilityIdentifier("secReplayValuationSupplement")
                 if model.financialReport?.id != report.parentFinancialReportID {
-                    Button("打开绑定财务报告") {
-                        section = "财务报告"
-                        Task { await model.openFinancialReport(report.parentFinancialReportID) }
-                    }.disabled(model.isBusy)
+                    Button("打开并核对绑定财报与估值") { openAndVerifyValuation(report.id) }
+                        .disabled(model.isBusy)
                 }
                 if model.valuationIsSaved { Label("已保存", systemImage: "checkmark.circle").font(.caption) }
             }
@@ -1282,59 +1345,82 @@ private struct StockAIReportSelection: Equatable {
 private struct StockFinancialMetrics: View {
     let report: SECFinancialReportDocument
     let accent: Color
+    let aiModel: AIInsightWorkspaceModel?
+    let reportRevision: UUID
+    let isBusy: Bool
+    let showValuation: () -> Void
     let showMissing: (String, SECFinancialOverview.Period) -> Void
     @State private var period: SECFinancialOverview.Period = .quarter
-    @State private var showsDebtBreakdown = false
-
-    private var debtBreakdown: SECFinancialDebtBreakdown {
-        SECFinancialDebtBreakdown(report: report.financials)
-    }
+    @State private var showsMetricBasis = false
 
     private var rows: [SECFinancialOverview.Row] {
         let source = SECFinancialOverview.rows(for: report.financials, period: period)
-        return ["revenue", "netIncome", "fcf", "revenueCAGR3Y", "cash", "debt"].compactMap { id in
+        return ["revenue", "netIncome", "fcf", "revenueCAGR3Y", "cash"].compactMap { id in
             source.first(where: { $0.id == id })
         }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("财务概览").font(.system(size: 20, weight: .semibold))
-                        Spacer(minLength: 8)
-                        periodPicker
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("财务概览").font(.system(size: 20, weight: .semibold))
-                        periodPicker
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("财务概览").font(.system(size: 18, weight: .semibold))
+                    Spacer(minLength: 4)
+                    periodPicker
                 }
                 Text(SECFinancialOverview.periodSummary(for: report.financials, period: period))
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .textSelection(.enabled).accessibilityIdentifier("stockOverviewPeriod")
-                Text("USD · M 为百万；切换适用于收入、净利润与自由现金流。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
-                                GridItem(.flexible(), alignment: .leading)], alignment: .leading,
-                      spacing: 14) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    metric(row).padding(.leading, index.isMultiple(of: 2) ? 0 : 12)
-                        .padding(.trailing, index.isMultiple(of: 2) ? 12 : 0)
-                        .overlay(alignment: .trailing) {
-                            if index.isMultiple(of: 2) {
-                                Rectangle().fill(Color.primary.opacity(0.08)).frame(width: 1).padding(.bottom, 14)
-                            }
-                        }
+                    .textSelection(.enabled).accessibilityIdentifier("stockOverviewPeriod")
+                HStack(spacing: 6) {
+                    Text("USD · M 为百万").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Button("统计口径") { showsMetricBasis = true }
+                        .buttonStyle(.link).font(.system(size: 11))
+                        .accessibilityIdentifier("stockOverviewMetricBasis")
                 }
+            }
+            // Three compact columns keep the five financial metrics above the price
+            // scenarios. The valuation card gets the whole width instead of one cell.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3),
+                      alignment: .leading, spacing: 8) {
+                ForEach(rows) { row in metric(row) }
             }.accessibilityIdentifier("stockOverviewMetrics")
+            Divider()
+            if let aiModel {
+                AIValuationReferenceCard(model: aiModel, reportID: report.id, reportRevision: reportRevision,
+                    localDetailsDisabled: isBusy, showLocalDetails: showValuation)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("AI 估值参考").font(.system(size: 14, weight: .medium))
+                    Text("AI 服务暂不可用，本地估值资料仍可查看。")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Button("本地估值资料", action: showValuation)
+                        .buttonStyle(.link).font(.system(size: 12)).disabled(isBusy)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
+        .popover(isPresented: $showsMetricBasis) { metricBasis }
         .onChange(of: report.id) { _, _ in
             period = .quarter
-            showsDebtBreakdown = false
+            showsMetricBasis = false
         }
+    }
+
+    private var metricBasis: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("统计期间与口径").font(.headline)
+            Text("单季度 / TTM 切换仅影响收入、净利润与自由现金流；不改变现金时点或三年增长区间。")
+                .font(.callout).foregroundStyle(.secondary)
+            ForEach(rows) { row in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.title).font(.callout.weight(.semibold))
+                    Text(row.periodLabel + " · " + row.basis).font(.callout).foregroundStyle(.secondary)
+                    if let flags = row.metric?.flags, !flags.isEmpty {
+                        Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                    }
+                }.fixedSize(horizontal: false, vertical: true)
+            }
+        }.padding(16).frame(width: 390).textSelection(.enabled)
     }
 
     private var periodPicker: some View {
@@ -1343,17 +1429,17 @@ private struct StockFinancialMetrics: View {
                 Text(choice.title).tag(choice)
             }
         }.pickerStyle(.segmented).controlSize(.small).labelsHidden()
-            .frame(width: 154)
+            .frame(width: 126)
             .accessibilityLabel("财务概览统计期间")
             .accessibilityIdentifier("stockOverviewPeriodPicker")
     }
 
     private func metric(_ row: SECFinancialOverview.Row) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(row.title).font(.system(size: 14)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(row.title).font(.system(size: 12)).foregroundStyle(.secondary)
             if let value = row.metric?.value {
                 Text(amountText(row, value: value))
-                    .font(.system(size: row.id == "revenue" || row.id == "netIncome" ? 32 : 28, weight: .semibold))
+                    .font(.system(size: row.id == "revenue" || row.id == "netIncome" ? 27 : 25, weight: .semibold))
                     .monospacedDigit().lineLimit(1).minimumScaleFactor(0.55).textSelection(.enabled)
                     .foregroundStyle(value.amount < 0 ? Color(red: 0.70, green: 0.19, blue: 0.12)
                         : (row.id == "revenue" ? accent : Color.primary))
@@ -1361,36 +1447,21 @@ private struct StockFinancialMetrics: View {
                     .accessibilityValue(row.percentage ? row.displayValue : value.decimalString + " USD")
             } else {
                 HStack(spacing: 8) {
-                    Text(missingTitle(row)).font(.system(size: 21, weight: .semibold))
+                    Text(missingTitle(row)).font(.system(size: 18, weight: .semibold))
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
                 }
-                if row.id == "debt" {
-                    Text(debtBreakdown.summary).font(.system(size: 13)).foregroundStyle(.secondary)
-                    Text("缺少或待核对：" + debtBreakdown.missingTitles)
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    Button("查看缺项") { showsDebtBreakdown = true }
-                        .buttonStyle(.link).font(.system(size: 12))
-                        .accessibilityIdentifier("stockMetricMissing-debt")
-                        .popover(isPresented: $showsDebtBreakdown) {
-                            ScrollView { StockDebtBreakdownView(report: report.financials).padding(16) }
-                                .frame(width: 440, height: 520)
-                        }
-                } else {
-                    Text(row.displayValue).font(.system(size: 13)).foregroundStyle(.secondary)
-                    Button("查看缺项") { showMissing(row.id, period) }.buttonStyle(.link).font(.system(size: 12))
-                        .accessibilityIdentifier("stockMetricMissing-" + row.id)
-                }
+                Text(row.displayValue).font(.system(size: 11)).foregroundStyle(.secondary)
+                Button("查看缺项") { showMissing(row.id, period) }.buttonStyle(.link).font(.system(size: 12))
+                    .accessibilityIdentifier("stockMetricMissing-" + row.id)
             }
-            Text(row.periodLabel).font(.system(size: 12)).foregroundStyle(.secondary)
+            Text(row.periodLabel).font(.system(size: 11)).foregroundStyle(.secondary)
                 .accessibilityIdentifier("stockMetricPeriod-" + row.id)
-            Text(row.basis).font(.system(size: 11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             if let flags = row.metric?.flags, !flags.isEmpty {
                 Text(flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
             }
-            Spacer(minLength: 0)
-            Divider().padding(.top, 8)
-        }.frame(maxWidth: .infinity, minHeight: 102, alignment: .topLeading)
+        }.frame(maxWidth: .infinity, minHeight: 74, alignment: .topLeading)
+            .padding(.vertical, 3)
+            .help(row.periodLabel + " · " + row.basis)
             .accessibilityIdentifier("stockMetric-" + row.id)
     }
 

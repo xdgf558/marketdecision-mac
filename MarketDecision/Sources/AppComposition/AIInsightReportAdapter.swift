@@ -6,6 +6,7 @@ import AIInsights
 
 public enum AIInsightReportAdapterError: Error, Equatable {
     case replayMismatch, missingMetric, invalidCutoff
+    case referencePredatesFinancialEvidence
 }
 
 /// Prepares the ONLY financial data sent to the AI interpreter. The caller obtains the
@@ -14,9 +15,15 @@ public enum AIInsightReportAdapterError: Error, Equatable {
 /// Parent documents, raw SEC bytes, free-form evidence/flags and local identifiers are
 /// deliberately absent from the external packet.
 public enum AIInsightReportAdapter {
-    public static func prepare(_ report: SECFinancialReportDocument) async throws -> AIInsightInput {
+    public static func prepare(_ report: SECFinancialReportDocument,
+                               reference: AIValuationReferenceInput? = nil) async throws -> AIInsightInput {
         try Task.checkCancellation()
         try report.validate()
+        // Match the existing valuation evidence rule: accounting evidence cannot be
+        // used to explain an earlier reference price. Compare original Date precision.
+        if let reference, reference.referenceAt < report.cutoff {
+            throw AIInsightReportAdapterError.referencePredatesFinancialEvidence
+        }
         let replay = try await report.financials.recompute()
         guard try report.financials.cachedReportsMatch(replay) else {
             throw AIInsightReportAdapterError.replayMismatch
@@ -42,7 +49,7 @@ public enum AIInsightReportAdapter {
         let periods: [Period: String] = [.ttm: ttm, .instant: instant, .ttmYoY: ttm + previousTTM,
             .quarter: quarter, .quarterYoY: quarter + quarterYoY, .quarterQoQ: quarter + quarterQoQ]
 
-        let metrics = try descriptors.map { descriptor -> AIInsightMetric in
+        var metrics = try descriptors.map { descriptor -> AIInsightMetric in
             let values: [String: FundamentalMetric]
             switch descriptor.family {
             case .base: values = replay.base.metrics
@@ -59,15 +66,66 @@ public enum AIInsightReportAdapter {
                 unit: descriptor.unit, unavailable: metric.unavailable?.rawValue,
                 sourceIDs: ["local." + descriptor.family.rawValue])
         }
+        var sources: [AIInsightSource] = [
+            .init(id: "local.base", label: "本地财务计算 fundamentals.v1；完整保存输入已重算匹配；仅研究，不证明历史 PIT 或估值资格"),
+            .init(id: "local.growth", label: "本地增长计算 fundamentals-growth.v1；完整保存输入已重算匹配；非 SEC 原始报表行引用"),
+            .init(id: "local.completion", label: "本地补充计算 fundamentals-completion.v1；完整保存输入已重算匹配；非 SEC 原始报表行引用")
+        ]
+        var context: AIInsightReferenceValuationContext?
+        if let reference {
+            // Reuse the same already-matched replay, not a second calculation or cached values.
+            metrics += try referenceMetrics(reference, commonIncome: replay.base.metrics["commonIncome"]?.value,
+                revenue: replay.base.metrics["revenue"]?.value, fcf: replay.base.metrics["fcf"]?.value, ttm: ttm)
+            sources.append(.init(id: AIInsightReferenceValuationContext.referenceSourceID,
+                label: "用户手工参考价与单一普通股股本假设；股本未认证；倍数基于已重算财报，非行情或合理股价"))
+            context = AIInsightReferenceValuationContext(referenceAt: try utcCutoff(reference.referenceAt),
+                sharesAsOf: reference.sharesAsOf.iso8601)
+        }
         let packet = AIInsightInput(ticker: report.ticker, companyName: report.companyName,
             periodEnd: latest.end.iso8601, cutoff: try utcCutoff(report.cutoff), metrics: metrics,
-            sources: [
-                .init(id: "local.base", label: "本地财务计算 fundamentals.v1；完整保存输入已重算匹配；仅研究，不证明历史 PIT 或估值资格"),
-                .init(id: "local.growth", label: "本地增长计算 fundamentals-growth.v1；完整保存输入已重算匹配；非 SEC 原始报表行引用"),
-                .init(id: "local.completion", label: "本地补充计算 fundamentals-completion.v1；完整保存输入已重算匹配；非 SEC 原始报表行引用")
-            ])
+            sources: sources, referenceValuation: context)
         try packet.validate()
         return packet
+    }
+
+    /// The same cap and fratio policy as fundamentals.v1: exact price × actual shares,
+    /// missing input stays missing, and zero/negative denominators never produce a multiple.
+    /// This narrow internal seam also checks denial paths independently of SEC fixtures.
+    static func referenceMetrics(_ reference: AIValuationReferenceInput, commonIncome: Money?,
+                                 revenue: Money?, fcf: Money?, ttm: String) throws -> [AIInsightMetric] {
+        let source = [AIInsightReferenceValuationContext.referenceSourceID]
+        let cap = try reference.price.multiplied(by: reference.shares.decimalString)
+        var values: [AIInsightMetric] = [
+            .init(id: "reference.price", label: "用户手工参考股价", value: reference.price.decimalString,
+                  unit: "USD/share", unavailable: nil, sourceIDs: source),
+            .init(id: "reference.shares", label: "用户确认的单一普通股实际股数（未认证）", value: reference.shares.decimalString,
+                  unit: "shares", unavailable: nil, sourceIDs: source),
+            .init(id: "reference.marketCap", label: "参考市值（手工参考价 × 股数假设）", value: cap.decimalString,
+                  unit: "USD", unavailable: nil, sourceIDs: source)
+        ]
+        for (key, label, denominator) in [("pe", "参考市盈率（普通股利润）", commonIncome),
+                                          ("ps", "参考市销率", revenue), ("pfcf", "参考市现率（自由现金流）", fcf)] {
+            let value: String?, unavailable: String?
+            if let denominator {
+                if denominator.amount > 0 {
+                    let multiple = try cap.divided(by: denominator.decimalString)
+                    // A strictly positive ratio may round to zero at Money's 18-place
+                    // output boundary. That is insufficient precision, not a zero multiple.
+                    if multiple.amount > 0 {
+                        value = multiple.decimalString; unavailable = nil
+                    } else {
+                        value = nil; unavailable = "belowCalculationPrecision"
+                    }
+                } else {
+                    value = nil; unavailable = FundamentalMissing.nonpositiveDenominator.rawValue
+                }
+            } else {
+                value = nil; unavailable = FundamentalMissing.missingInput.rawValue
+            }
+            values.append(.init(id: "reference." + key, label: label + "（" + ttm + "）",
+                value: value, unit: "multiple", unavailable: unavailable, sourceIDs: source))
+        }
+        return values
     }
 
     /// Preserve a Date's represented fraction instead of silently rounding the boundary
@@ -100,7 +158,8 @@ public enum AIInsightReportAdapter {
         }
     }
 
-    // Deliberately excludes prices, positions, scores, valuation and all arbitrary metric keys.
+    // Default packet excludes prices, positions, scores, valuation and arbitrary metric keys.
+    // Explicitly confirmed reference assumptions use only the separate closed six-key packet.
     // Missing results remain present with the calculator's closed unavailable reason.
     private static let descriptors: [Descriptor] = [
         .init(.base, "revenue", "营业收入", "USD", .ttm),

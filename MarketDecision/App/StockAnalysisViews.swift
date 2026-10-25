@@ -10,31 +10,35 @@ struct StockAnalysisPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if tool != .company {
-                HStack {
+            // Independent workspaces remain reachable while the SEC page loads or fails.
+            // This navigation must never depend on a child database opening successfully.
+            HStack {
+                if tool == .company {
+                    Text("股票分析").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("stockAnalysisTitle")
+                } else {
                     Button {
                         tool = .company
                     } label: {
                         Label("返回股票分析", systemImage: "chevron.left")
                     }.buttonStyle(.borderless).accessibilityIdentifier("stockBackToAnalysis")
-                    Spacer()
-                    Menu("高级工具") {
-                        Button("公司财报") { tool = .company }
-                            .accessibilityIdentifier("stockOpenCompany")
-                        Button("离线财报摘录") { tool = .offline }
-                            .accessibilityIdentifier("stockOpenOffline")
-                        Button("合成研究与自选管理") { tool = .demonstration }
-                            .accessibilityIdentifier("stockOpenDemo")
-                    }.menuStyle(.borderlessButton).fixedSize()
-                        .accessibilityIdentifier("stockAdvancedTools")
-                }.frame(maxWidth: 1280)
-                    .padding(.horizontal, 24).padding(.top, 8)
-                    .frame(maxWidth: .infinity)
-            }
+                }
+                Spacer()
+                Menu("高级工具") {
+                    Button("公司财报") { tool = .company }
+                        .accessibilityIdentifier("stockOpenCompany")
+                    Button("离线财报摘录") { tool = .offline }
+                        .accessibilityIdentifier("stockOpenOffline")
+                    Button("合成研究与自选管理") { tool = .demonstration }
+                        .accessibilityIdentifier("stockOpenDemo")
+                }.menuStyle(.borderlessButton).fixedSize().font(.system(size: 12))
+                    .accessibilityIdentifier("stockAdvancedTools")
+            }.frame(maxWidth: 1280)
+                .padding(.horizontal, 20).padding(.top, 4)
+                .frame(maxWidth: .infinity)
             switch tool {
             case .company:
-                SECResearchPage(workspace: workspace, openOffline: { tool = .offline },
-                                openDemonstration: { tool = .demonstration })
+                SECResearchPage(workspace: workspace)
             case .offline:
                 OfflineIssuerResearchPage(workspace: workspace)
             case .demonstration:
@@ -114,9 +118,9 @@ struct StockDailyControls: View {
 
     var body: some View {
         let local = catalog
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 4) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 20) {
+                HStack(alignment: .top, spacing: 12) {
                     companyHeading(local).frame(minWidth: 340, maxWidth: .infinity, alignment: .leading)
                     headerActions(local).fixedSize(horizontal: true, vertical: false)
                 }
@@ -157,9 +161,7 @@ struct StockDailyControls: View {
     }
 
     private func companyHeading(_ local: SECStockDailyCatalog) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("股票分析").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                .accessibilityIdentifier("stockAnalysisTitle")
+        VStack(alignment: .leading, spacing: 4) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     companyIdentity(local)
@@ -176,7 +178,7 @@ struct StockDailyControls: View {
 
     private func companyIdentity(_ local: SECStockDailyCatalog) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(companyName(local)).font(.system(size: 25, weight: .bold))
+            Text(companyName(local)).font(.system(size: 22, weight: .bold))
                 .lineLimit(2).accessibilityAddTraits(.isHeader)
             if !selectedTicker.isEmpty && companyName(local) != selectedTicker {
                 Text(selectedTicker).font(.system(size: 14, weight: .semibold)).foregroundStyle(.secondary)

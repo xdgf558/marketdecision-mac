@@ -32,4 +32,4 @@ xcodebuild -project "$project_root/App/MarketDecision.xcodeproj" -scheme NativeI
   -resultBundlePath "$result_dir/Results.xcresult" \
   CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ARCHS="$(uname -m)" ONLY_ACTIVE_ARCH=YES test-without-building
 python3 "$project_root/Scripts/check-native-ui-result.py" "$result_dir/Results.xcresult" "$report" "$host"
-echo 'Native UI: synthetic in-memory host only; Keychain, VoiceOver speech and real IME composition NOT EXECUTED.'
+echo 'Native UI: synthetic isolated host; memory and disposable temporary databases only; Keychain, VoiceOver speech and real IME composition NOT EXECUTED.'

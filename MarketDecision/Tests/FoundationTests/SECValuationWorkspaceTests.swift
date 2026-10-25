@@ -78,6 +78,9 @@ private actor ValuationWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
     var preparations = 0, opens = 0, commits = 0
     var attemptedRevisions: [UUID] = []
     var receivedEvidence: [SECValuationInputEvidence] = []
+    private var openedParentOverride: SECFinancialReportDocument?
+    func overrideOpenedParent(_ parent: SECFinancialReportDocument) { openedParentOverride = parent }
+    func replaceStored(_ rows: [SECValuationSupplementDocument]) { stored = rows }
     private var sourceGate: ValuationWorkspaceGate?
     func holdSources(_ gate: ValuationWorkspaceGate) { sourceGate = gate }
     private var sourceHashOverride: String?
@@ -154,6 +157,12 @@ private actor ValuationWorkspaceStorage: SECResearchWorkspaceStorage, SECFinanci
         let result = stored.first { $0.id == id }, gate = openGate; openGate = nil
         if let gate { await gate.hold() }
         guard let result else { throw SnapshotError.missingReference }; return result
+    }
+    func openValuationSupplementWithParent(id: UUID) async throws
+        -> (supplement: SECValuationSupplementDocument, parent: SECFinancialReportDocument) {
+        // This fake can intentionally return an incorrect pair; the model still checks identities.
+        let parent = openedParentOverride ?? financial
+        return (try await openValuationSupplement(id: id), parent)
     }
 }
 private actor ValuationWorkspaceNetworkProbe {
@@ -299,6 +308,14 @@ private func capturedPriceWorkspaceQuote(symbol: String, cutoff: Date) throws ->
         #expect(try ResearchDocument.encoded(frozen) == ResearchDocument.encoded(price))
         let encoded = String(decoding: try ResearchDocument.encoded(generated), as: UTF8.self)
         #expect(!encoded.contains("SYNTHETIC_PIPELINE_KEY") && !encoded.contains("SYNTHETIC_PIPELINE_SECRET"))
+        // The daily overview must regain both the parent and a nonempty verified reference,
+        // not merely display metadata from the saved supplement catalog.
+        await reopened.load()
+        let overviewRequest = try #require(reopened.makeValuationOpenRequest(id: generated.id))
+        await reopened.openAndVerifyValuationSupplement(overviewRequest)
+        #expect(reopened.canDisplayFinancialReport && reopened.canDisplayValuationSupplement)
+        #expect(reopened.financialReport?.id == financial.id)
+        #expect(reopened.valuationSupplement?.valuation.results.reference?.metrics["marketCap"]?.value == (try Money("1000")))
         #expect(await credentials.reads == 1)
         #expect(await transport.sends == 1)
         #expect(await network.calls == 0)
@@ -685,5 +702,117 @@ private func capturedPriceWorkspaceQuote(symbol: String, cutoff: Date) throws ->
         #expect(model.valuationSourceDocument == nil && model.valuationSupplement == nil && !model.canSaveValuationSupplement)
         model.chooseTicker("NEW")
         #expect(model.financialReport == nil && !model.canGenerateValuationSupplement)
+    }
+
+    @Test func explicitValuationOpenRestoresAndVerifiesBothDocumentsForOverview() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let network = ValuationWorkspaceNetworkProbe(), model = valuationWorkspace(storage, now: valuation.createdAt, network: network)
+        await model.load()
+        #expect(model.financialReport == nil && model.currentFinancialValuationSupplements.isEmpty)
+        let request = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        await model.openAndVerifyValuationSupplement(request)
+        #expect(model.financialReport?.id == financial.id && model.valuationSupplement?.id == valuation.id)
+        #expect(model.canDisplayFinancialReport && model.canDisplayValuationSupplement)
+        #expect(model.financialReportState == .matched && model.valuationState == .matched)
+        #expect(model.financialReportIsSaved && model.valuationIsSaved)
+        #expect(!model.canSaveFinancialReport && !model.canSaveValuationSupplement)
+        // Reopening the parent still clears the in-memory supplement; its saved entry remains discoverable.
+        await model.openFinancialReport(financial.id)
+        #expect(model.valuationSupplement == nil && model.currentFinancialValuationSupplements.map(\.id) == [valuation.id])
+        let reopen = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        let previousReportRevision = model.financialReportRevision
+        await model.openAndVerifyValuationSupplement(reopen)
+        #expect(model.canDisplayFinancialReport && model.canDisplayValuationSupplement)
+        #expect(model.financialReportRevision != previousReportRevision)
+        #expect(await storage.commits == 0)
+        #expect(await storage.preparations == 0)
+        #expect(await network.calls == 0)
+    }
+
+    @Test func explicitValuationOpenRejectsWrongBoundParent() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        var json = try #require(JSONSerialization.jsonObject(with: ResearchDocument.encoded(financial)) as? [String: Any])
+        json["id"] = UUID().uuidString
+        let wrong = try JSONDecoder().decode(SECFinancialReportDocument.self, from: JSONSerialization.data(withJSONObject: json))
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        await storage.overrideOpenedParent(wrong)
+        let model = valuationWorkspace(storage, now: valuation.createdAt)
+        await model.load()
+        let request = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        await model.openAndVerifyValuationSupplement(request)
+        #expect(model.valuationHasError && model.valuationState == .failed)
+        #expect(model.financialReport == nil && model.valuationSupplement == nil)
+        #expect(!model.canDisplayFinancialReport && !model.canDisplayValuationSupplement)
+        await storage.overrideOpenedParent(financial)
+        let retry = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        await model.openAndVerifyValuationSupplement(retry)
+        #expect(model.canDisplayFinancialReport && model.canDisplayValuationSupplement && !model.valuationHasError)
+    }
+
+    @Test(arguments: [false, true]) func explicitValuationOpenRequiresBothReplaysToMatch(failParent: Bool) async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let network = ValuationWorkspaceNetworkProbe()
+        let model = SECResearchWorkspaceModel(storage: storage, networkAvailable: false,
+            importer: { _, _, _ in try await network.importCompany() }, financialStorage: storage,
+            valuationStorage: storage, now: { valuation.createdAt },
+            valuationReplay: { _ in failParent }, financialReplay: { _ in !failParent })
+        await model.load()
+        let request = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        await model.openAndVerifyValuationSupplement(request)
+        #expect(model.valuationHasError && model.valuationState == .mismatched)
+        #expect(model.financialReport == nil && model.valuationSupplement == nil)
+        #expect(!model.canDisplayFinancialReport && !model.canDisplayValuationSupplement)
+        #expect(model.makeValuationOpenRequest(id: valuation.id) != nil)
+        #expect(await network.calls == 0)
+    }
+
+    @Test func explicitValuationOpenRejectsQueuedRequestAfterSelectionOrPageChanges() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let model = valuationWorkspace(storage, now: valuation.createdAt)
+        await model.load()
+        let old = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        await model.openFinancialReport(financial.id)
+        await model.openAndVerifyValuationSupplement(old)
+        #expect(await storage.opens == 0)
+        #expect(model.financialReport?.id == financial.id && model.valuationSupplement == nil)
+        let beforeLeave = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        model.disappear(); await model.load()
+        await model.openAndVerifyValuationSupplement(beforeLeave)
+        #expect(await storage.opens == 0)
+        #expect(model.financialReport == nil && model.valuationSupplement == nil)
+    }
+
+    @Test func lateValuationPairCannotPublishOrReleaseNewOpen() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        let model = valuationWorkspace(storage, now: valuation.createdAt), oldGate = ValuationWorkspaceGate(), newGate = ValuationWorkspaceGate()
+        await model.load(); await storage.configure(openGate: oldGate)
+        let oldRequest = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        let old = Task { await model.openAndVerifyValuationSupplement(oldRequest) }
+        await oldGate.waitUntilEntered(); model.disappear(); await model.load()
+        await storage.configure(openGate: newGate)
+        let currentRequest = try #require(model.makeValuationOpenRequest(id: valuation.id))
+        let current = Task { await model.openAndVerifyValuationSupplement(currentRequest) }
+        await newGate.waitUntilEntered(); await oldGate.release(); await old.value
+        #expect(model.isBusy && model.financialReport == nil && model.valuationSupplement == nil)
+        #expect(!model.valuationHasError)
+        await newGate.release(); await current.value
+        #expect(!model.isBusy && model.canDisplayFinancialReport && model.canDisplayValuationSupplement)
+    }
+
+    @Test func duplicateValuationCatalogIDsCannotAuthorizeOpen() async throws {
+        let (source, financial, valuation) = try await ValuationWorkspaceFixture.shared.value()
+        let storage = ValuationWorkspaceStorage(source: source, financial: financial, valuation: valuation)
+        await storage.replaceStored([valuation, valuation])
+        let model = valuationWorkspace(storage, now: valuation.createdAt)
+        await model.load(); await model.openFinancialReport(financial.id)
+        #expect(model.savedValuationSupplements.count == 2)
+        #expect(model.valuationNavigationError != nil)
+        #expect(model.availableValuationSupplements.isEmpty && model.currentFinancialValuationSupplements.isEmpty)
+        #expect(model.makeValuationOpenRequest(id: valuation.id) == nil)
+        #expect(await storage.opens == 0)
     }
 }

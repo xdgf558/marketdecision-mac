@@ -2,7 +2,8 @@ import Foundation
 import CoreDomain
 import DataContracts
 
-/// Source selection retains only the original response bytes and their parent binding.
+/// Source selection retains the original response bytes, their parent binding and
+/// an explicitly unqualified actual-share-count candidate from the validated facts.
 /// The store validates the complete parent chain before constructing this projection.
 /// This is neither a saved research document nor permission to skip that validation
 /// when preparing, saving or reopening a calculation.
@@ -12,6 +13,7 @@ public struct SECValuationSourceDocument: Sendable, Identifiable {
     public let cutoff: Date
     public let parentResearchHash: String
     public let sources: [SECResearchSource]
+    public let shareCountCandidates: SECShareCountCandidateProjection
 
     init(validatedResearch: SECResearchDocument, originalHash: String) throws {
         id = validatedResearch.id
@@ -19,6 +21,8 @@ public struct SECValuationSourceDocument: Sendable, Identifiable {
         cutoff = validatedResearch.cutoff
         parentResearchHash = originalHash
         sources = validatedResearch.sources
+        shareCountCandidates = SECShareCountCandidateProjection(cik: validatedResearch.identity.cik,
+            facts: validatedResearch.facts, submissions: validatedResearch.submissions, cutoff: validatedResearch.cutoff)
         try validate()
     }
 

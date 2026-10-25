@@ -215,33 +215,9 @@ import CryptoKit
                        .completed, window.debugDescription)
         attachHierarchy(window, name: "visible-research-window")
         button.click()
-        let scroll = window.scrollViews.firstMatch
-        XCTAssertTrue(scroll.waitForExistence(timeout: 10))
-        func reveal(_ element: XCUIElement) {
-            func fullyVisible() -> Bool {
-                guard element.exists else { return false }
-                let viewport = scroll.frame.intersection(window.frame).insetBy(dx: 0, dy: 8)
-                return !element.frame.isEmpty && !viewport.isEmpty
-                    && viewport.contains(element.frame) && element.isHittable
-            }
-            for _ in 0..<24 where !fullyVisible() {
-                let distance = element.exists && !element.frame.isEmpty
-                    ? scroll.frame.midY - element.frame.midY : -160
-                scroll.scroll(byDeltaX: 0, deltaY: max(-180, min(180, distance)))
-            }
-            XCTAssertTrue(fullyVisible(), "Research control must be inside its viewport: \(element.debugDescription)")
-            waitHittable(element)
-        }
-        let advanced = window.buttons["stockAdvancedDetails"].firstMatch
-        XCTAssertTrue(advanced.waitForExistence(timeout: 10)); reveal(advanced)
-        guard let expanded = advanced.value as? String, ["已收起", "已展开"].contains(expanded) else {
-            XCTFail("Stock details have no readable expanded state: \(advanced.debugDescription)")
-            return
-        }
-        if expanded == "已收起" { advanced.click() }
-        waitText("已展开", in: advanced)
+        // Workspace navigation lives outside the SEC page and its scrolling details.
         let tools = window.descendants(matching: .any)["stockAdvancedTools"].firstMatch
-        XCTAssertTrue(tools.waitForExistence(timeout: 10)); reveal(tools); tools.click()
+        XCTAssertTrue(tools.waitForExistence(timeout: 10)); waitHittable(tools); tools.click()
         let demo = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",
             "stockOpenDemo", "合成研究与自选管理")).firstMatch
         XCTAssertTrue(demo.waitForExistence(timeout: 10)); demo.click()

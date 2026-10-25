@@ -8,8 +8,19 @@ import SecuritySupport
 /// Compiled only into the independently identified UI test app, never the shipping app.
 enum NativeUITestEnvironment {
     static func prepare(log: SafeLog) async throws -> AppEnvironment {
-        try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"),
-            credentials: SyntheticUIStore(failFirstSave: CommandLine.arguments.contains("--synthetic-fail-first-save")), log: log)
+        var offlinePath = ":memory:"
+        if CommandLine.arguments.contains("--synthetic-sec-init-failure") {
+            // Confine the failure to this disposable host's temporary directory. The SEC
+            // factory uses the real SQLite open path; no shipping failure hook or bypass.
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("SYNTHETIC-UI-SEC-Failure-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory.appendingPathComponent("sec-research.sqlite", isDirectory: true),
+                withIntermediateDirectories: true)
+            offlinePath = directory.appendingPathComponent("offline-issuer.sqlite").path
+        }
+        return try AppEnvironment(quotes: MockQuoteProvider(), database: DatabaseStore(path: ":memory:"),
+            credentials: SyntheticUIStore(failFirstSave: CommandLine.arguments.contains("--synthetic-fail-first-save")),
+            log: log, offlineResearchDatabasePath: offlinePath)
     }
 }
 

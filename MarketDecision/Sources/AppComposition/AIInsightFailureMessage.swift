@@ -19,6 +19,8 @@ enum AIInsightFailureMessage {
                 return "财报摘要缺少必需的指标条目或期间结构，未发送请求；正常标记的缺失数值可以保留。[AI-LOCAL-METRICS]"
             case .invalidCutoff:
                 return "财报截止时间无效，未发送请求。请重新生成分析报告。[AI-LOCAL-CUTOFF]"
+            case .referencePredatesFinancialEvidence:
+                return "参考股价时刻早于财报来源截止时刻，未发送请求。请更新参考时刻，避免用后来的财报解释过去股价。[AI-REFERENCE-TIME]"
             case nil:
                 return "本地财报校验或摘要准备失败，未发送请求。请先重新核对财报。[AI-LOCAL-REPORT]"
             }
@@ -41,6 +43,9 @@ enum AIInsightFailureMessage {
             }
             return "本机凭据读取失败，未发送请求。请在 AI 设置中检查凭据状态。[AI-KEYCHAIN]"
         case .checkingBinding:
+            // A session dependency still passes full financial validation here.
+            // Preserve closed evidence diagnostics while identity mismatches stay distinct.
+            if let failure = error as? AIInsightError { return response(failure) }
             return "返回的解读与当前财报或请求模型不匹配，已拒绝展示。[AI-RESULT-BINDING]"
         case .requestingAnalysis:
             if let failure = error as? AIAnalysisAPIFailure { return api(failure) }
@@ -131,6 +136,10 @@ enum AIInsightFailureMessage {
             return "模型拒绝了本次解读请求，未生成分析内容。[AI-REFUSED]"
         case .invalidEvidence:
             return "AI 回答的来源引用或内容约束未通过本地校验，已拒绝展示；这不表示 Key 无效。[AI-EVIDENCE]"
+        case .evidenceValidation(let issue, let section):
+            return evidence(issue, section: section)
+        case .scenarioProposal(let issue):
+            return scenarioProposal(issue)
         case .malformedResponse:
             return "AI 回答格式未通过本地校验，已拒绝展示；这不表示 Key 无效。[AI-FORMAT]"
         case .unexpectedOutput:
@@ -144,6 +153,44 @@ enum AIInsightFailureMessage {
         case .invalidModel:
             return "模型 ID 格式无效，请检查 AI 设置。[AI-MODEL-FORMAT]"
         }
+    }
+
+    private static func evidence(_ issue: AIInsightEvidenceIssue, section: AIInsightClaimSection) -> String {
+        let location: String, sectionCode: String
+        switch section {
+        case .summary: location = "结论"; sectionCode = "SUMMARY"
+        case .strengths: location = "优势"; sectionCode = "STRENGTHS"
+        case .risks: location = "风险"; sectionCode = "RISKS"
+        case .questions: location = "待核实事项"; sectionCode = "QUESTIONS"
+        case .limitations: location = "解读范围"; sectionCode = "LIMITATIONS"
+        case .valuationInterpretation: location = "AI 估值参考"; sectionCode = "VALUATION"
+        case .valuationLimitations: location = "估值资料限制"; sectionCode = "VALUATION-LIMITATIONS"
+        case .valuationAssumptions: location = "估值假设"; sectionCode = "VALUATION-ASSUMPTIONS"
+        }
+        let reason: String, code: String
+        switch issue {
+        case .emptyText: reason = "正文为空"; code = "EMPTY-TEXT"
+        case .textTooLong: reason = "正文超过该部分的长度限制"; code = "TEXT-LENGTH"
+        case .controlCharacter: reason = "正文含不支持的换行、制表或控制字符"; code = "TEXT-CONTROL"
+        case .missingReferences: reason = "未提供来源引用"; code = "MISSING-REF"
+        case .tooManyReferences: reason = "单条论点的来源引用超过 12 项"; code = "REF-COUNT"
+        case .duplicateReferences: reason = "同一条论点重复引用相同来源"; code = "DUPLICATE-REF"
+        case .unknownReference: reason = "引用了不在本次发送资料中的来源标识"; code = "UNKNOWN-REF"
+        }
+        return "AI 回答的“\(location)”\(reason)，已拒绝展示；这不表示 Key 无效，不会自动重发。[AI-EVIDENCE-\(sectionCode)-\(code)]"
+    }
+
+    private static func scenarioProposal(_ issue: AIPriceSalesScenarioIssue) -> String {
+        let reason: String, code: String
+        switch issue {
+        case .missingProposal: reason = "未返回必需的三个情景假设"; code = "MISSING"
+        case .ineligibleInput: reason = "使用了尚未满足收入和股数要求的资料"; code = "INPUT"
+        case .unsupportedMethod: reason = "返回了未支持的估值方法"; code = "METHOD"
+        case .invalidMultiple: reason = "目标市销率不是可表示的正十进制数"; code = "MULTIPLE"
+        case .unorderedMultiples: reason = "三个目标倍数不满足保守低于中性、中性低于乐观"; code = "ORDER"
+        case .missingBasisReferences: reason = "假设未引用本次 TTM 收入和实际股数"; code = "BASIS"
+        }
+        return "AI 估值提案\(reason)，已拒绝展示；不会自动重发或替你确认。[AI-SCENARIO-\(code)]"
     }
 
     private static func outputStructure(_ issue: AIInsightOutputIssue) -> String {

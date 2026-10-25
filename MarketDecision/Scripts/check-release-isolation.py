@@ -10,6 +10,7 @@ if entitlements.get('com.apple.security.get-task-allow', False):
     raise SystemExit('FAIL: Release allows debugger attachment')
 markers = [b'--keychain-diagnostic', b'KeychainDiagnostic', b'local.marketdecision.app-diagnostic.', b'PASS app restart/',
            b'NativeUITestEnvironment', b'SyntheticUIStore', b'SYNTHETIC-UI-', b'--synthetic-fail-first-save',
+           b'--synthetic-sec-init-failure',
            b'SECNetworkIsolationProbe', b'SyntheticReplacementProbe', b'--expect-invalid-broker']
 images = []
 for folder in [app / 'Contents/MacOS', app / 'Contents/Frameworks', app / 'Contents/XPCServices']:

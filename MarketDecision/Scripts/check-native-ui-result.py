@@ -83,10 +83,10 @@ def main():
     cases = validate_results(get('summary'), get('tests'))
     payload = {'status': 'PASS', 'executed': cases, 'skipped': 0,
                'os': subprocess.check_output(['sw_vers', '-productVersion'], text=True).strip(),
-               'scope': 'SHARED_PRODUCTION_VIEWS_SYNTHETIC_MEMORY_HOST',
+               'scope': 'SHARED_PRODUCTION_VIEWS_SYNTHETIC_ISOLATED_HOST_MEMORY_AND_TEMP_FILES',
                'keychain': 'NOT_EXECUTED', 'voiceover': 'NOT_EXECUTED', 'ime_composition': 'NOT_EXECUTED'}
     Path(report).write_text(json.dumps(payload, indent=2) + '\n')
-    print(f'PASS: {len(expected)} native UI cases actually executed; no skips; synthetic memory host only')
+    print(f'PASS: {len(expected)} native UI cases actually executed; no skips; synthetic isolated host only')
 
 if __name__ == "__main__":
     main()

@@ -25,12 +25,37 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
     return try JSONDecoder().decode(SECValuationSupplementDocument.self, from: JSONSerialization.data(withJSONObject: json))
 }
 
+/// Projection-only inputs reuse the synthetic parent's filing/provenance shape.
+/// Production construction remains behind validatedParentChain and exact raw-byte checks.
+private func shareCountCandidateFact(_ template: SECCompanyFactRecord, value: String,
+                                    taxonomy: String = "us-gaap", concept: String = "CommonStockSharesOutstanding",
+                                    unit: String = "shares", dimensions: [String: String] = [:],
+                                    version: String = "synthetic-shares.v1", availability: AvailabilityEvidence? = nil) throws
+    -> SECCompanyFactRecord {
+    let p = template.provenance
+    let factID = "synthetic-share/" + taxonomy + "/" + concept + "/" + unit + "/" + template.endDate.iso8601
+    let provenance = Provenance(providerID: p.providerID, feedID: p.feedID, sourceEventAt: p.sourceEventAt,
+        receivedAt: p.receivedAt, availableAt: p.availableAt, evidenceRef: p.evidenceRef, origin: p.origin,
+        endpointDescriptor: p.endpointDescriptor, requestedAt: p.requestedAt, requestID: p.requestID,
+        observationDate: template.endDate, versionID: version, versionKind: .sourceVersion,
+        availability: availability ?? p.availability, rawObjectRef: p.rawObjectRef, rawHash: p.rawHash,
+        normalizationVersion: p.normalizationVersion, licenseRef: p.licenseRef, attribution: p.attribution)
+    return try SECCompanyFactRecord(recordID: factID + "/" + version, factID: factID,
+        cik: template.cik, taxonomy: taxonomy, concept: concept, label: "Synthetic actual-share candidate",
+        description: "Projection regression only; not a complete share-class review", unit: unit,
+        sourceValue: value, value: Money(value), startDate: nil, endDate: template.endDate, periodKind: .instant,
+        accessionNumber: template.accessionNumber, form: template.form, filedDate: template.filedDate,
+        fiscalYear: template.fiscalYear, fiscalPeriod: template.fiscalPeriod, frame: nil,
+        dimensions: dimensions, provenance: provenance)
+}
+
 @Suite struct SECValuationSupplementStorageTests {
     @Test func sourceLoadingChecksExactAccountingBindingEvenWhenSameIDResearchIsValid() async throws {
         let (database, store, research, report, draft) = try await secValuationStorageFixture()
         let loaded = try await store.valuationSourceDocument(parentReportID: report.id)
         #expect(loaded.id == research.id && loaded.ticker == research.ticker && loaded.cutoff == research.cutoff)
         #expect(loaded.parentResearchHash == report.parentDocumentHash && loaded.sources == research.sources)
+        #expect(loaded.shareCountCandidates.status == .missing && loaded.shareCountCandidates.candidate == nil)
         let original = try #require(database.read { try Data.fetchOne($0, sql: "SELECT document_json FROM sec_research_documents") })
         let replacement = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: original),
             options: [.prettyPrinted, .sortedKeys])
@@ -60,6 +85,85 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
         #expect(try await store.reportWriteRevision() == draft.expectedRevision)
     }
 
+    @Test func actualShareCandidatePreservesLatestObservationAndSourceBinding() async throws {
+        let research = try await secFinancialReportFixtureParent()
+        let latestTemplate = try #require(research.facts.first { $0.endDate.iso8601 == "2024-12-31" })
+        let olderTemplate = try #require(research.facts.first { $0.endDate.iso8601 == "2024-09-30" })
+        let latest = try shareCountCandidateFact(latestTemplate, value: "120")
+        let older = try shareCountCandidateFact(olderTemplate, value: "100")
+        let weightedAverage = try shareCountCandidateFact(latestTemplate, value: "9999",
+            concept: "WeightedAverageNumberOfDilutedSharesOutstanding")
+        let projection = SECShareCountCandidateProjection(cik: research.identity.cik,
+            facts: [older, weightedAverage, latest], submissions: research.submissions, cutoff: research.cutoff)
+        let candidate = try #require(projection.candidate)
+        #expect(projection.status == .available && projection.candidates.count == 1)
+        #expect(candidate.outstandingShares == (try Money("120")) && candidate.asOfDate == latest.endDate)
+        #expect(candidate.taxonomy == latest.taxonomy && candidate.concept == latest.concept)
+        #expect(candidate.accessionNumber == latest.accessionNumber && candidate.filedDate == latest.filedDate)
+        #expect(candidate.recordID == latest.recordID && candidate.factID == latest.factID)
+        #expect(candidate.sourceReference == latest.provenance.rawObjectRef)
+        #expect(candidate.sourceVersion == latest.provenance.versionID && candidate.sourceHash == latest.provenance.rawHash)
+        let submission = try #require(research.submissions.first { $0.accessionNumber == latest.accessionNumber })
+        #expect(candidate.submissionRecordID == submission.recordID)
+        #expect(candidate.submissionSourceReference == submission.provenance.rawObjectRef)
+        #expect(candidate.submissionSourceVersion == submission.provenance.versionID)
+    }
+
+    @Test func actualShareCandidateUsesExactCutoffForSameMillisecondRevision() async throws {
+        let research = try await secFinancialReportFixtureParent()
+        let template = try #require(research.facts.first { $0.endDate.iso8601 == "2024-12-31" })
+        let base = research.cutoff
+        let earlier = try shareCountCandidateFact(template, value: "100", version: "shares-earlier",
+            availability: .instant(base.addingTimeInterval(-1), evidence: "synthetic exact availability"))
+        let later = try shareCountCandidateFact(template, value: "120", version: "shares-later",
+            availability: .instant(base.addingTimeInterval(0.0004), evidence: "synthetic exact availability"))
+        let before = SECShareCountCandidateProjection(cik: research.identity.cik, facts: [earlier, later],
+            submissions: research.submissions, cutoff: base.addingTimeInterval(0.0002))
+        let after = SECShareCountCandidateProjection(cik: research.identity.cik, facts: [later, earlier],
+            submissions: research.submissions, cutoff: base.addingTimeInterval(0.0006))
+        #expect(before.candidate?.outstandingShares == (try Money("100")))
+        #expect(after.candidate?.outstandingShares == (try Money("120")))
+        #expect(after.candidate?.availableAt == base.addingTimeInterval(0.0004))
+    }
+
+    @Test func actualShareCandidateRejectsCompetingConceptsAndEqualTimeRevisions() async throws {
+        let research = try await secFinancialReportFixtureParent()
+        let template = try #require(research.facts.first { $0.endDate.iso8601 == "2024-12-31" })
+        let gaap = try shareCountCandidateFact(template, value: "120")
+        let dei = try shareCountCandidateFact(template, value: "120", taxonomy: "dei",
+            concept: "EntityCommonStockSharesOutstanding")
+        let revision = try shareCountCandidateFact(template, value: "130", version: "competing-revision")
+        for facts in [[gaap, dei], [gaap, revision]] {
+            let projection = SECShareCountCandidateProjection(cik: research.identity.cik,
+                facts: facts, submissions: research.submissions, cutoff: research.cutoff)
+            #expect(projection.status == .conflicting && projection.candidate == nil)
+        }
+    }
+
+    @Test func actualShareCandidateDoesNotSubstituteWeightedAverageOrOlderUnsupportedCount() async throws {
+        let research = try await secFinancialReportFixtureParent()
+        let template = try #require(research.facts.first { $0.endDate.iso8601 == "2024-12-31" })
+        let olderTemplate = try #require(research.facts.first { $0.endDate.iso8601 == "2024-09-30" })
+        let weightedAverage = try shareCountCandidateFact(template, value: "120",
+            concept: "WeightedAverageNumberOfDilutedSharesOutstanding")
+        let missing = SECShareCountCandidateProjection(cik: research.identity.cik, facts: [weightedAverage],
+            submissions: research.submissions, cutoff: research.cutoff)
+        #expect(missing.status == .missing && missing.candidate == nil)
+        let older = try shareCountCandidateFact(olderTemplate, value: "100")
+        let unsupported = try [shareCountCandidateFact(template, value: "120.5"),
+            shareCountCandidateFact(template, value: "120", unit: "USD"),
+            shareCountCandidateFact(template, value: "120", dimensions: ["class": "A"])]
+        for latest in unsupported {
+            let projection = SECShareCountCandidateProjection(cik: research.identity.cik, facts: [older, latest],
+                submissions: research.submissions, cutoff: research.cutoff)
+            #expect(projection.status == .unsupported && projection.candidate == nil)
+        }
+        let valid = try shareCountCandidateFact(template, value: "120")
+        let unbound = SECShareCountCandidateProjection(cik: research.identity.cik, facts: [valid],
+            submissions: research.submissions.filter { $0.accessionNumber != valid.accessionNumber }, cutoff: research.cutoff)
+        #expect(unbound.status == .unsupported && unbound.candidate == nil)
+    }
+
     @Test func supplementRoundTripRetainsBothParentEncodingsAndReplaysOffline() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".sqlite")
         defer { try? FileManager.default.removeItem(at: path) }
@@ -80,6 +184,11 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
         let reopened = try SECResearchStore(path: path.path)
         let opened = try await reopened.openValuationSupplement(id: draft.document.id)
         #expect(try ResearchDocument.encoded(opened) == body)
+        let pair = try await reopened.openValuationSupplementWithParent(id: draft.document.id)
+        #expect(try ResearchDocument.encoded(pair.supplement) == body)
+        #expect(try ResearchDocument.encoded(pair.parent) == reportBytes)
+        #expect(pair.supplement.parentFinancialReportID == pair.parent.id)
+        #expect(pair.supplement.parentFinancialReportHash == digest(reportBytes))
         let replay = try await opened.valuation.recompute()
         #expect(try opened.valuation.cachedReportMatches(replay))
         #expect(!opened.valuation.assessment.historicalPITQualified)
@@ -127,6 +236,9 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
         #expect(draft.document.parentFinancialReportHash != digest(original))
         try await store.saveValuationSupplement(draft.document, expectedRevision: draft.expectedRevision)
         #expect(try await store.openValuationSupplement(id: draft.document.id).parentFinancialReportHash == digest(pretty))
+        let pair = try await store.openValuationSupplementWithParent(id: draft.document.id)
+        #expect(pair.parent.id == report.id && pair.supplement.parentFinancialReportHash == digest(pretty))
+        #expect(try digest(ResearchDocument.encoded(pair.parent)) != pair.supplement.parentFinancialReportHash)
         #expect(try database.read { try Data.fetchOne($0, sql: "SELECT report_json FROM sec_financial_report_documents") } == pretty)
     }
 
@@ -188,6 +300,9 @@ private func valuationStorageCopy(_ supplement: SECValuationSupplementDocument) 
             }
             #expect(try await store.savedValuationSupplements().count == 1)
             await #expect(throws: BusinessStoreError.corruptedStorage) { try await store.openValuationSupplement(id: draft.document.id) }
+            await #expect(throws: BusinessStoreError.corruptedStorage) {
+                try await store.openValuationSupplementWithParent(id: draft.document.id)
+            }
             await #expect(throws: BusinessStoreError.corruptedStorage) {
                 try await store.saveValuationSupplement(additional, expectedRevision: before)
             }

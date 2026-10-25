@@ -79,11 +79,56 @@ private func aiWorkspaceInput(revenue: String = "100") -> AIInsightInput {
         sources: [.init(id: "s-filing", label: "合成财报摘要")])
 }
 
+private func aiWorkspaceReference(price: String = "20") throws -> AIValuationReferenceInput {
+    let now = try #require(ISO8601DateFormatter().date(from: "2026-10-22T12:00:00Z"))
+    var draft = AIValuationReferenceDraft(now: now)
+    draft.price = price; draft.shares = "100"; draft.sharesAsOf = "2026-09-30"
+    draft.confirmedSingleClassSameBasis = true; draft.maySendReferenceData = true
+    return try draft.validated(now: now)
+}
+
+/// The lifecycle seam does not implicitly build valuation inputs; use a validated
+/// reference summary so publication exercises the same response scope as production.
+private func aiWorkspaceReferenceSummary(_ reference: AIValuationReferenceInput) throws -> AIInsightInput {
+    let base = aiWorkspaceInput()
+    let source = AIInsightReferenceValuationContext.referenceSourceID
+    let marketCap = try reference.price.multiplied(by: reference.shares.decimalString)
+    let referenceMetrics: [AIInsightMetric] = [
+        .init(id: "reference.price", label: "用户参考价格", value: reference.price.decimalString,
+              unit: "USD/share", unavailable: nil, sourceIDs: [source]),
+        .init(id: "reference.shares", label: "用户确认普通股总数", value: reference.shares.decimalString,
+              unit: "shares", unavailable: nil, sourceIDs: [source]),
+        .init(id: "reference.marketCap", label: "参考市值", value: marketCap.decimalString,
+              unit: "USD", unavailable: nil, sourceIDs: [source]),
+        .init(id: "reference.pe", label: "参考市盈率", value: nil, unit: "multiple",
+              unavailable: "合成摘要缺少完整 TTM 净利润", sourceIDs: [source]),
+        .init(id: "reference.ps", label: "参考市销率", value: nil, unit: "multiple",
+              unavailable: "合成摘要缺少完整 TTM 收入", sourceIDs: [source]),
+        .init(id: "reference.pfcf", label: "参考自由现金流倍数", value: nil, unit: "multiple",
+              unavailable: "合成摘要缺少完整 TTM 自由现金流", sourceIDs: [source])
+    ]
+    return AIInsightInput(ticker: base.ticker, companyName: base.companyName,
+        periodEnd: base.periodEnd, cutoff: base.cutoff, metrics: base.metrics + referenceMetrics,
+        sources: base.sources + [.init(id: source, label: "合成用户参考输入")],
+        referenceValuation: .init(referenceAt: try AIInsightReportAdapter.utcCutoff(reference.referenceAt),
+                                  sharesAsOf: reference.sharesAsOf.iso8601))
+}
+
 private func aiWorkspaceResult(_ request: AIInsightRequest, encryptedReasoning: Bool = false) throws -> AIInsightResult {
+    let hasReference = request.input.referenceValuation != nil
     let analysis: [String: Any] = [
         "summary": ["text": "仅解读当前提供的营收证据。", "evidenceIDs": ["m-revenue"]],
         "strengths": [], "risks": [], "questions": [],
-        "limitations": [["text": "合成摘要不足以形成投资判断。", "evidenceIDs": ["s-filing"]]]
+        "limitations": [["text": "合成摘要不足以形成投资判断。", "evidenceIDs": ["s-filing"]]],
+        "valuation": [
+            "scope": hasReference ? "referenceMultiples" : "financialContextOnly",
+            "interpretation": [
+                "text": hasReference ? "参考价格和股数只用于本地计算参考市值。" : "营收证据只能帮助理解业务规模，不能据此判断股价高低。",
+                "evidenceIDs": hasReference ? ["reference.price", "reference.shares", "reference.marketCap"] : ["m-revenue"]],
+            "limitations": [[
+                "text": hasReference ? "缺少完整 TTM 分母与可比基准，不能据此判断价格高低。" : "摘要没有当前股价、完整股本或获批估值假设，不能给出合理价格。",
+                "evidenceIDs": hasReference ? ["reference.pe", "reference.ps", "reference.pfcf"] : ["s-filing"]]]
+        ]
     ]
     let encoded = try JSONSerialization.data(withJSONObject: analysis)
     let text = try #require(String(data: encoded, encoding: .utf8))
@@ -214,7 +259,8 @@ struct AIInsightWorkspaceTests {
     @Test func localPreparationDiagnosticsPrecedeServiceAndCredentialAccess() async throws {
         let cases: [(AIInsightReportAdapterError, String)] = [
             (.replayMismatch, "[AI-LOCAL-REPLAY]"), (.missingMetric, "[AI-LOCAL-METRICS]"),
-            (.invalidCutoff, "[AI-LOCAL-CUTOFF]")]
+            (.invalidCutoff, "[AI-LOCAL-CUTOFF]"),
+            (.referencePredatesFinancialEvidence, "[AI-REFERENCE-TIME]")]
         for (failure, marker) in cases {
             let probe = AIWorkspaceProbe(), id = UUID(), model = workspace(probe: probe)
             model.select(reportID: id)
@@ -270,6 +316,13 @@ struct AIInsightWorkspaceTests {
             (AIInsightError.contentFiltered, "[AI-CONTENT-FILTER]"),
             (AIInsightError.responseFailed, "[AI-RESPONSE-FAILED]"),
             (AIInsightError.invalidEvidence, "[AI-EVIDENCE]"),
+            (AIInsightError.evidenceValidation(.emptyText, section: .summary), "[AI-EVIDENCE-SUMMARY-EMPTY-TEXT]"),
+            (AIInsightError.evidenceValidation(.textTooLong, section: .strengths), "[AI-EVIDENCE-STRENGTHS-TEXT-LENGTH]"),
+            (AIInsightError.evidenceValidation(.controlCharacter, section: .risks), "[AI-EVIDENCE-RISKS-TEXT-CONTROL]"),
+            (AIInsightError.evidenceValidation(.missingReferences, section: .questions), "[AI-EVIDENCE-QUESTIONS-MISSING-REF]"),
+            (AIInsightError.evidenceValidation(.tooManyReferences, section: .limitations), "[AI-EVIDENCE-LIMITATIONS-REF-COUNT]"),
+            (AIInsightError.evidenceValidation(.duplicateReferences, section: .valuationInterpretation), "[AI-EVIDENCE-VALUATION-DUPLICATE-REF]"),
+            (AIInsightError.evidenceValidation(.unknownReference, section: .valuationLimitations), "[AI-EVIDENCE-VALUATION-LIMITATIONS-UNKNOWN-REF]"),
             (AIInsightError.outputStructure(.itemType), "[AI-OUTPUT-ITEM]"),
             (AIInsightError.outputStructure(.reasoningMetadata), "[AI-OUTPUT-REASONING]"),
             (AIInsightError.outputStructure(.messageEnvelope), "[AI-OUTPUT-MESSAGE]"),
@@ -338,6 +391,69 @@ struct AIInsightWorkspaceTests {
         }
     }
 
+    @Test func evidenceDiagnosticsExposeOnlyClosedReasonsAtRequestAndPublicationBoundaries() async throws {
+        for parseInsideSession in [false, true] {
+            let probe = AIWorkspaceProbe(), id = UUID()
+            let secretMarker = "SYNTHETIC-PRIVATE-EVIDENCE-Bearer-https-private.invalid"
+            let model = workspace(probe: probe, factory: {
+                await probe.factory()
+                return AIInsightSession(send: { request, _ in
+                    await probe.send()
+                    let valid = try aiWorkspaceResult(request)
+                    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as? [String: Any])
+                    var analysis = try #require(object["analysis"] as? [String: Any])
+                    var valuation = try #require(analysis["valuation"] as? [String: Any])
+                    valuation["interpretation"] = ["text": "不得回显：" + secretMarker, "evidenceIDs": [secretMarker]]
+                    analysis["valuation"] = valuation; object["analysis"] = analysis
+                    if parseInsideSession {
+                        let text = String(decoding: try JSONSerialization.data(withJSONObject: analysis), as: UTF8.self)
+                        let response: [String: Any] = ["object": "response", "status": "completed", "model": request.model,
+                            "output": [["type": "message", "role": "assistant", "status": "completed",
+                                "content": [["type": "output_text", "text": text, "annotations": []]]]]]
+                        return try request.parseResponse(JSONSerialization.data(withJSONObject: response))
+                    }
+                    return try JSONDecoder().decode(AIInsightResult.self, from: JSONSerialization.data(withJSONObject: object))
+                }, close: { await probe.close() })
+            })
+            model.select(reportID: id)
+            await (try start(model, id: id, probe: probe)).value
+            let message = try #require(model.message)
+            #expect(message.contains("[AI-EVIDENCE-VALUATION-UNKNOWN-REF]"))
+            #expect(message.contains("AI 估值参考") && message.contains("不在本次发送资料"))
+            #expect(!message.contains(secretMarker) && !message.contains("Bearer") && !message.contains("private.invalid"))
+            #expect(model.result == nil && model.hasError && !model.isBusy)
+            #expect(await probe.keyReads == 1)
+            #expect(await probe.sends == 1)
+            #expect(await probe.factories == 1)
+            #expect(await probe.closes >= 1)
+        }
+    }
+
+    @Test func lateEvidenceDiagnosticCannotOverwriteCancellationOrNewReportSession() async throws {
+        for cancel in [false, true] {
+            let probe = AIWorkspaceProbe(), gate = AIWorkspaceGate(), id = UUID(), nextID = UUID()
+            let model = workspace(probe: probe, factory: {
+                await probe.factory()
+                return AIInsightSession(send: { _, _ in
+                    await probe.send(); await gate.hold()
+                    throw AIInsightError.evidenceValidation(.unknownReference, section: .valuationInterpretation)
+                }, close: { await probe.close() })
+            })
+            model.select(reportID: id)
+            let work = try start(model, id: id, probe: probe)
+            await gate.waitUntilEntered()
+            if cancel { model.cancel() } else { model.select(reportID: nextID, revision: UUID()) }
+            let expectedMessage = model.message
+            #expect(model.isBusy && model.result == nil && model.input == nil)
+            await gate.release(); await work.value
+            #expect(model.message == expectedMessage && !model.hasError && model.result == nil && model.input == nil)
+            #expect(model.selectedReportID == (cancel ? id : nextID) && !model.isBusy)
+            #expect(await probe.sends == 1)
+            #expect(await probe.factories == 1)
+            #expect(await probe.keyReads == 1)
+        }
+    }
+
     @Test func successfulManualAnalysisKeepsExactInputAndRequestedModelBinding() async throws {
         let probe = AIWorkspaceProbe(), model = workspace(probe: probe), id = UUID()
         model.select(reportID: id)
@@ -345,6 +461,12 @@ struct AIInsightWorkspaceTests {
         let result = try #require(model.result)
         #expect(result.inputDigest == (try aiWorkspaceInput().digest()))
         #expect(result.requestedModel == AIInsightRequest.defaultModel)
+        #expect(result.promptVersion == AIInsightRequest.promptVersion)
+        #expect(result.analysis.summary.evidenceIDs == ["m-revenue"])
+        #expect(result.analysis.valuation.scope == .financialContextOnly)
+        #expect(result.analysis.valuation.interpretation.evidenceIDs == ["m-revenue"])
+        #expect(result.analysis.valuation.limitations.count == 1)
+        #expect(result.analysis.valuation.limitations[0].evidenceIDs == ["s-filing"])
         #expect(model.input == aiWorkspaceInput())
         #expect(model.selectedReportID == id && !model.isBusy && !model.hasError)
         #expect(await probe.factories == 1)
@@ -358,13 +480,18 @@ struct AIInsightWorkspaceTests {
         model.select(reportID: id, revision: revision)
         await (try start(model, id: id, probe: probe)).value
         let digest = try #require(model.result?.inputDigest)
-        // The company page retains this selection while a detail section hides the card.
+        let valuation = try #require(model.result?.analysis.valuation)
+        // The company page retains both interpretations while a detail section hides the card.
         model.select(reportID: id, revision: revision)
         #expect(model.result?.inputDigest == digest && model.input != nil)
+        #expect(model.result?.analysis.valuation == valuation)
         #expect(await probe.sends == 1)
         #expect(await probe.keyReads == 1)
         #expect(await probe.factories == 1)
-        // Rechecking the same immutable report or leaving the company page invalidates it.
+        // Rechecking the same immutable ID invalidates both answers without a nil transition.
+        model.select(reportID: id, revision: UUID())
+        #expect(model.result == nil && model.input == nil)
+        // Leaving the company page also clears the selection without sending another request.
         model.select(reportID: nil, revision: nil)
         #expect(model.result == nil && model.input == nil)
         model.select(reportID: id, revision: UUID())
@@ -372,6 +499,148 @@ struct AIInsightWorkspaceTests {
         model.disappear()
         #expect(model.selectedReportID == nil)
         #expect(await probe.sends == 1)
+    }
+
+    @Test func applyingEditingAndClearingReferenceInputsNeverReadsKeyOrSends() async throws {
+        let probe = AIWorkspaceProbe(), model = workspace(probe: probe), id = UUID(), revision = UUID()
+        let original = try aiWorkspaceReference(), edited = try aiWorkspaceReference(price: "21")
+        model.select(reportID: id, revision: revision)
+        let emptyRevision = model.valuationReferenceRevision
+        #expect(model.updateValuationReference(original, reportID: id, reportRevision: revision))
+        let appliedRevision = model.valuationReferenceRevision
+        #expect(model.valuationReference == original && appliedRevision != emptyRevision)
+        #expect(model.updateValuationReference(original, reportID: id, reportRevision: revision))
+        #expect(model.valuationReferenceRevision == appliedRevision)
+        #expect(model.updateValuationReference(edited, reportID: id, reportRevision: revision))
+        let editedRevision = model.valuationReferenceRevision
+        #expect(model.valuationReference == edited && editedRevision != appliedRevision)
+        #expect(model.updateValuationReference(nil, reportID: id, reportRevision: revision))
+        #expect(model.valuationReference == nil && model.valuationReferenceRevision != editedRevision)
+        #expect(model.result == nil && model.input == nil && !model.isBusy && !model.hasError)
+        #expect(await probe.prepared == 0)
+        #expect(await probe.factories == 0)
+        #expect(await probe.keyReads == 0)
+        #expect(await probe.sends == 0)
+    }
+
+    @Test func changingOrClearingReferenceInputsInvalidatesBothPublishedAnswers() async throws {
+        for clear in [false, true] {
+            let probe = AIWorkspaceProbe(), model = workspace(probe: probe), id = UUID(), revision = UUID()
+            let original = try aiWorkspaceReference()
+            let replacement: AIValuationReferenceInput?
+            if clear { replacement = nil } else { replacement = try aiWorkspaceReference(price: "21") }
+            let summary = try aiWorkspaceReferenceSummary(original)
+            model.select(reportID: id, revision: revision)
+            #expect(model.updateValuationReference(original, reportID: id, reportRevision: revision))
+            let work = try #require(model.start(reportID: id, model: AIInsightRequest.defaultModel) {
+                await probe.prepare(); return summary
+            })
+            await work.value
+            let result = try #require(model.result)
+            #expect(result.analysis.summary.evidenceIDs == ["m-revenue"])
+            #expect(result.analysis.valuation.scope == .referenceMultiples)
+            #expect(result.inputDigest == (try summary.digest()))
+            let oldReferenceRevision = model.valuationReferenceRevision
+            #expect(model.updateValuationReference(replacement, reportID: id, reportRevision: revision))
+            // Financial and valuation cards have one publication owner; neither may keep
+            // the old answer when its reference assumptions no longer match the form.
+            #expect(model.result == nil && model.input == nil && model.message == nil)
+            #expect(model.valuationReference == replacement)
+            #expect(model.valuationReferenceRevision != oldReferenceRevision)
+            #expect(!model.hasError && !model.isBusy)
+            #expect(await probe.prepared == 1)
+            #expect(await probe.factories == 1)
+            #expect(await probe.keyReads == 1)
+            #expect(await probe.sends == 1)
+        }
+    }
+
+    @Test func changedOrClearedReferenceRejectsLateSuccessAndFailure() async throws {
+        for clear in [false, true] {
+            for fail in [false, true] {
+                let probe = AIWorkspaceProbe(), sent = AIWorkspaceGate(), id = UUID(), revision = UUID()
+                let model = workspace(probe: probe, factory: {
+                    await probe.factory()
+                    return AIInsightSession(send: { request, _ in
+                        await probe.send(); await sent.hold()
+                        if fail { throw AIAnalysisAPIFailure(statusCode: 429, reason: .quotaExceeded) }
+                        return try aiWorkspaceResult(request)
+                    }, close: { await probe.close() })
+                })
+                let original = try aiWorkspaceReference()
+                let replacement: AIValuationReferenceInput?
+                if clear { replacement = nil } else { replacement = try aiWorkspaceReference(price: "21") }
+                let summary = try aiWorkspaceReferenceSummary(original)
+                model.select(reportID: id, revision: revision)
+                #expect(model.updateValuationReference(original, reportID: id, reportRevision: revision))
+                let work = try #require(model.start(reportID: id, model: AIInsightRequest.defaultModel) {
+                    await probe.prepare(); return summary
+                })
+                await sent.waitUntilEntered()
+                #expect(model.input == summary && model.isBusy)
+                let oldReferenceRevision = model.valuationReferenceRevision
+                #expect(model.updateValuationReference(replacement, reportID: id, reportRevision: revision))
+                #expect(model.isBusy && model.input == nil && model.result == nil)
+                #expect(model.valuationReferenceRevision != oldReferenceRevision)
+                #expect(model.start(reportID: id, model: AIInsightRequest.defaultModel,
+                                    prepare: { summary }) == nil)
+                await sent.release(); await work.value
+                #expect(model.valuationReference == replacement)
+                #expect(model.selectedReportID == id && model.selectedReportRevision == revision)
+                #expect(model.result == nil && model.input == nil && model.message == nil)
+                #expect(!model.hasError && !model.isBusy)
+                #expect(await probe.factories == 1)
+                #expect(await probe.keyReads == 1)
+                #expect(await probe.sends == 1)
+                #expect(await probe.closes >= 1)
+            }
+        }
+    }
+
+    @Test func reportRevisionAndPageChangesClearManualReferenceInputs() async throws {
+        for change in ["report", "revision", "disappear"] {
+            let probe = AIWorkspaceProbe(), model = workspace(probe: probe), id = UUID(), revision = UUID()
+            let reference = try aiWorkspaceReference()
+            model.select(reportID: id, revision: revision)
+            #expect(model.updateValuationReference(reference, reportID: id, reportRevision: revision))
+            let referenceRevision = model.valuationReferenceRevision
+            model.select(reportID: id, revision: revision)
+            #expect(model.valuationReference == reference && model.valuationReferenceRevision == referenceRevision)
+            switch change {
+            case "report": model.select(reportID: UUID(), revision: UUID())
+            case "revision": model.select(reportID: id, revision: UUID())
+            default: model.disappear()
+            }
+            #expect(model.valuationReference == nil && model.valuationReferenceRevision != referenceRevision)
+            #expect(model.input == nil && model.result == nil && !model.isBusy)
+            #expect(await probe.prepared == 0)
+            #expect(await probe.factories == 0)
+            #expect(await probe.keyReads == 0)
+            #expect(await probe.sends == 0)
+        }
+    }
+
+    @Test func oldReferenceSheetCannotApplyOrClearAnotherReportOrRevision() async throws {
+        let probe = AIWorkspaceProbe(), model = workspace(probe: probe)
+        let oldID = UUID(), oldRevision = UUID(), currentID = UUID(), currentRevision = UUID()
+        let original = try aiWorkspaceReference(), current = try aiWorkspaceReference(price: "21")
+        model.select(reportID: oldID, revision: oldRevision)
+        model.select(reportID: currentID, revision: currentRevision)
+        #expect(model.updateValuationReference(current, reportID: currentID, reportRevision: currentRevision))
+        let referenceRevision = model.valuationReferenceRevision
+        #expect(!model.updateValuationReference(original, reportID: oldID, reportRevision: oldRevision))
+        #expect(!model.updateValuationReference(nil, reportID: oldID, reportRevision: oldRevision))
+        #expect(!model.updateValuationReference(original, reportID: currentID, reportRevision: oldRevision))
+        #expect(!model.updateValuationReference(nil, reportID: currentID, reportRevision: oldRevision))
+        #expect(!model.updateValuationReference(original, reportID: oldID, reportRevision: currentRevision))
+        #expect(model.valuationReference == current && model.valuationReferenceRevision == referenceRevision)
+        model.disappear()
+        #expect(!model.updateValuationReference(current, reportID: currentID, reportRevision: currentRevision))
+        #expect(model.valuationReference == nil && model.selectedReportID == nil)
+        #expect(await probe.prepared == 0)
+        #expect(await probe.factories == 0)
+        #expect(await probe.keyReads == 0)
+        #expect(await probe.sends == 0)
     }
 
     @Test func switchingReportsRejectsLateSuccessAndFailureFromPreviousReport() async throws {
@@ -572,6 +841,65 @@ struct AIInsightWorkspaceTests {
             #expect(await probe.sends == 1)
             #expect(await probe.closes >= 1)
         }
+    }
+
+    @Test func oldPromptOrInvalidValuationEvidenceCannotBypassPublicationValidation() async throws {
+        for oldPrompt in [false, true] {
+            let probe = AIWorkspaceProbe(), id = UUID()
+            let model = workspace(probe: probe, factory: {
+                await probe.factory()
+                return AIInsightSession(send: { request, _ in
+                    await probe.send()
+                    let valid = try aiWorkspaceResult(request)
+                    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as? [String: Any])
+                    if oldPrompt {
+                        object["promptVersion"] = "financial-evidence-interpretation.v1"
+                    } else {
+                        var analysis = try #require(object["analysis"] as? [String: Any])
+                        var valuation = try #require(analysis["valuation"] as? [String: Any])
+                        var claim = try #require(valuation["interpretation"] as? [String: Any])
+                        claim["evidenceIDs"] = ["not-in-request"]
+                        valuation["interpretation"] = claim
+                        analysis["valuation"] = valuation
+                        object["analysis"] = analysis
+                    }
+                    // Bypass the response parser as a faulty session dependency could do.
+                    // The production publication boundary must still reject this result.
+                    return try JSONDecoder().decode(AIInsightResult.self,
+                        from: JSONSerialization.data(withJSONObject: object))
+                }, close: { await probe.close() })
+            })
+            model.select(reportID: id)
+            await (try start(model, id: id, probe: probe)).value
+            #expect(model.result == nil && model.hasError && !model.isBusy)
+            #expect(model.message?.contains(oldPrompt ? "[AI-RESULT-BINDING]" : "[AI-EVIDENCE-VALUATION-UNKNOWN-REF]") == true)
+            #expect(await probe.keyReads == 1)
+            #expect(await probe.sends == 1)
+            #expect(await probe.closes >= 1)
+        }
+    }
+
+    @Test func rerunFailureClearsFinancialAndValuationAnswersTogether() async throws {
+        let probe = AIWorkspaceProbe(), id = UUID()
+        let model = workspace(probe: probe, factory: {
+            await probe.factory()
+            return AIInsightSession(send: { request, _ in
+                await probe.send()
+                if await probe.sends == 1 { return try aiWorkspaceResult(request) }
+                throw AIAnalysisAPIFailure(statusCode: 503, reason: .serverFailure)
+            }, close: { await probe.close() })
+        })
+        model.select(reportID: id, revision: UUID())
+        await (try start(model, id: id, probe: probe)).value
+        #expect(model.result?.analysis.valuation.scope == .financialContextOnly)
+        let retry = try start(model, id: id, probe: probe)
+        #expect(model.result == nil && model.isBusy)
+        await retry.value
+        #expect(model.result == nil && model.hasError && !model.isBusy)
+        #expect(model.message?.contains("[AI-HTTP-503-SERVER]") == true)
+        #expect(await probe.sends == 2)
+        #expect(await probe.keyReads == 2)
+        #expect(await probe.factories == 2)
     }
 
     @Test func invalidSummaryAndModelFailBeforeCreatingServiceOrReadingKey() async throws {
