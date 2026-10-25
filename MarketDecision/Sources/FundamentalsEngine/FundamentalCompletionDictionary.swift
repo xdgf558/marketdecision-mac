@@ -25,4 +25,30 @@ extension FinancialFieldDictionary {
         }
         return try Self(version: "financial-fields.us-gaap.completion.v1", rules: rules)
     }
+
+    /// Separate evidence version. The four exact lease-liability components are not aliases
+    /// for a total; SEC lease normalization may sum a complete, same-filing pair. Existing
+    /// v1 rules and all formula definitions remain unchanged.
+    /// Definitions retained in SEC taxonomy presentations (ASC 842-20-45-1(b)):
+    /// https://www.sec.gov/Archives/edgar/data/1731289/000119312521166652/R66.htm
+    /// https://www.sec.gov/Archives/edgar/data/1734107/000119312521084895/R99.htm
+    /// LineOfCredit is the carrying amount of drawn long-term obligations, including both
+    /// current and noncurrent portions. Retain it as a separate disclosure, never as either
+    /// maturity bucket, the facility's borrowing limit or the complete debt total:
+    /// https://www.sec.gov/Archives/edgar/data/1691421/000169142126000055/lmnd-20260630.htm
+    public static func fundamentalsCompletionV2() throws -> Self {
+        var rules = try fundamentalsCompletionV1().rules
+        let additions = [
+            ("FinanceLeaseLiabilityCurrent", "lease-components.finance-current"),
+            ("FinanceLeaseLiabilityNoncurrent", "lease-components.finance-noncurrent"),
+            ("OperatingLeaseLiabilityCurrent", "lease-components.operating-current"),
+            ("OperatingLeaseLiabilityNoncurrent", "lease-components.operating-noncurrent"),
+            ("LineOfCredit", "debt-disclosures.line-of-credit-total")
+        ]
+        for (concept, field) in additions {
+            rules.append(try .init(taxonomy: "us-gaap", concept: concept, sourceUnit: "USD",
+                                  fieldID: field, statement: .balanceSheet, nature: .instant))
+        }
+        return try Self(version: "financial-fields.us-gaap.completion.v2", rules: rules)
+    }
 }

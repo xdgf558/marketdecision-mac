@@ -208,17 +208,17 @@ struct LedgerWorkspaceContent: View {
 
     private var firstAccountContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
                     Image(systemName: "book.closed").font(.system(size: 24, weight: .medium))
                         .foregroundStyle(accountAccent).accessibilityHidden(true)
-                    Text("建立你的投资账户").font(.system(size: 26, weight: .bold)).accessibilityAddTraits(.isHeader)
+                    Text("建立你的投资账户").font(.system(size: 24, weight: .bold)).accessibilityAddTraits(.isHeader)
                     Text("起个名字。期权页确认成交后，持仓与已实现盈亏会自动汇总。").font(.callout).foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: 8) {
                     Text("账户名称").font(.callout.weight(.medium))
                     TextField("例如：我的美股账户", text: $accountName)
-                        .textFieldStyle(.roundedBorder).controlSize(.large)
+                        .textFieldStyle(.roundedBorder).controlSize(.regular)
                         .accessibilityLabel("账户名称").accessibilityIdentifier("ledgerAccountName")
                         .disabled(busy)
                     Text("本地记账 · 美元 USD · 无需连接券商")
@@ -226,8 +226,8 @@ struct LedgerWorkspaceContent: View {
                 }
                 Button { createAccount() } label: {
                     Text(accountCreation == nil ? "建立账户" : "正在建立…")
-                        .frame(maxWidth: .infinity).padding(.vertical, 4)
-                }.buttonStyle(.borderedProminent).tint(accountAccent).controlSize(.large)
+                        .frame(maxWidth: .infinity).padding(.vertical, 2)
+                }.buttonStyle(.borderedProminent).tint(accountAccent).controlSize(.regular)
                     .disabled(!canCreateAccount).accessibilityIdentifier("ledgerCreateAccount")
                 if let message = model.message, model.hasError {
                     Text(message).font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -245,10 +245,10 @@ struct LedgerWorkspaceContent: View {
                         .accessibilityIdentifier("ledgerSetupRestore")
                 }
             }
-            .padding(28).frame(maxWidth: 440, alignment: .leading)
+            .padding(24).frame(maxWidth: 440, alignment: .leading)
             .background(.background, in: RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Color.primary.opacity(0.08)))
-            .frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.vertical, 32)
+            .frame(maxWidth: .infinity).padding(.horizontal, 24).padding(.vertical, 24)
         }.accessibilityIdentifier("ledgerAccountSetup")
     }
 
@@ -268,10 +268,10 @@ struct LedgerWorkspaceContent: View {
     }
 
     private var ledgerContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("交易账本").font(.system(size: 32, weight: .bold))
+                    Text("交易账本").font(.system(size: 28, weight: .bold))
                     Text("本地 USD 账户 · 先预览再入账 · 事件可追溯").foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -288,7 +288,7 @@ struct LedgerWorkspaceContent: View {
                     .accessibilityIdentifier("ledgerReload")
             }
             Label("记录先预览、确认后入账。出入金不计利润，权利金收入不等于已实现盈亏。", systemImage: "info.circle")
-                .font(.callout).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .font(.callout).padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             if model.snapshot?.accounts.isEmpty == false { accountSection }
             if model.isBusy { ProgressView("正在校验本地账本…").controlSize(.small) }
@@ -300,7 +300,7 @@ struct LedgerWorkspaceContent: View {
                 ForEach(["现金与批次", "手工录入", "CSV 导入", "来源与审计", "导出与备份"], id: \.self) { Text($0).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("ledgerSections")
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     switch section {
                     case "手工录入": manualSection
                     case "CSV 导入": csvSection

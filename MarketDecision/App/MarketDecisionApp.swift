@@ -71,7 +71,7 @@ struct RootView: View {
                         Button { page = item } label: {
                             Text(item.rawValue)
                                 .font(.system(size: 16, weight: page == item ? .semibold : .medium))
-                                .padding(.vertical, 23).padding(.horizontal, 9)
+                                .padding(.vertical, page == .stocks ? 12 : 23).padding(.horizontal, 9)
                                 .contentShape(Rectangle())
                                 .overlay(alignment: .bottom) {
                                     if page == item { Rectangle().fill(accent).frame(height: 3) }
@@ -95,7 +95,7 @@ struct RootView: View {
                 .accessibilityIdentifier("pageSettings")
                 .frame(width: 150, alignment: .trailing)
             }
-            .padding(.horizontal, 32).padding(.top, 17)
+            .padding(.horizontal, 32).padding(.top, page == .stocks ? 6 : 17)
             Divider()
             Group {
                 if page != .settings, !model.isPrepared, let error = model.initializationError {
@@ -231,6 +231,7 @@ struct SettingsContent: View {
     @State private var showsAISettings = false
     var body: some View {
         Form {
+            AppReleaseNotesSection()
             Section("外观") {
                 Picker("显示模式", selection: $appearance) {
                     Text("跟随系统").tag("system")
@@ -271,6 +272,62 @@ struct SettingsContent: View {
         }
         .formStyle(.grouped).navigationTitle("设置")
         .task { await model.refresh() }
+    }
+}
+
+private struct AppReleaseNotesSection: View {
+    @State private var showsReleaseNotes = false
+
+    // Read the running bundle, including when hosted outside the production app.
+    // A missing value must not borrow the version of another build or target.
+    private func bundleValue(_ key: String) -> String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "未标注"
+        }
+        return value
+    }
+
+    var body: some View {
+        Section("关于投资手账") {
+            LabeledContent("应用版本") {
+                Text("\(bundleValue("CFBundleShortVersionString"))（构建 \(bundleValue("CFBundleVersion"))）")
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("settingsAppVersion")
+            }
+            DisclosureGroup("更新说明", isExpanded: $showsReleaseNotes) {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Content date only; do not present this as the build date.
+                    Text("版本 \(bundleValue("CFBundleShortVersionString")) · 2026-10-25")
+                        .font(.caption).foregroundStyle(.secondary)
+                    note("紧凑股票概览", "财务指标压成两排，三档估值价格独占一行；收紧顶部和公司信息留白，优先展示日常需要的核心数据。")
+                    note("AI 结论与详情", "首页显示结论摘要及风险、待核实数量；完整解读、估值假设、资料限制和发送说明在独立详情中查看，避免长文撑高主页。原确认和来源校验继续保留。")
+                    note("三档情景估值价格", "AI 提出保守、中性、乐观三组目标市销率假设；你确认后，用本地 TTM 收入与股数计算三档每股价格。假设不代表市场事实或合理价格保证。")
+                    note("估值确认与失效", "确认计算不额外调用 API；切换报告、修改参考资料或重新分析后，清除旧价格并要求重新确认。缺少必要数据时显示原因，不编造价格。")
+                    note("AI 引用校验修复", "将 AI 回答的引用限定为本次发送资料，并对齐引用与分项数量限制；财务内容和来源校验继续保留。")
+                    note("具体失败原因", "区分引用缺失、重复、超限或未知，以及正文为空、超长或含不支持字符，指出对应分析部分；不会自动重发请求。")
+                    note("估值参考输入", "新增参考股价、价格时刻与实际股数输入；可从本地财报带入股数候选，确认股类及口径后计算参考市值、市盈率、市销率和自由现金流倍数。")
+                    note("AI 估值解读", "同一次手动 AI 分析解读参考倍数并提出估值假设，标明日期与缺项原因；情景价格仅在确认后本地计算，资料修改后清除旧解读，不自动发送。")
+                    note("估值资料重开", "保留本地估值资料入口，联合核对保存的财报和估值；切换公司或重新核对报告时清除旧 AI 结果。")
+                    note("股票概览与工具", "概览展示 AI 估值参考，并保留本地估值资料入口；本地 SEC 研究暂不可用时，仍可进入独立离线工具。")
+                    note("AI 解读展示", "首页优先展示结论，完整优势、风险、待核实事项及限制可在详情查看；逐条依据不展示，财务与来源校验继续在后台执行。")
+                    note("我的投资", "紧凑投资概览展示累计盈亏、标的贡献和持仓；确认期权实际成交后自动记账，减少重复输入。")
+                    note("期权交易", "紧凑展示合约、收益与风险，支持一笔平仓选择多个同合约持仓批次。")
+                    note("股票分析", "新增单季度与 TTM 切换，默认单季度，标明统计期间；补充债务字段识别及缺项说明，缺失不填零。")
+                    note("AI 财报解读修复", "兼容加密推理元信息与分段正文，避免正常回答被误报为内容结构异常；仍核对财务字段、来源引用和当前报告。")
+                    note("错误提示", "区分未返回最终正文、回答阶段异常和额外注释等原因；不会自动重发 API 请求。")
+                }
+                .padding(.vertical, 4)
+            }
+            .accessibilityIdentifier("settingsReleaseNotes")
+        }
+    }
+
+    private func note(_ title: String, _ detail: String) -> some View {
+        (Text("\(title)：").fontWeight(.medium) + Text(detail))
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

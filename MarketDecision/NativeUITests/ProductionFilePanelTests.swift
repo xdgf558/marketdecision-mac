@@ -215,6 +215,7 @@ import CryptoKit
                        .completed, window.debugDescription)
         attachHierarchy(window, name: "visible-research-window")
         button.click()
+        // Workspace navigation lives outside the SEC page and its scrolling details.
         let tools = window.descendants(matching: .any)["stockAdvancedTools"].firstMatch
         XCTAssertTrue(tools.waitForExistence(timeout: 10)); waitHittable(tools); tools.click()
         let demo = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",

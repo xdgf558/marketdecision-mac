@@ -43,6 +43,9 @@ public protocol SECValuationWorkspaceStorage: Sendable {
     func saveValuationSupplement(_ document: SECValuationSupplementDocument, expectedRevision: UUID) async throws
     func savedValuationSupplements(parentReportID: UUID?) async throws -> [SECValuationSupplementSummary]
     func openValuationSupplement(id: UUID) async throws -> SECValuationSupplementDocument
+    /// Both documents must come from one validated local read, including their original byte hashes.
+    func openValuationSupplementWithParent(id: UUID) async throws
+        -> (supplement: SECValuationSupplementDocument, parent: SECFinancialReportDocument)
 }
 extension SECResearchStore: SECValuationWorkspaceStorage {}
 
@@ -60,6 +63,19 @@ public enum SECStockDailyAction: Sendable, Equatable {
 /// The opaque context cannot be rebuilt after suspension to authorize a changed selection.
 public struct SECStockDailyRequest: Sendable {
     public let action: SECStockDailyAction
+    fileprivate let pageSession: UUID
+    fileprivate let generation: UUID
+    fileprivate let ticker: String
+    fileprivate let documentID: UUID?
+    fileprivate let reportID: UUID?
+    fileprivate let reportRevision: UUID
+}
+
+/// A click binds one catalog selection and the page that requested its explicit offline replay.
+/// Callers cannot create a new authorization after asynchronous work starts.
+public struct SECValuationOpenRequest: Sendable {
+    public var supplementID: UUID { selection.id }
+    fileprivate let selection: SECValuationSupplementSummary
     fileprivate let pageSession: UUID
     fileprivate let generation: UUID
     fileprivate let ticker: String
@@ -140,6 +156,29 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
     }
     public var canDisplayValuationSupplement: Bool {
         valuationSupplement != nil && (valuationState == .generated || valuationState == .matched)
+    }
+    /// Catalog metadata is navigation only. Duplicate IDs are all excluded, even if their
+    /// labels agree; a list must never choose an arbitrary copy as replay authorization.
+    public var availableValuationSupplements: [SECValuationSupplementSummary] {
+        let counts = Dictionary(grouping: savedValuationSupplements, by: \.id)
+        return savedValuationSupplements.filter { counts[$0.id]?.count == 1 }.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+    public var valuationNavigationError: String? {
+        if let valuationListError { return valuationListError }
+        if Set(savedValuationSupplements.map(\.id)).count != savedValuationSupplements.count {
+            return "估值目录存在重复标识，相关记录已隐藏；请重新载入，不能据此判断没有估值资料。"
+        }
+        return nil
+    }
+    public var currentFinancialValuationSupplements: [SECValuationSupplementSummary] {
+        guard let parent = financialReport else { return [] }
+        return availableValuationSupplements.filter {
+            $0.parentFinancialReportID == parent.id && $0.parentResearchID == parent.parentDocumentID
+                && $0.ticker == parent.ticker && $0.companyName == parent.companyName && $0.cutoff == parent.cutoff
+        }
     }
     private let storage: any SECResearchWorkspaceStorage
     private let financialStorage: (any SECFinancialReportWorkspaceStorage)?
@@ -731,6 +770,78 @@ public typealias SECResearchImport = @Sendable (String, SECContactIdentity,
         valuationIsSaved = true; self.valuationDraftRevision = nil
         valuationMessage = "补充报告已保存，绑定原财务报告及 SEC 研究；重开后仍需显式重算核对。"
         await reloadValuationList(token, committed: true)
+    }
+
+    public func makeValuationOpenRequest(id: UUID) -> SECValuationOpenRequest? {
+        guard isPageVisible, let dailyPageSession, !isBusy, archiveRestoreOperation == nil,
+              financialStorage != nil, valuationStorage != nil,
+              let selection = availableValuationSupplements.first(where: { $0.id == id }),
+              financialReport == nil || currentFinancialValuationSupplements.contains(selection)
+        else { return nil }
+        return .init(selection: selection, pageSession: dailyPageSession, generation: generation,
+            ticker: ticker, documentID: document?.id, reportID: financialReport?.id,
+            reportRevision: financialReportRevision)
+    }
+
+    /// One explicit action opens the retained pair and verifies both calculations before
+    /// publishing either result. It neither generates new evidence nor writes or downloads.
+    public func openAndVerifyValuationSupplement(_ request: SECValuationOpenRequest) async {
+        guard !Task.isCancelled, isPageVisible, !isBusy, archiveRestoreOperation == nil,
+              dailyPageSession == request.pageSession, generation == request.generation,
+              ticker == request.ticker, document?.id == request.documentID,
+              financialReport?.id == request.reportID, financialReportRevision == request.reportRevision,
+              availableValuationSupplements.contains(request.selection),
+              financialReport == nil || currentFinancialValuationSupplements.contains(request.selection),
+              let valuationStorage else { return }
+        let token = beginFinancial(clearReport: true)
+        defer { finish(token) }
+        valuationMessage = "正在打开已保存估值，并核对其绑定财报与冻结证据。"
+        do {
+            let pair = try await financialOperation {
+                try await valuationStorage.openValuationSupplementWithParent(id: request.supplementID)
+            }
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            let supplement = pair.supplement, parent = pair.parent
+            try supplement.validate(); try parent.validate()
+            guard SECValuationSupplementSummary(document: supplement) == request.selection,
+                  parent.id == supplement.parentFinancialReportID,
+                  parent.parentDocumentID == supplement.parentResearchID,
+                  parent.parentDocumentHash == supplement.parentResearchHash,
+                  parent.ticker == supplement.ticker, parent.companyName == supplement.companyName,
+                  parent.cutoff == supplement.cutoff, parent.createdAt <= supplement.createdAt
+            else { throw ContractError.mismatchedSource }
+            try supplement.valuation.validateAccounting(parent.financials)
+            let replayParent = financialReplay
+            let parentMatches = try await financialOperation { try await replayParent(parent) }
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            guard parentMatches else {
+                financialReportState = .mismatched; financialHasError = true
+                valuationState = .mismatched; valuationHasError = true
+                valuationMessage = "绑定财报重算不一致，估值保持隐藏；原保存内容未修改。"
+                return
+            }
+            let replaySupplement = valuationReplay
+            let supplementMatches = try await financialOperation { try await replaySupplement(supplement) }
+            guard generation == token else { return }
+            try Task.checkCancellation()
+            guard supplementMatches else {
+                valuationState = .mismatched; valuationHasError = true
+                valuationMessage = "估值重算不一致，结果保持隐藏；原保存内容未修改。"
+                return
+            }
+            if document?.id != parent.parentDocumentID { document = nil; recomputationState = .notVerified }
+            financialReport = parent; financialReportIsSaved = true; financialReportState = .matched
+            financialMessage = "已打开并核对估值绑定的财务报告。"
+            valuationSupplement = supplement; valuationIsSaved = true; valuationState = .matched
+            ticker = parent.ticker
+            valuationMessage = "财报与估值均已按冻结输入核对，可返回分析概览查看；缺项和参考用途限制保持。"
+        } catch {
+            guard generation == token else { return }
+            valuationState = .failed; valuationHasError = true
+            valuationMessage = "已保存估值或绑定财报未能打开并核对，结果保持隐藏；请重新载入列表后重试。"
+        }
     }
 
     public func openValuationSupplement(_ id: UUID) async {

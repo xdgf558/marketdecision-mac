@@ -100,6 +100,15 @@ extension SECResearchStore {
         _ = try writeRevision()
         return try database.read { db in try SECValuationSupplementStorage.open(id: id, db: db) }
     }
+
+    /// Both documents come from the same validated SQLite read. The parent is the exact
+    /// retained encoding bound by the supplement, not a second lookup after an await.
+    public func openValuationSupplementWithParent(id: UUID) throws
+        -> (supplement: SECValuationSupplementDocument, parent: SECFinancialReportDocument) {
+        try Task.checkCancellation()
+        _ = try writeRevision()
+        return try database.read { db in try SECValuationSupplementStorage.openWithParent(id: id, db: db) }
+    }
 }
 
 enum SECValuationSupplementStorage {
@@ -155,6 +164,11 @@ enum SECValuationSupplementStorage {
     }
 
     static func open(id: UUID, db: Database) throws -> SECValuationSupplementDocument {
+        try openWithParent(id: id, db: db).supplement
+    }
+
+    static func openWithParent(id: UUID, db: Database) throws
+        -> (supplement: SECValuationSupplementDocument, parent: SECFinancialReportDocument) {
         let key = id.uuidString.lowercased()
         guard let row = try Row.fetchOne(db, sql: catalogQuery + " WHERE c.supplement_id = ?", arguments: [key]) else {
             guard try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM sec_valuation_supplement_documents WHERE supplement_id = ?", arguments: [key]) == 0
@@ -179,7 +193,7 @@ enum SECValuationSupplementStorage {
         } catch is CancellationError { throw CancellationError() }
         catch { throw BusinessStoreError.corruptedStorage }
         try Task.checkCancellation()
-        return document
+        return (supplement: document, parent: chain.report.document)
     }
 
     private static func decodeCatalog(_ row: Row) throws -> Catalog {

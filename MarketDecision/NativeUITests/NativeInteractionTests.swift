@@ -1,6 +1,7 @@
 import XCTest
 
-/// Actual native events against shared production views, with a separate in-memory test app.
+/// Actual native events against shared production views, with a separate synthetic test app.
+/// The SEC-open failure case uses disposable host-local files; other fixtures stay in memory.
 /// No Keychain, real provider, UI screenshots uploaded, or VoiceOver/IME acceptance implied.
 @MainActor final class NativeInteractionTests: XCTestCase {
     private var app: XCUIApplication!
@@ -229,14 +230,53 @@ import XCTest
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: opened, object: disclosure)], timeout: 5),
                        .completed, disclosure.debugDescription)
     }
+    private func openStockTool(_ identifier: String, title: String) {
+        let tools = mainWindow.descendants(matching: .any)["stockAdvancedTools"].firstMatch
+        XCTAssertTrue(tools.waitForExistence(timeout: 10)); waitEnabled(tools)
+        let ready = NSPredicate { _, _ in tools.exists && tools.isEnabled && tools.isHittable }
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: tools)], timeout: 5),
+                       .completed, mainWindow.debugDescription)
+        tools.click()
+        let destination = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",
+            identifier, title)).firstMatch
+        XCTAssertTrue(destination.waitForExistence(timeout: 5)); destination.click()
+    }
     private func openStockDemo() {
         selectPage("pageStocks")
-        let tools = mainWindow.descendants(matching: .any)["stockAdvancedTools"].firstMatch
-        XCTAssertTrue(tools.waitForExistence(timeout: 10)); tools.click()
-        let demo = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@",
-            "stockOpenDemo", "合成研究与自选管理")).firstMatch
-        XCTAssertTrue(demo.waitForExistence(timeout: 5)); demo.click()
+        openStockTool("stockOpenDemo", title: "合成研究与自选管理")
         XCTAssertTrue(mainWindow.staticTexts["researchCompany"].waitForExistence(timeout: 15))
+    }
+
+    private func checkSECFailureKeepsIndependentToolsReachable() {
+        app.terminate()
+        configure()
+        app.launchArguments.append("--synthetic-sec-init-failure")
+        launchMainWindow(); selectPage("pageStocks")
+        let error = mainWindow.descendants(matching: .any)["secPreparationError"].firstMatch
+        XCTAssertTrue(error.waitForExistence(timeout: 15), mainWindow.debugDescription)
+        XCTAssertTrue(mainWindow.buttons["secPreparationRetry"].isEnabled)
+        XCTAssertTrue(mainWindow.staticTexts["stockAnalysisTitle"].exists)
+
+        // Reach an independently opened SQLite archive, then the in-memory watchlist.
+        // Merely observing the menu does not establish that either destination works.
+        openStockTool("stockOpenOffline", title: "离线财报摘录")
+        XCTAssertTrue(mainWindow.descendants(matching: .any)["offlineIssuerPicker"].firstMatch.waitForExistence(timeout: 15))
+        let generate = mainWindow.buttons["offlineGenerate"]
+        XCTAssertTrue(generate.waitForExistence(timeout: 5)); waitEnabled(generate)
+        XCTAssertFalse(error.exists)
+        mainWindow.buttons["stockBackToAnalysis"].click()
+        XCTAssertTrue(error.waitForExistence(timeout: 15))
+        openStockTool("stockOpenDemo", title: "合成研究与自选管理")
+        XCTAssertTrue(mainWindow.staticTexts["researchCompany"].waitForExistence(timeout: 15))
+        XCTAssertFalse(error.exists)
+        researchTab("自选")
+        let addWatch = mainWindow.buttons["researchAddWatch"]
+        XCTAssertTrue(addWatch.waitForExistence(timeout: 5)); waitEnabled(addWatch)
+        mainWindow.buttons["stockBackToAnalysis"].click()
+        XCTAssertTrue(error.waitForExistence(timeout: 15))
+        XCTAssertTrue(mainWindow.buttons["secPreparationRetry"].isEnabled)
+        // The broken SEC database is still rejected after returning; no reset or repair.
+        XCTAssertTrue(mainWindow.staticTexts["stockAnalysisTitle"].exists)
     }
     private func launchResearch() {
         configure(); launchMainWindow(); openStockDemo()
@@ -253,6 +293,11 @@ import XCTest
     }
     private func navigateInvestmentSection(_ section: String) {
         selectPage("pageInvestments")
+        let id = section == "收益分析" ? "pagePortfolio" : "pageLedger"
+        let title = section == "收益分析" ? "收益、估值证据与历史报告" : "交易账本"
+        openInvestmentTool(id, title: title)
+    }
+    private func openInvestmentTool(_ id: String, title: String) {
         let tools = mainWindow.descendants(matching: .any)["investmentAdvanced"].firstMatch
         let scroll = mainWindow.scrollViews.firstMatch
         func toolsFullyVisible() -> Bool {
@@ -264,8 +309,6 @@ import XCTest
         XCTAssertTrue(tools.waitForExistence(timeout: 10))
         XCTAssertTrue(toolsFullyVisible() && tools.isHittable, mainWindow.debugDescription)
         tools.click()
-        let id = section == "收益分析" ? "pagePortfolio" : "pageLedger"
-        let title = section == "收益分析" ? "收益、估值证据与历史报告" : "交易账本"
         let item = app.menuItems.matching(NSPredicate(format: "identifier == %@ OR title == %@", id, title)).firstMatch
         XCTAssertTrue(item.waitForExistence(timeout: 5)); item.click()
         XCTAssertTrue(mainWindow.waitForExistence(timeout: 15))
@@ -326,6 +369,7 @@ import XCTest
         XCTAssertTrue(mainWindow.secureTextFields["credentialInput"].waitForExistence(timeout: 10))
         selectPage("pageInvestments")
         XCTAssertTrue(mainWindow.buttons["investmentRecord"].waitForExistence(timeout: 15))
+        checkSECFailureKeepsIndependentToolsReachable()
     }
     func testPortfolioSyntheticExampleNeverBecomesAnAccountReport() {
         configure(); launchMainWindow()
@@ -506,8 +550,7 @@ import XCTest
         XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
         // Preview only: no clipboard mutation, browser launch, file panel or post.
         sharing.buttons["完成"].click(); waitAbsent(sharing)
-        let again = mainWindow.buttons["investmentStartCalculation"]
-        waitEnabled(again); again.click()
+        openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]
         XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
         XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))

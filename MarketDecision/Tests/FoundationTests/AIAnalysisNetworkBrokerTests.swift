@@ -63,6 +63,18 @@ private actor AIImmediateTransport: AIAnalysisHTTPTransport {
     }
     func close() { closes += 1 }
 }
+private actor AIFailingTransport: AIAnalysisHTTPTransport {
+    let error: any Error
+    var closes = 0
+    init(error: any Error) { self.error = error }
+    func send(_ request: AIAnalysisNetworkRequest) throws -> AIAnalysisNetworkReply { throw error }
+    func close() { closes += 1 }
+}
+private struct AISecretDescriptionError: LocalizedError, CustomStringConvertible {
+    let accesses: AITransportCounter
+    var errorDescription: String? { accesses.increment(); return "Bearer synthetic-secret-description" }
+    var description: String { accesses.increment(); return "https://synthetic-secret.invalid/" }
+}
 private final class AILateChannel: AIAnalysisNetworkChannel, @unchecked Sendable {
     private let lock = NSLock()
     private var waiter: CheckedContinuation<Data, Error>?
@@ -227,9 +239,12 @@ private final class AISyntheticURLProtocol: URLProtocol {
         }
     }
     @Test func responseStatusAndBytesNeverExposeRemoteErrorsAsSuccess() throws {
-        for (status, expected) in [(401, AIAnalysisNetworkError.unauthorized), (403, .unauthorized), (429, .rateLimited), (500, .unavailable)] {
+        let statuses: [(Int, AIAnalysisAPIFailure.Reason)] = [
+            (400, .requestRejected), (401, .authentication), (403, .permissionDenied),
+            (404, .notFound), (429, .rateOrQuota), (500, .serverFailure), (204, .unexpectedStatus)]
+        for (status, reason) in statuses {
             let reply = try AIAnalysisNetworkReply(statusCode: status, mediaType: "application/json", body: Data("remote secret text".utf8))
-            #expect(throws: expected) { try reply.checkedBody() }
+            #expect(throws: AIAnalysisAPIFailure(statusCode: status, reason: reason)) { try reply.checkedBody() }
         }
         #expect(throws: AIAnalysisNetworkError.invalidResponse) {
             try AIAnalysisNetworkReply(statusCode: 302, mediaType: nil, body: Data())
@@ -240,6 +255,97 @@ private final class AISyntheticURLProtocol: URLProtocol {
         #expect(throws: AIAnalysisNetworkError.invalidResponse) {
             try AIAnalysisNetworkReply(statusCode: 200, mediaType: "application/json", body: Data(repeating: 0, count: AIInsightLimits.responseBytes + 1))
         }
+    }
+    @Test func recognizedAPIErrorCodesAreClosedAndHTTPStatusHasPrecedence() throws {
+        let cases: [(Int, String, AIAnalysisAPIFailure.Reason)] = [
+            (400, "model_not_found", .modelUnavailable), (404, "model_not_found", .modelUnavailable),
+            (401, "insufficient_quota", .authentication), (403, "model_not_found", .permissionDenied),
+            (429, "credit_balance_exhausted", .creditsExhausted),
+            (429, "organization_spend_limit_exceeded", .organizationSpendLimit),
+            (429, "project_spend_limit_exceeded", .projectSpendLimit),
+            (429, "organization_usage_limit_exceeded", .organizationUsageLimit),
+            (429, "insufficient_quota", .quotaExceeded),
+            (429, "rate_limit_exceeded", .rateLimited), (429, "slow_down", .rateLimited),
+            (429, "rate_limit_error", .rateLimited), (429, "model_not_found", .rateOrQuota),
+            (400, "insufficient_quota", .requestRejected), (503, "model_not_found", .serverFailure)]
+        for (status, code, reason) in cases {
+            // Both code and type are read only as exact members of a closed whitelist.
+            for field in ["code", "type"] {
+                let bytes = try JSONSerialization.data(withJSONObject: ["error": [field: code]])
+                let reply = try AIAnalysisNetworkReply(statusCode: status, mediaType: "application/json", body: bytes)
+                let decoded = try AIAnalysisNetworkReply.decode(reply.encoded())
+                #expect(throws: AIAnalysisAPIFailure(statusCode: status, reason: reason)) { try decoded.checkedBody() }
+            }
+        }
+        let quotaCases: [(String, AIAnalysisAPIFailure.Reason)] = [
+            ("credit_balance_exhausted", .creditsExhausted),
+            ("organization_spend_limit_exceeded", .organizationSpendLimit),
+            ("project_spend_limit_exceeded", .projectSpendLimit),
+            ("organization_usage_limit_exceeded", .organizationUsageLimit)]
+        for (code, reason) in quotaCases {
+            let body = try JSONSerialization.data(withJSONObject: [
+                "error": ["code": code, "type": "insufficient_quota"]])
+            let reply = try AIAnalysisNetworkReply(statusCode: 429, mediaType: "application/json", body: body)
+            #expect(throws: AIAnalysisAPIFailure(statusCode: 429, reason: reason)) { try reply.checkedBody() }
+        }
+    }
+    @Test func remoteErrorMessagesNeverBecomeDiagnosticsAndMalformedCodesDegradeSafely() throws {
+        let secret = "Bearer synthetic-secret; https://private.invalid; user@example.invalid"
+        let body = try JSONSerialization.data(withJSONObject: [
+            "error": ["code": "insufficient_quota", "message": secret, "param": secret], "request_id": secret])
+        let reply = try AIAnalysisNetworkReply(statusCode: 429, mediaType: "application/json", body: body)
+        do {
+            _ = try reply.checkedBody()
+            Issue.record("HTTP error unexpectedly returned a success body")
+        } catch let failure as AIAnalysisAPIFailure {
+            #expect(failure == AIAnalysisAPIFailure(statusCode: 429, reason: .quotaExceeded))
+            #expect(!String(reflecting: failure).contains(secret))
+            #expect(!String(reflecting: failure).contains("private.invalid"))
+        }
+        let fallbackBodies = [
+            Data("{\"error\":{\"code\":\"unknown_private_code\",\"message\":\"insufficient_quota\"}}".utf8),
+            Data("{\"error\":{\"code\":7,\"type\":false}}".utf8),
+            Data("{\"error\":{\"code\":\"insufficient_quota\",\"type\":\"rate_limit_error\"}}".utf8),
+            Data("{\"code\":\"insufficient_quota\"}".utf8),
+            Data("{\"error\":{\"code\":\"insufficient_quota\"}".utf8),
+            Data(("{\"error\":{\"code\":\"insufficient_quota\"},\"ignored\":" +
+                  String(repeating: "[", count: 9) + "0" + String(repeating: "]", count: 9) + "}").utf8),
+            try JSONSerialization.data(withJSONObject: ["error": ["code": "insufficient_quota", "message": String(repeating: "x", count: 16 * 1_024)]])]
+        for bytes in fallbackBodies {
+            let value = try AIAnalysisNetworkReply(statusCode: 429, mediaType: "application/json", body: bytes)
+            #expect(throws: AIAnalysisAPIFailure(statusCode: 429, reason: .rateOrQuota)) { try value.checkedBody() }
+        }
+    }
+    @Test func helperPreservesBoundedTransportCategoriesWithoutUnderlyingErrorText() async throws {
+        let accesses = AITransportCounter()
+        let cases: [(any Error, AIAnalysisReplyCode, AIAnalysisNetworkError)] = [
+            (URLError(.timedOut), .timedOut, .timedOut),
+            (URLError(.notConnectedToInternet), .connectionFailed, .connectionFailed),
+            (URLError(.cannotFindHost), .connectionFailed, .connectionFailed),
+            (URLError(.cannotConnectToHost), .connectionFailed, .connectionFailed),
+            (URLError(.secureConnectionFailed), .secureConnectionFailed, .secureConnectionFailed),
+            (URLError(.serverCertificateUntrusted), .secureConnectionFailed, .secureConnectionFailed),
+            (AIAnalysisNetworkError.responseTooLarge, .responseTooLarge, .responseTooLarge),
+            (AIAnalysisNetworkError.redirectedResponse, .redirectedResponse, .redirectedResponse),
+            (AIAnalysisNetworkError.invalidResponse, .invalidResponse, .invalidResponse),
+            (CancellationError(), .closed, .closed),
+            (URLError(.cancelled), .closed, .closed),
+            (AISecretDescriptionError(accesses: accesses), .failed, .unavailable)]
+        for (error, code, expected) in cases {
+            let transport = AIFailingTransport(error: error)
+            let broker = AIAnalysisNetworkBrokerSession(factory: { transport })
+            let reply = await callAIBroker(broker, data: try syntheticAIEnvelope().encoded())
+            #expect(reply.0 == nil && reply.1 == code.rawValue)
+            // The XPC channel applies this same finite mapping to the returned wire code.
+            #expect(AIAnalysisReplyCode(rawValue: reply.1)?.networkError == expected)
+            #expect(await transport.closes == 1)
+            let duplicate = await callAIBroker(broker, data: try syntheticAIEnvelope().encoded())
+            #expect(duplicate.0 == nil && duplicate.1 == AIAnalysisReplyCode.limitExceeded.rawValue)
+            broker.close()
+        }
+        #expect(accesses.count == 0)
+        #expect(AIAnalysisReplyCode.success.rawValue == 0 && AIAnalysisReplyCode.failed.rawValue == 5)
+        #expect(AIAnalysisReplyCode(rawValue: Int.max) == nil)
     }
     @Test func transportCloseCancelsInflightAndAliasesShareClosedState() async throws {
         let exchange = AIHTTPExchange(); AISyntheticURLProtocol.registry.install(exchange)

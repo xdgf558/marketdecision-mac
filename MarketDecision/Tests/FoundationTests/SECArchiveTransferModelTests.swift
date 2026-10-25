@@ -151,6 +151,12 @@ private actor SECArchiveModelStore: SECArchiveStorage, SECResearchWorkspaceStora
         guard present, id == supplement.id else { throw SnapshotError.missingReference }
         try await pause("openSupplement"); return supplement
     }
+    func openValuationSupplementWithParent(id: UUID) async throws
+        -> (supplement: SECValuationSupplementDocument, parent: SECFinancialReportDocument) {
+        guard present, id == supplement.id else { throw SnapshotError.missingReference }
+        let pair = (supplement: supplement, parent: report)
+        try await pause("openSupplement"); return pair
+    }
     func replayResearch() async throws -> FinancialNormalizationResult {
         replayCalls += 1; try await pause("replay"); return parent.normalization
     }
