@@ -25,17 +25,19 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+      # Run the interaction regression first for faster failure feedback.
+      # Every check below must still succeed; no suite is filtered or skipped.
+      - name: Native interaction tests on macOS 15
+        id: native_ui
+        env:
+          REQUIRE_UI_OS_MAJOR: '15'
+        run: bash MarketDecision/Scripts/verify-native-ui.sh
       - name: Tests, traceability and module boundaries
         id: tests
         run: bash MarketDecision/Scripts/verify-ci.sh tests
       - name: Debug and Release build checks
         id: builds
         run: bash MarketDecision/Scripts/verify-ci.sh builds
-      - name: Native interaction tests on macOS 15
-        id: native_ui
-        env:
-          REQUIRE_UI_OS_MAJOR: '15'
-        run: bash MarketDecision/Scripts/verify-native-ui.sh
       - name: Record evidence limits
         if: always()
         env:

@@ -184,33 +184,39 @@ import XCTest
     /// Input-page actions stay in a fixed footer; other controls remain inside
     /// their scroll viewport, including expanded inputs and page navigation.
     private func revealOptionControl(_ element: XCUIElement) {
+        let window = mainWindow.frame
         let fixedActionIDs: Set<String> = [
             "optionTradeRecord", "optionLabSave", "optionLabNew", "optionLabCalculate"
         ]
         if element.exists, fixedActionIDs.contains(element.identifier) {
-            let viewport = mainWindow.frame.insetBy(dx: 0, dy: 8)
-            XCTAssertTrue(!element.frame.isEmpty && !viewport.isEmpty
-                && viewport.contains(element.frame) && element.isHittable,
+            let viewport = window.insetBy(dx: 0, dy: 8)
+            let frame = element.frame
+            XCTAssertTrue(!frame.isEmpty && !viewport.isEmpty
+                && viewport.contains(frame) && element.isHittable,
                 "Fixed option action must be visible without scrolling: \(element.debugDescription)")
             return
         }
-        func viewport() -> CGRect {
-            let window = mainWindow.frame
-            return (controlScrollView(element)?.frame.intersection(window) ?? window).insetBy(dx: 0, dy: 8)
-        }
-        func fullyVisible() -> Bool {
-            guard element.exists else { return false }
-            let visible = viewport()
-            return !element.frame.isEmpty && !visible.isEmpty
-                && visible.contains(element.frame) && element.isHittable
-        }
-        for _ in 0..<40 where !fullyVisible() {
-            guard let scroll = controlScrollView(element) else { break }
-            let visible = scroll.frame.intersection(mainWindow.frame)
-            let distance = element.exists ? visible.midY - element.frame.midY : -120
+        // Resolving containment walks the AX tree. Do it once per action, not
+        // repeatedly for each frame/visibility comparison in the scroll loop.
+        let scroll = controlScrollView(element)
+        let viewport = (scroll?.frame.intersection(window) ?? window).insetBy(dx: 0, dy: 8)
+        guard !viewport.isEmpty else { XCTFail("Control has no visible viewport"); return }
+        var previousFrame: CGRect?
+        var unchangedFrames = 0
+        for _ in 0..<40 {
+            var distance: CGFloat = -120
+            if element.exists {
+                let frame = element.frame
+                if !frame.isEmpty && viewport.contains(frame) && element.isHittable { return }
+                if frame == previousFrame { unchangedFrames += 1 } else { unchangedFrames = 0 }
+                previousFrame = frame
+                if unchangedFrames >= 3 { break }
+                distance = viewport.midY - frame.midY
+            }
+            guard let scroll else { break }
             scroll.scroll(byDeltaX: 0, deltaY: max(-160, min(160, distance)))
         }
-        XCTAssertTrue(fullyVisible(), "Control must be visible before interaction: \(element.debugDescription)")
+        XCTFail("Control must be visible before interaction: viewport=\(viewport), \(element.debugDescription)")
     }
     private func waitOptionInputSummary() {
         // Calculation intentionally stays on the input page. The full result
@@ -249,7 +255,11 @@ import XCTest
         if child.exists { return }
         let container = mainWindow.descendants(matching: .any)[identifier].firstMatch
         let button = mainWindow.buttons[identifier].firstMatch
-        let disclosure = button.exists ? button : container.disclosureTriangles.firstMatch
+        // A native DisclosureGroup can itself be the identified triangle; it
+        // does not contain a second triangle below it in the AX hierarchy.
+        let nativeTriangle = mainWindow.disclosureTriangles[identifier].firstMatch
+        let disclosure = button.exists ? button
+            : (nativeTriangle.exists ? nativeTriangle : container.disclosureTriangles.firstMatch)
         revealOptionControl(disclosure)
         XCTAssertTrue(disclosure.waitForExistence(timeout: 5), mainWindow.debugDescription)
         waitEnabled(disclosure)
@@ -272,7 +282,8 @@ import XCTest
         // Expanded lazy content may not yet be present in the AX tree. Scroll
         // its existing parent until it materializes; do not toggle it closed.
         let scroll = controlScrollView(disclosure)
-        for _ in 0..<24 where !child.exists {
+        for _ in 0..<24 {
+            if child.exists { return }
             guard let scroll else { break }
             scroll.scroll(byDeltaX: 0, deltaY: -120)
         }
