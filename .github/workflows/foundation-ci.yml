@@ -13,7 +13,7 @@ jobs:
   foundation:
     name: macOS foundation (no account signing)
     runs-on: macos-15
-    # PR62 used 46m37s before native checks. Budget for 20 x 90s cases plus
+    # PR62 used 46m37s before native checks. Budget for 21 x 90s cases plus
     # host compilation/result collection; keep every check and per-case limit.
     timeout-minutes: 90
     env:
@@ -25,17 +25,19 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
+      # Run the interaction regression first for faster failure feedback.
+      # Every check below must still succeed; no suite is filtered or skipped.
+      - name: Native interaction tests on macOS 15
+        id: native_ui
+        env:
+          REQUIRE_UI_OS_MAJOR: '15'
+        run: bash MarketDecision/Scripts/verify-native-ui.sh
       - name: Tests, traceability and module boundaries
         id: tests
         run: bash MarketDecision/Scripts/verify-ci.sh tests
       - name: Debug and Release build checks
         id: builds
         run: bash MarketDecision/Scripts/verify-ci.sh builds
-      - name: Native interaction tests on macOS 15
-        id: native_ui
-        env:
-          REQUIRE_UI_OS_MAJOR: '15'
-        run: bash MarketDecision/Scripts/verify-native-ui.sh
       - name: Record evidence limits
         if: always()
         env:
@@ -47,7 +49,7 @@ jobs:
             echo '## Foundation CI evidence'
             echo "- Tests/UTC/traceability/module checks: $TEST_OUTCOME"
             echo "- Debug/Release, effective main/helper permissions and synthetic XPC/socket-denial probe: $BUILD_OUTCOME"
-            echo "- Native interaction suite (twenty cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
+            echo "- Native interaction suite (twenty-one cases, isolated synthetic host): $NATIVE_UI_OUTCOME"
             echo '- Keychain integration: NOT EXECUTED (opt-in test skipped, not passed).'
             echo '- Builds use ad-hoc signatures only; no account certificate or provisioning profile.'
             echo '- Isolated UI host has exact Xcode read-only-root/test-service exceptions; this does not prove production sandbox behavior.'

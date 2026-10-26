@@ -140,7 +140,9 @@ struct InvestmentPeriodReportTests {
         let open = try event("short-open", at: "2026-10-01T14:00:00Z",
             payload: .trade(.init(instrument: .option(contract), side: .sell, effect: .open,
                                  quantity: Money("1"), unitPrice: Money("2"), fee: Money("2"),
-                                 openingLotID: "short-lot")))
+                                 openingLotID: "short-lot",
+                                 strategy: .init(id: "short-purpose", purpose: .totalReturn,
+                                     successDefinition: "Closed economic return net of confirmed fees"))))
         for value in try reports([open]) {
             #expect(value.closingCash == (try Money("198")))
             #expect(value.realizedPnL == (try Money("0")))

@@ -177,7 +177,9 @@ private struct OptionTradeContent: View {
         if snapshot.accounts.count == 1, let account = snapshot.accounts.first {
             Label(account.name + " · USD", systemImage: "book.closed").font(.headline)
         } else {
-            Picker("记入账户", selection: Binding(get: { model.selectedAccountID ?? "" }, set: chooseAccount)) {
+            Picker("记入账户", selection: Binding(get: { model.selectedAccountID ?? "" }, set: { account in
+                chooseAccount(account)
+            })) {
                 ForEach(snapshot.accounts) { Text($0.name).tag($0.id) }
             }.disabled(busy || positionRequest != nil || entry?.action == .closing || entry?.action == .expiration || model.preview != nil)
                 .accessibilityIdentifier("optionTradeAccount")

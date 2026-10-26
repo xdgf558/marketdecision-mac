@@ -423,19 +423,39 @@ private struct InvestmentEvidenceFields: View {
     let title: String
     @Binding var draft: PortfolioEvidenceDraft
     let prefix: String
+    @State private var expanded = false
+
     var body: some View {
-        DisclosureGroup(title) {
-            VStack(alignment: .leading, spacing: 7) {
-                Picker("来源类型", selection: $draft.kind) {
-                    Text("用户明确核对").tag(PerformanceEvidenceKind.userConfirmed)
-                    Text("本地来源摘录").tag(PerformanceEvidenceKind.localDocument)
+        VStack(alignment: .leading, spacing: 0) {
+            // Own the expansion state and expose the same state to native
+            // accessibility. The entire row, not just a triangle, is a button.
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .accessibilityHidden(true)
+                    Text(title)
+                    Spacer()
                 }
-                TextField("来源名称", text: $draft.source).accessibilityIdentifier(prefix + "Source")
-                TextField("引用或版本", text: $draft.reference).accessibilityIdentifier(prefix + "Reference")
-                TextField("取得该版本的时刻（带时区）", text: $draft.availableAt).accessibilityIdentifier(prefix + "AvailableAt")
-                TextEditor(text: $draft.text).frame(height: 65).accessibilityLabel(title + "原文").accessibilityIdentifier(prefix + "Text")
-                Text("原文仅保存本地；不会自动生成或修改证据。").font(.caption).foregroundStyle(.secondary)
-            }.padding(.top, 6)
-        }.accessibilityIdentifier(prefix + "Details")
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+            .accessibilityIdentifier(prefix + "Details")
+            .accessibilityValue(expanded ? "已展开" : "已收起")
+            if expanded {
+                VStack(alignment: .leading, spacing: 7) {
+                    Picker("来源类型", selection: $draft.kind) {
+                        Text("用户明确核对").tag(PerformanceEvidenceKind.userConfirmed)
+                        Text("本地来源摘录").tag(PerformanceEvidenceKind.localDocument)
+                    }
+                    TextField("来源名称", text: $draft.source).accessibilityIdentifier(prefix + "Source")
+                    TextField("引用或版本", text: $draft.reference).accessibilityIdentifier(prefix + "Reference")
+                    TextField("取得该版本的时刻（带时区）", text: $draft.availableAt).accessibilityIdentifier(prefix + "AvailableAt")
+                    TextEditor(text: $draft.text).frame(height: 65).accessibilityLabel(title + "原文").accessibilityIdentifier(prefix + "Text")
+                    Text("原文仅保存本地；不会自动生成或修改证据。").font(.caption).foregroundStyle(.secondary)
+                }.padding(.top, 6)
+            }
+        }
     }
 }

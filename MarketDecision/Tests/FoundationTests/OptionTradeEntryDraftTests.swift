@@ -176,7 +176,7 @@ struct OptionTradeEntryDraftTests {
             #expect(actual == original)
         }
         var marked = base; marked.sourceReference = "SYNTHETIC quote observation"
-        for source in [OptionLabInputDraft.synthetic(strategy: .putCreditSpread), marked] {
+        for source in [try OptionLabInputDraft.synthetic(strategy: .putCreditSpread), marked] {
             var actual = try optionEntryPrepared(spread: true)
             let original = actual
             #expect(throws: OptionTradeEntryError.syntheticEvidence) {
@@ -257,12 +257,14 @@ struct OptionTradeEntryDraftTests {
                 #expect(contract.termsBasis == .localManualStandard)
                 #expect(contract.effectiveFrom == nil && contract.effectiveTo == nil && contract.tradingEndsAt == nil)
                 #expect(contract.exerciseDeadline == nil && contract.settlementAt == nil)
-                #expect(contract.quoteMultiplier == (try Money("100")) && contract.deliverableCash == (try Money("0")))
+                #expect(contract.quoteMultiplier == (try Money("100")))
+                #expect(contract.deliverableCash == (try Money("0")))
                 #expect(contract.exerciseConsideration == (try Money(index == 0 ? "10000" : "9500")))
                 #expect(contract.occSymbol == (index == 0 ? "XYZ   261120P00100000" : "XYZ   261120P00095000"))
                 let delivery = try #require(contract.deliverables.first)
                 #expect(contract.deliverables.count == 1 && delivery.security.symbol == "XYZ" && delivery.security.kind == .stock)
-                #expect(delivery.quantity == (try Money("100")) && delivery.basisWeight == (try Money("1")))
+                #expect(delivery.quantity == (try Money("100")))
+                #expect(delivery.basisWeight == (try Money("1")))
                 #expect(contract.settlementType == .physicalEquity && contract.exerciseStyle == .american)
                 #expect(!contract.memoReferences.isEmpty && !contract.memoReferences.contains("Unverified research expiry assumption"))
             }
@@ -297,7 +299,8 @@ struct OptionTradeEntryDraftTests {
                 #expect(projected.lots.count == 2)
                 for side in [LedgerPositionSide.short, .long] {
                     let lot = try #require(projected.lots.first { $0.side == side })
-                    #expect(lot.quantityOpened == (try Money("5")) && lot.quantityRemaining == (try Money("5")))
+                    #expect(lot.quantityOpened == (try Money("5")))
+                    #expect(lot.quantityRemaining == (try Money("5")))
                 }
                 let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
                 #expect(committed.state == projected && committed.events.count == 2)
@@ -327,14 +330,17 @@ struct OptionTradeEntryDraftTests {
             guard case .trade(let short) = events[0].payload, case .trade(let long) = events[1].payload else {
                 Issue.record("Expected the two independently edited actual fills"); return
             }
-            #expect(short.side == .sell && short.quantity == (try Money("3")))
-            #expect(long.side == .buy && long.quantity == (try Money("2")))
+            #expect(short.side == .sell)
+            #expect(short.quantity == (try Money("3")))
+            #expect(long.side == .buy)
+            #expect(long.quantity == (try Money("2")))
             let preview = try await store.previewManual(events: events, expectedRevision: account.revision)
             #expect(preview.canCommit && preview.rows.count == 2)
             let projected = try #require(preview.projectedState)
             let projectedShort = try #require(projected.lots.first { $0.side == .short })
             let projectedLong = try #require(projected.lots.first { $0.side == .long })
-            #expect(projectedShort.quantityRemaining == (try Money("3")) && projectedLong.quantityRemaining == (try Money("2")))
+            #expect(projectedShort.quantityRemaining == (try Money("3")))
+            #expect(projectedLong.quantityRemaining == (try Money("2")))
             let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
             #expect(committed.state == projected && committed.state.lots.count == 2)
             #expect(try draft.events(in: committed) == events)
@@ -400,7 +406,8 @@ struct OptionTradeEntryDraftTests {
         other.accountID = "B"; other.legs[0].form.contractVersionID = "account-b-only-version"
         let otherSnapshot = try optionEntrySnapshot(other.events(in: empty))
         let local = try optionEntryContract(automatic.events(in: otherSnapshot)[0])
-        #expect(local.termsBasis == .localManualStandard && local != (try optionEntryContract(otherSnapshot.events[0])))
+        #expect(local.termsBasis == .localManualStandard)
+        #expect(local != (try optionEntryContract(otherSnapshot.events[0])))
         #expect(local.exerciseDeadline == nil && local.settlementAt == nil)
         var explicit = automatic
         try explicit.legs[0].reuseContract(optionEntryContract(otherSnapshot.events[0]))
@@ -498,7 +505,8 @@ struct OptionTradeEntryDraftTests {
         await #expect(throws: LedgerStoreError.stalePlan) {
             try await store.commit(planID: preview.id, expectedRevision: created.revision)
         }
-        #expect(try await store.snapshot() == changed && changed.events.isEmpty)
+        #expect(try await store.snapshot() == changed)
+        #expect(changed.events.isEmpty)
     }
 
     @Test func automaticOpeningCloseRetainsTheExactLocalContractAndLot() throws {
@@ -512,7 +520,8 @@ struct OptionTradeEntryDraftTests {
         guard case .trade(let trade) = closing[0].payload else { Issue.record("Expected local contract close"); return }
         #expect(trade.selections == [.init(lotID: lot.id, quantity: try Money("1"))])
         let state = try optionEntrySnapshot(opening + closing).state
-        #expect(state.lots.count == 1 && state.lots[0].id == lot.id && state.lots[0].quantityRemaining == (try Money("1")))
+        let expectedRemaining = try Money("1")
+        #expect(state.lots.count == 1 && state.lots[0].id == lot.id && state.lots[0].quantityRemaining == expectedRemaining)
         #expect(state.lots[0].instrument == lot.instrument)
         draft.legs[0].form.existingOption = try optionEntryContract(optionEntryPrepared().events(in: empty)[0])
         #expect(throws: (any Error).self) { try draft.events(in: opened) }
@@ -542,7 +551,8 @@ struct OptionTradeEntryDraftTests {
         let events = try draft.events(in: opened)
         guard case .optionSettlement(let settlement) = events[0].payload else { Issue.record("Expected explicit local expiration"); return }
         #expect(settlement.contract == contract && settlement.action == .expiration)
-        #expect(settlement.evidence == draft.evidence && events[0].effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)))
+        #expect(settlement.evidence == draft.evidence)
+        #expect(events[0].effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)))
         #expect(settlement.contract.exerciseDeadline == nil && settlement.contract.settlementAt == nil)
         #expect(opened.events == opening && !lot.isClosed)
         #expect(try optionEntrySnapshot(opening + events).state.lots.allSatisfy(\.isClosed))
@@ -563,8 +573,10 @@ struct OptionTradeEntryDraftTests {
             Issue.record("Expected a two-leg opening batch"); return
         }
         #expect(short.side == .sell && long.side == .buy && short.effect == .open && long.effect == .open)
-        #expect(short.unitPrice == (try Money("2.5")) && long.unitPrice == (try Money("1")))
-        #expect(short.fee == (try Money("1.3")) && short.strategy == long.strategy)
+        #expect(short.unitPrice == (try Money("2.5")))
+        #expect(long.unitPrice == (try Money("1")))
+        #expect(short.fee == (try Money("1.3")))
+        #expect(short.strategy == long.strategy)
         #expect(short.strategy?.purpose == .totalReturn)
         let state = try LedgerEngine.replay(accounts: snapshot.accounts, events: events)
         #expect(state.cashByAccount["A"] == (try Money("297.4")))
@@ -579,16 +591,20 @@ struct OptionTradeEntryDraftTests {
             let original = draft
             let events = try draft.events(in: snapshot)
             let event = try #require(events.first)
-            #expect(events.count == 1 && events == (try draft.events(in: snapshot)))
+            #expect(events.count == 1)
+            #expect(events == (try draft.events(in: snapshot)))
             #expect(draft == original)
             #expect(event.source.sourceSystem == "local-manual-option-opening.v1")
             #expect(event.source.externalTransactionID == "local-option-opening.v1:" + draft.id.uuidString + ":" + draft.legs[0].id)
             #expect(event.source.evidence.hasPrefix("用户手工录入开仓；未提供附加记录依据。"))
             #expect(event.source.evidence.hasSuffix("内部记录编号由软件生成，非券商成交编号。"))
             #expect(event.source.fileHash == nil && event.source.rowIndex == nil)
-            #expect(event.effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)) && event.notes == draft.notes)
+            #expect(event.effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)))
+            #expect(event.notes == draft.notes)
             guard case .trade(let trade) = event.payload else { Issue.record("Expected opening trade"); return }
-            #expect(trade.effect == .open && trade.unitPrice == (try Money("2.5")) && trade.fee == (try Money("1.3")))
+            #expect(trade.effect == .open)
+            #expect(trade.unitPrice == (try Money("2.5")))
+            #expect(trade.fee == (try Money("1.3")))
         }
     }
 
@@ -637,7 +653,8 @@ struct OptionTradeEntryDraftTests {
         spread.externalID = "one-order-number"
         spread.legs[0].form.externalID = ""; spread.legs[1].form.externalID = " \t\n"
         let original = spread, internalEvents = try spread.events(in: snapshot)
-        #expect(spread == original && internalEvents == (try spread.events(in: snapshot)))
+        #expect(spread == original)
+        #expect(internalEvents == (try spread.events(in: snapshot)))
         #expect(internalEvents.map { $0.source.externalTransactionID } == spread.legs.map {
             "local-option-opening.v1:" + spread.id.uuidString + ":" + $0.id
         })
@@ -814,7 +831,8 @@ struct OptionTradeEntryDraftTests {
         #expect(settlement.action == .expiration && settlement.side == .short)
         #expect(settlement.equitySelections.isEmpty && settlement.acquiredLotIDs.isEmpty)
         let final = try optionEntrySnapshot(opening + closing + expired)
-        #expect(final.state.lots.allSatisfy(\.isClosed))
+        let finalLotsClosed = final.state.lots.allSatisfy(\.isClosed)
+        #expect(finalLotsClosed)
         #expect(final.state.realizations[1].pnl == (try Money("249.2")))
         #expect(final.state.cashByAccount["A"] == (try Money("387.9")))
     }
@@ -836,7 +854,8 @@ struct OptionTradeEntryDraftTests {
         let event = events[0]
         #expect(event.source.externalTransactionID == "close-001")
         guard case .trade(let trade) = event.payload else { Issue.record("Expected one closing fill"); return }
-        #expect(trade.quantity == (try Money("2")) && trade.fee == (try Money("1.30")))
+        #expect(trade.quantity == (try Money("2")))
+        #expect(trade.fee == (try Money("1.30")))
         let expectedSelections = lots.sorted { $0.id < $1.id }.map { LedgerLotSelection(lotID: $0.id, quantity: $0.quantityRemaining) }
         #expect(trade.selections == expectedSelections)
         var changedDraft = draft; changedDraft.legs[0].form.fee = "1.31"
@@ -845,14 +864,16 @@ struct OptionTradeEntryDraftTests {
         let closingPlan = try await store.previewManual(events: events, expectedRevision: opened.revision)
         #expect(closingPlan.canCommit && closingPlan.rows.count == 1 && closingPlan.rows[0].disposition == .new)
         let committed = try await store.commit(planID: closingPlan.id, expectedRevision: opened.revision)
-        #expect(committed.state.lots.allSatisfy(\.isClosed))
+        let committedLotsClosed = committed.state.lots.allSatisfy(\.isClosed)
+        #expect(committedLotsClosed)
         let realizations = committed.state.realizations.filter { $0.eventID == event.id }
         #expect(realizations.count == 2)
         #expect(realizations.first { $0.lotID == lots[0].id }?.pnl == (try Money("148.70")))
         #expect(realizations.first { $0.lotID == lots[1].id }?.pnl == (try Money("198.70")))
         #expect(committed.state.cashByAccount["A"] == (try Money("347.40")))
         let closingPostings = committed.state.postings.filter { $0.eventID == event.id }
-        #expect(closingPostings.count == 1 && closingPostings.first?.transactionFee == (try Money("1.30")))
+        #expect(closingPostings.count == 1)
+        #expect(closingPostings.first?.transactionFee == (try Money("1.30")))
         // Retry the original real fill, rather than inventing another ID or
         // authorizing a fresh draft against the now-closed lots.
         let duplicate = try await store.previewManual(events: events, expectedRevision: committed.revision)

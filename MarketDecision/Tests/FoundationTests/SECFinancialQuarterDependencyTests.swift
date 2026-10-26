@@ -87,14 +87,26 @@ private func dependencyReport(_ records: DependencyRecords) async throws -> SECF
         let report = try await dependencyReport(records)
         #expect(report.evidence.quarters.count == 8)
         #expect(report.evidence.quarters.first?.start.iso8601 == "2024-01-01")
-        let bytes = try SECFinancialReport.bytes(report)
-        // Captured from the original all-history adapter before either dependency-bound change.
-        // This covers the full input/evidence/model/cache serialization, not just quarter count.
+        #expect(report.evidencePolicy == SECFinancialReport.policyVersion)
+        let legacy = try await SECFinancialReport.make(cik: dependencyCIK, facts: records.facts,
+            submissions: records.submissions, cutoff: secFinancialFixtureCutoff,
+            executionDate: secFinancialFixtureCutoff, evidencePolicy: SECFinancialReport.legacyPolicyVersion)
+        #expect(legacy.evidencePolicy == SECFinancialReport.legacyPolicyVersion)
+        #expect(legacy.evidence.quarters.count == 8)
+        #expect(legacy.evidence.quarters.first?.start.iso8601 == "2024-01-01")
+        // Captured with evidence v1 from the original all-history adapter before either
+        // dependency-bound change. Keep the original whole-envelope hash and explicit policy;
+        // default creation now uses evidence v2 and must not be compared to v1 bytes.
+        let legacyBytes = try SECFinancialReport.bytes(legacy)
         let legacyHash = "d64ac95c53c2c02cd5bb1f2a864ff371c2614d318f228818e6d71fd336355813"
-        #expect(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() == legacyHash)
-        let reopened = try JSONDecoder().decode(SECFinancialReport.self, from: bytes)
-        try reopened.validateEvidence(facts: records.facts, submissions: records.submissions, classification: nil)
-        #expect(try reopened.cachedReportsMatch(await reopened.recompute()))
+        #expect(SHA256.hash(data: legacyBytes).map { String(format: "%02x", $0) }.joined() == legacyHash)
+        for original in [legacy, report] {
+            let bytes = try SECFinancialReport.bytes(original)
+            let reopened = try JSONDecoder().decode(SECFinancialReport.self, from: bytes)
+            #expect(reopened.evidencePolicy == original.evidencePolicy)
+            try reopened.validateEvidence(facts: records.facts, submissions: records.submissions, classification: nil)
+            #expect(try reopened.cachedReportsMatch(await reopened.recompute()))
+        }
     }
 
     @Test func unrelatedOldQuarterGeometryDoesNotPoisonCurrentReportOrAnnualInputs() async throws {

@@ -50,28 +50,30 @@ access. This does not automate native scene lifecycle, commands, sheets or actua
 Unified Log collection; the app entry remains `build_only` for those surfaces.
 Array-backed numeric fixtures assert their required lengths before indexing.
 
-The separate `Scripts/verify-native-ui.sh` runs twenty XCTest UI cases in
+The separate `Scripts/verify-native-ui.sh` runs twenty-one XCTest UI cases in
 `NativeUITests/NativeInteractionTests.swift`. The independently identified
 MarketDecisionUITestHost compiles the same native views with a compile-time-only
 factory using synthetic quotes, an in-memory foundation database and an in-memory
 credential presence store. The SEC-open failure fixture uses a disposable host-local
 temporary directory for the blocked SEC path and separate offline SQLite database. Neither shipping configuration compiles that factory. UI tests
 are separate from the fixed Swift Testing inventory; the xcresult summary and
-individual case results must both report twenty passes with no skips. Unknown result
+individual case results must both report twenty-one passes with no skips. Unknown result
 formats fail. A failed or unavailable runner is not a passed platform check.
 
 Coverage is limited to explicit save vs text-field Return, enabled-state keyboard
 paths, native replace/delete sheets, shared state in independent Settings, stale
-sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen plus ledger clear preview/cancel/typed confirmation, portfolio synthetic-example isolation from account reports, and explicit options calculation, frozen replay and draft invalidation plus opt-in local pricing assumptions, model-result replay and pricing-edit invalidation, plus explicit risk evidence and price/IV scenario replay with edit invalidation. The added case covers explicit daily-IV calculation, saved-input replay and archive clear-preview cancellation. The market-data-center case checks explicitly missing synthetic evidence, frozen replay and cancellation of a market-only clear preview. These twenty cases do not open a file importer or exporter. Native scene wiring is exercised here;
+sheet dismissal and failure/check/retry, research source inspection/snapshot replay, missing-data vs user-target separation, clear preview/explicit confirmation, ledger CSV preview/cancel/commit/page reopen plus ledger clear preview/cancel/typed confirmation, portfolio synthetic-example isolation from account reports, and explicit options calculation, frozen replay and draft invalidation plus opt-in local pricing assumptions, model-result replay and pricing-edit invalidation, plus explicit risk evidence and price/IV scenario replay with edit invalidation. The added case covers explicit daily-IV calculation, saved-input replay and archive clear-preview cancellation. The market-data-center case checks explicitly missing synthetic evidence, frozen replay and cancellation of a market-only clear preview. These twenty-one cases do not open a file importer or exporter. Native scene wiring is exercised here;
 the foundation catalog's `build_only` label remains specific to its Swift Testing
 accounting. Neither XCTest nor accessibility labels establish full VoiceOver,
 real input-method composition, visual/contrast compliance or signed Keychain
 behavior. Local screenshots and the complete acceptance mapping remain private.
 
+The separate `testInvestmentQuickReportsAndSharesReopenWithoutBlocking` case requires all three booked-return periods, full amount masking and three repeated open/close cycles for both ordinary reports and direct shares. The existing daily investment case keeps its frozen report/save/reuse assertions. The result checker rejects a missing, failed or skipped quick-report/share case even if the aggregate claims success. No previous twenty-case result is upgraded to evidence for this twenty-one-case set; no real-account hang or performance acceptance is inferred.
+
 The isolated UI host has its own sandbox-only source entitlement file and receives Xcode-generated read-only-root and test-service
 exceptions. Its separate exact permission/identity check runs before and after
-native execution, with five rejection tests in addition to the seven result
-checks. The production verifier requires the main app to have App Sandbox and user-selected-file read/write with no network entitlement. Only its exact embedded SEC and Equity XPC services may have sandbox plus network-client; files, keychain, inheritance and debugging privileges are rejected for both. The signed isolation probe separately requires OS denial of main-process sockets, invalid-descriptor replies over both app-private XPC routes, and independent rejection after replacing either helper without re-sealing the outer app. It sends no valid provider request or credentials. XCTest automation does
+native execution, with five permission rejection tests and result-accounting
+mutation checks, including the required quick-report/share case. The production verifier requires the main app to have App Sandbox and user-selected-file read/write with no network entitlement. Only its exact embedded SEC and Equity XPC services may have sandbox plus network-client; files, keychain, inheritance and debugging privileges are rejected for both. The signed isolation probe separately requires OS denial of main-process sockets, invalid-descriptor replies over both app-private XPC routes, and independent rejection after replacing either helper without re-sealing the outer app. It sends no valid provider request or credentials. XCTest automation does
 not establish shipping-app sandbox behavior or actual production file-panel access. Any added exception fails closed and
 requires review; do not widen the checker merely to make a changed Xcode pass. The separate file-panel acceptance app uses a dedicated two-key entitlement file (sandbox and selected-file read/write), excluding network access in both configurations. Neither acceptance app builds or embeds either service, so they do not establish the production process boundary; all target entitlement files and both helper Info.plists are fingerprinted.
 

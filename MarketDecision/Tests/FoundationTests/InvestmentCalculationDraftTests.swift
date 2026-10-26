@@ -161,8 +161,10 @@ struct InvestmentCalculationDraftTests {
     @Test func dailyQuoteAdditionRejectsDuplicateInstrumentWithoutReplacingInputOrRelaxingSessionConflicts() throws {
         var day = PortfolioDayDraft(); day.day = "2026-01-05"
         #expect(!day.canAddSupplementalQuote(instrumentID: "  "))
-        #expect(!day.appendSupplementalQuote(instrumentID: ""))
-        #expect(day.appendSupplementalQuote(instrumentID: "equity:OLD"))
+        let addedBlank = day.appendSupplementalQuote(instrumentID: "")
+        #expect(!addedBlank)
+        let addedOld = day.appendSupplementalQuote(instrumentID: "equity:OLD")
+        #expect(addedOld)
         day.quotes[0].opensAt = "2026-01-05T14:30:00Z"
         day.quotes[0].closesAt = "2026-01-05T21:00:00Z"
         day.quotes[0].quoteAt = "2026-01-05T20:59:00Z"
@@ -171,9 +173,11 @@ struct InvestmentCalculationDraftTests {
         day.quotes[0].priceEvidence = proof("pending-price")
         let entered = day
         #expect(!day.canAddSupplementalQuote(instrumentID: "equity:OLD"))
-        #expect(!day.appendSupplementalQuote(instrumentID: "equity:OLD"))
+        let addedDuplicate = day.appendSupplementalQuote(instrumentID: "equity:OLD")
+        #expect(!addedDuplicate)
         #expect(day == entered)
-        #expect(day.appendSupplementalQuote(instrumentID: "equity:NEW"))
+        let addedNew = day.appendSupplementalQuote(instrumentID: "equity:NEW")
+        #expect(addedNew)
         #expect(day.quotes.first == entered.quotes.first && day.quotes.count == 2)
 
         // The editing helper is not permission to bypass the lower-level guard.

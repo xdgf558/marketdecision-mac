@@ -89,12 +89,52 @@ import XCTest
         return independent
     }
     private func waitEnabled(_ element: XCUIElement, _ enabled: Bool = true) {
+        // Predicate expectations first poll after a delay, even when a control
+        // is already ready. Keep the same condition and bounded wait without
+        // adding that delay to every native interaction.
+        if element.exists && element.isEnabled == enabled { return }
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == %@", NSNumber(value: enabled)), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
     private func waitNoSheet(in window: XCUIElement) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sheet(in: window))
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
+    }
+    private func clickCredentialButton(_ identifier: String, in window: XCUIElement) {
+        let button = window.buttons[identifier].firstMatch
+        // Form exposes credential controls in AX even when its viewport clips
+        // them. An enabled button alone is not evidence that a mouse click can
+        // reach it, especially after status text changes the form's height.
+        let containingForm = window.scrollViews.containing(.button, identifier: identifier).firstMatch
+        // The Settings page has one Form; use it before a lazy target appears.
+        let form = containingForm.exists ? containingForm : window.scrollViews.firstMatch
+        guard form.waitForExistence(timeout: 5) else {
+            XCTFail("Missing credential Form: \(window.debugDescription)")
+            return
+        }
+        func visibleViewport() -> CGRect {
+            form.frame.intersection(window.frame).insetBy(dx: 0, dy: 4)
+        }
+        func fullyVisible() -> Bool {
+            guard button.exists else { return false }
+            let viewport = visibleViewport()
+            return !viewport.isEmpty && !button.frame.isEmpty &&
+                viewport.contains(button.frame) && button.isHittable
+        }
+        for _ in 0..<24 {
+            if fullyVisible() { break }
+            // Use the actual form, not the application or another Settings
+            // window. Scroll in bounded steps, including lazy AX materialization.
+            let distance = button.exists ? visibleViewport().midY - button.frame.midY : -100
+            form.scroll(byDeltaX: 0, deltaY: max(-160, min(160, distance)))
+        }
+        XCTAssertTrue(button.waitForExistence(timeout: 5), "Missing credential action: \(window.debugDescription)")
+        waitEnabled(button)
+        guard fullyVisible() else {
+            XCTFail("Credential action must be fully inside its Form before clicking: button=\(button.frame), form=\(form.frame), window=\(window.frame)\n\(window.debugDescription)")
+            return
+        }
+        button.click()
     }
     private func firstSave() {
         app.typeKey("l", modifierFlags: .command)
@@ -109,14 +149,14 @@ import XCTest
             let daily = ["输入": "optionLabInputTab", "结果": "optionLabResultTab", "已保存": "optionLabSavedTab"]
             if let id = daily[title] {
                 let button = mainWindow.buttons[id]
-                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+                XCTAssertTrue(button.exists || button.waitForExistence(timeout: 5)); waitEnabled(button)
                 revealOptionControl(button); button.click()
                 return
             }
             if ["数据对照", "组合风险", "期权链", "模型分析", "风险与情景", "波动率历史", "期权归档"].contains(title) {
                 let button = mainWindow.buttons["optionLabAdvanced-" + title]
                 expandDisclosure("optionLabAdvancedTools", revealing: button)
-                XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+                XCTAssertTrue(button.exists || button.waitForExistence(timeout: 5)); waitEnabled(button)
                 revealOptionControl(button); button.click()
                 return
             }
@@ -125,39 +165,62 @@ import XCTest
         // deployment targets. Keep the query in this app's main window,
         // without assuming the iOS-style SegmentedControl container type.
         let radio = surface.radioButtons[title]
-        if radio.exists { radio.click() }
-        else {
+        if radio.exists {
+            waitEnabled(radio); revealOptionControl(radio); radio.click()
+        } else {
             let button = surface.buttons[title]
-            XCTAssertTrue(button.waitForExistence(timeout: 5), mainWindow.debugDescription)
-            button.click()
+            XCTAssertTrue(button.exists || button.waitForExistence(timeout: 5), mainWindow.debugDescription)
+            waitEnabled(button); revealOptionControl(button); button.click()
         }
     }
+    /// Resolve the containing viewport rather than an unrelated nested editor.
+    /// Pickers outside a ScrollView use the window and must already be visible.
+    private func controlScrollView(_ element: XCUIElement) -> XCUIElement? {
+        guard element.exists else {
+            let scroll = mainWindow.scrollViews.firstMatch
+            return scroll.exists ? scroll : nil
+        }
+        let key = element.identifier.isEmpty ? element.label : element.identifier
+        guard !key.isEmpty else { return nil }
+        let scroll = mainWindow.scrollViews.containing(element.elementType, identifier: key).firstMatch
+        return scroll.exists ? scroll : nil
+    }
     /// Input-page actions stay in a fixed footer; other controls remain inside
-    /// the scroll viewport, including expanded inputs and page navigation.
-    private func revealOptionControl(_ element: XCUIElement) {
+    /// their scroll viewport, including expanded inputs and page navigation.
+    private func revealOptionControl(_ element: XCUIElement, viewportInset: CGFloat = 8) {
+        let window = mainWindow.frame
         let fixedActionIDs: Set<String> = [
             "optionTradeRecord", "optionLabSave", "optionLabNew", "optionLabCalculate"
         ]
         if element.exists, fixedActionIDs.contains(element.identifier) {
-            let viewport = mainWindow.frame.insetBy(dx: 0, dy: 8)
-            XCTAssertTrue(!element.frame.isEmpty && !viewport.isEmpty
-                && viewport.contains(element.frame) && element.isHittable,
+            let viewport = window.insetBy(dx: 0, dy: 8)
+            let frame = element.frame
+            XCTAssertTrue(!frame.isEmpty && !viewport.isEmpty
+                && viewport.contains(frame) && element.isHittable,
                 "Fixed option action must be visible without scrolling: \(element.debugDescription)")
             return
         }
-        let scroll = mainWindow.scrollViews.firstMatch
-        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
-        func fullyVisible() -> Bool {
-            guard element.exists else { return false }
-            let viewport = scroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
-            return !element.frame.isEmpty && !viewport.isEmpty
-                && viewport.contains(element.frame) && element.isHittable
+        // Resolving containment walks the AX tree. Do it once per action, not
+        // repeatedly for each frame/visibility comparison in the scroll loop.
+        let scroll = controlScrollView(element)
+        let viewport = (scroll?.frame.intersection(window) ?? window).insetBy(dx: 0, dy: viewportInset)
+        guard !viewport.isEmpty else { XCTFail("Control has no visible viewport"); return }
+        var previousFrame: CGRect?
+        var unchangedFrames = 0
+        for _ in 0..<40 {
+            var distance: CGFloat = -120
+            if element.exists {
+                let frame = element.frame
+                if !frame.isEmpty && viewport.contains(frame) && element.isHittable { return }
+                if frame == previousFrame { unchangedFrames += 1 } else { unchangedFrames = 0 }
+                previousFrame = frame
+                if unchangedFrames >= 3 { break }
+                distance = viewport.midY - frame.midY
+            }
+            guard let scroll else { break }
+            scroll.scroll(byDeltaX: 0, deltaY: max(-160, min(160, distance)))
         }
-        for _ in 0..<40 where !fullyVisible() {
-            let distance = element.exists ? scroll.frame.midY - element.frame.midY : -160
-            scroll.scroll(byDeltaX: 0, deltaY: max(-180, min(180, distance)))
-        }
-        XCTAssertTrue(fullyVisible(), "Option control must be visible before interaction: \(element.debugDescription)")
+        XCTFail("Control must be visible before interaction: viewport=\(viewport), \(element.debugDescription)")
     }
     private func waitOptionInputSummary() {
         // Calculation intentionally stays on the input page. The full result
@@ -173,7 +236,7 @@ import XCTest
     private func saveOptionDraftFromInput() {
         researchTab("输入")
         let button = mainWindow.buttons["optionLabSave"]
-        XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
+        XCTAssertTrue(button.exists || button.waitForExistence(timeout: 5)); waitEnabled(button)
         revealOptionControl(button); button.click(); waitEnabled(button, false)
         waitText("已保存", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
         waitText("未入账", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
@@ -183,6 +246,7 @@ import XCTest
         let predicate = NSPredicate { _, _ in
             element.exists && (element.label.contains(text) || (element.value as? String)?.contains(text) == true)
         }
+        if predicate.evaluate(with: element) { return }
         let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
         let result = XCTWaiter.wait(for: [expectation], timeout: 15)
         XCTAssertEqual(result, .completed, element.debugDescription)
@@ -196,28 +260,14 @@ import XCTest
         if child.exists { return }
         let container = mainWindow.descendants(matching: .any)[identifier].firstMatch
         let button = mainWindow.buttons[identifier].firstMatch
-        let explicitButton = button.exists
-        let disclosure = explicitButton ? button : container.disclosureTriangles.firstMatch
-        let scroll = mainWindow.scrollViews.containing(.any, identifier: identifier).firstMatch
-        func viewport() -> CGRect {
-            let window = mainWindow.frame
-            return (scroll.exists ? scroll.frame.intersection(window) : window).insetBy(dx: 0, dy: 8)
-        }
-        func fullyVisible() -> Bool {
-            guard disclosure.exists else { return false }
-            let visible = viewport()
-            return !visible.isEmpty && visible.contains(disclosure.frame) && disclosure.isHittable
-        }
-        for _ in 0..<24 {
-            if fullyVisible() { break }
-            guard scroll.exists else { break }
-            let distance = disclosure.exists ? viewport().midY - disclosure.frame.midY : -100
-            scroll.scroll(byDeltaX: 0, deltaY: max(-180, min(180, distance)))
-        }
+        // A native DisclosureGroup can itself be the identified triangle; it
+        // does not contain a second triangle below it in the AX hierarchy.
+        let nativeTriangle = mainWindow.disclosureTriangles[identifier].firstMatch
+        let disclosure = button.exists ? button
+            : (nativeTriangle.exists ? nativeTriangle : container.disclosureTriangles.firstMatch)
+        revealOptionControl(disclosure)
         XCTAssertTrue(disclosure.waitForExistence(timeout: 5), mainWindow.debugDescription)
         waitEnabled(disclosure)
-        XCTAssertTrue(fullyVisible(), "Disclosure must be fully inside its viewport: \(disclosure.debugDescription)")
-        XCTAssertTrue(disclosure.isHittable, disclosure.debugDescription)
         func expandedState() -> Bool? {
             if let value = disclosure.value as? NSNumber { return value.boolValue }
             if let value = disclosure.value as? String {
@@ -231,17 +281,31 @@ import XCTest
             return
         }
         if !expanded {
-            if explicitButton {
-                disclosure.click()
+            if disclosure.elementType == .disclosureTriangle {
+                // The native AX frame includes the title. Target the leading
+                // arrow instead of the frame midpoint, which can hit its label.
+                let arrowInset = min(disclosure.frame.height, disclosure.frame.width) / 2
+                disclosure.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0.5))
+                    .withOffset(CGVector(dx: arrowInset, dy: 0)).click()
             } else {
-                // Unchanged native controls remain discoverable; the new
-                // daily workflow groups expose whole-row buttons above.
                 disclosure.click()
             }
         }
-        let opened = NSPredicate { _, _ in disclosure.exists && expandedState() == true }
-        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: opened, object: disclosure)], timeout: 5),
-                       .completed, disclosure.debugDescription)
+        if !disclosure.exists || expandedState() != true {
+            let opened = NSPredicate { _, _ in disclosure.exists && expandedState() == true }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: opened, object: disclosure)], timeout: 5),
+                           .completed, disclosure.debugDescription)
+        }
+        XCTAssertTrue(disclosure.exists && expandedState() == true, disclosure.debugDescription)
+        // Expanded lazy content may not yet be present in the AX tree. Scroll
+        // its existing parent until it materializes; do not toggle it closed.
+        let scroll = controlScrollView(disclosure)
+        for _ in 0..<24 {
+            if child.exists { return }
+            guard let scroll else { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -120)
+        }
+        XCTAssertTrue(child.waitForExistence(timeout: 5), "Expanded content is missing: \(child.debugDescription)")
     }
     private func openStockTool(_ identifier: String, title: String) {
         let tools = mainWindow.descendants(matching: .any)["stockAdvancedTools"].firstMatch
@@ -318,7 +382,10 @@ import XCTest
             let viewport = scroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
             return !tools.frame.isEmpty && !viewport.isEmpty && viewport.contains(tools.frame)
         }
-        for _ in 0..<20 where !toolsFullyVisible() { scroll.scroll(byDeltaX: 0, deltaY: -100) }
+        for _ in 0..<20 {
+            if toolsFullyVisible() { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -100)
+        }
         XCTAssertTrue(tools.waitForExistence(timeout: 10))
         XCTAssertTrue(toolsFullyVisible() && tools.isHittable, mainWindow.debugDescription)
         tools.click()
@@ -332,6 +399,7 @@ import XCTest
         waitAbsent(back)
     }
     private func waitAbsent(_ element: XCUIElement) {
+        if !element.exists { return }
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
@@ -394,7 +462,10 @@ import XCTest
         XCTAssertFalse(mainWindow.buttons["portfolioSavePreview"].exists)
         researchTab("收益与风险")
         let month = mainWindow.staticTexts["2026-01"]
-        for _ in 0..<8 where !month.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        for _ in 0..<8 {
+            if month.isHittable { break }
+            mainWindow.scrollViews.firstMatch.swipeUp()
+        }
         XCTAssertTrue(month.waitForExistence(timeout: 5))
         closeInvestmentDetail()
         selectPage("pageStocks")
@@ -416,24 +487,30 @@ import XCTest
         waitEnabled(create); create.click()
         let cash = mainWindow.staticTexts["ledgerCash"]
         waitText("0 USD", in: cash)
+        func reach(_ element: XCUIElement) {
+            // CSV also contains a TextEditor scroll view. Scroll the action's
+            // own container and require its whole frame inside the viewport;
+            // AXHittable alone can accept a button clipped at the bottom edge.
+            // Ledger content has 4 pt vertical padding: on the CI viewport the
+            // last button ends at y=678 inside the scroll view's y=682 bottom.
+            // An extra 8 pt test inset falsely excludes that fully visible row.
+            revealOptionControl(element, viewportInset: 0)
+        }
         researchTab("CSV 导入")
         let template = mainWindow.buttons["填入合成模板"]
-        XCTAssertTrue(template.waitForExistence(timeout: 5)); template.click()
+        XCTAssertTrue(template.waitForExistence(timeout: 5)); waitEnabled(template); reach(template); template.click()
         let preview = mainWindow.buttons["ledgerPreviewCSV"]
-        func reach(_ element: XCUIElement) {
-            for _ in 0..<14 {
-                if element.isHittable { break }
-                mainWindow.scrollViews.firstMatch.swipeUp()
-            }
-            XCTAssertTrue(element.isHittable, mainWindow.debugDescription)
-        }
         reach(preview); waitEnabled(preview); preview.click()
         let expectedCash = mainWindow.staticTexts["ledgerPreviewCash"]
+        waitText("预检完成", in: mainWindow.staticTexts["ledgerMessage"])
+        reach(expectedCash)
         waitText("980 USD", in: expectedCash)
         let cancel = mainWindow.buttons["ledgerCancelPreview"]
         reach(cancel); cancel.click()
         researchTab("现金与批次"); waitText("0 USD", in: cash)
         researchTab("CSV 导入"); reach(preview); waitEnabled(preview); preview.click()
+        waitText("预检完成", in: mainWindow.staticTexts["ledgerMessage"])
+        reach(expectedCash)
         waitText("980 USD", in: expectedCash)
         let review = mainWindow.buttons["ledgerReviewCommit"]
         reach(review); waitEnabled(review); review.click()
@@ -480,19 +557,49 @@ import XCTest
         XCTAssertFalse(create.isEnabled)
         XCTAssertFalse(cash.exists)
     }
+    private func assertInvestmentToggleState(_ element: XCUIElement, _ expected: Bool,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        guard element.exists else {
+            XCTFail("Missing investment toggle: \(element.identifier)", file: file, line: line)
+            return
+        }
+        let raw = element.value
+        let actual: Bool?
+        let valueDescription: String
+        if let number = raw as? NSNumber {
+            // AX may bridge a native checkbox or switch through NSNumber.
+            // Mixed/unknown states are not equivalent to unchecked.
+            actual = number == NSNumber(value: 0) ? false
+                : (number == NSNumber(value: 1) ? true : nil)
+            valueDescription = number.stringValue
+        } else if let text = raw as? String {
+            // This also accepts NSString through Foundation bridging.
+            actual = text == "0" ? false : (text == "1" ? true : nil)
+            valueDescription = String(reflecting: text)
+        } else {
+            actual = nil
+            valueDescription = raw == nil ? "nil" : "unsupported non-scalar value"
+        }
+        let typeDescription = raw.map { String(reflecting: type(of: $0)) } ?? "nil"
+        // Only this synthetic host's toggle identifier and scalar AX value
+        // are included; no window/account/record hierarchy is logged.
+        XCTAssertEqual(actual, Optional(expected),
+            "Toggle \(element.identifier): AX type=\(typeDescription), value=\(valueDescription)",
+            file: file, line: line)
+    }
     func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
         configure(); launchMainWindow(); selectPage("pageInvestments")
         let share = mainWindow.buttons["investmentShare"]
-        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share, false)
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share, false)
         let record = mainWindow.buttons["investmentRecord"]
         waitEnabled(record); record.click()
         let accountName = mainWindow.textFields["ledgerAccountName"]
-        XCTAssertTrue(accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
+        XCTAssertTrue(accountName.exists || accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
         accountName.click(); accountName.typeText("Daily workflow test")
         let create = mainWindow.buttons["ledgerCreateAccount"]
         waitEnabled(create); create.click()
         let next = mainWindow.buttons["ledgerContinueCalculation"]
-        XCTAssertTrue(next.waitForExistence(timeout: 5)); waitEnabled(next); next.click()
+        XCTAssertTrue(next.exists || next.waitForExistence(timeout: 5)); waitEnabled(next); next.click()
 
         // An explicitly empty local account avoids market observations entirely.
         // The input is test-only user-confirmed material, never a relabelled demo.
@@ -510,8 +617,21 @@ import XCTest
             XCTAssertTrue(visible(), "Investment input must be wholly visible before native interaction: \(element.debugDescription)")
         }
         func fill(_ element: XCUIElement, _ value: String) {
-            XCTAssertTrue(element.waitForExistence(timeout: 5)); reach(element); waitEnabled(element)
+            XCTAssertTrue(element.exists || element.waitForExistence(timeout: 5)); reach(element)
+            if element.elementType == .textView {
+                // The date field and editors share the same production blocked
+                // gate. Check that gate, then prove native TextEditor editing by
+                // reading back its value instead of relying on AXEnabled alone.
+                waitEnabled(mainWindow.textFields["investmentStartDay"])
+                XCTAssertFalse(mainWindow.descendants(matching: .any)["investmentCalculationStale"].exists)
+            } else {
+                waitEnabled(element)
+            }
             element.click(); element.typeKey("a", modifierFlags: .command); element.typeText(value)
+            let updated = NSPredicate { _, _ in (element.value as? String) == value }
+            if updated.evaluate(with: element) { return }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: updated, object: element)], timeout: 5),
+                           .completed, "Investment input did not accept the entered value: \(element.debugDescription)")
         }
         func evidence(_ prefix: String, reference: String) {
             let source = mainWindow.textFields[prefix + "Source"]
@@ -522,28 +642,30 @@ import XCTest
             fill(mainWindow.textViews[prefix + "Text"], "Explicit test-only " + reference)
         }
         let calendar = mainWindow.textViews["investmentCalendarDays"]
-        XCTAssertTrue(calendar.waitForExistence(timeout: 10))
+        XCTAssertTrue(calendar.exists || calendar.waitForExistence(timeout: 10))
         fill(calendar, "2026-01-05\n2026-01-06")
         evidence("investmentCalendar", reference: "calendar-v1")
         let inspect = mainWindow.buttons["investmentInspectMissing"]
         reach(inspect); inspect.click()
         for day in ["2026-01-05", "2026-01-06"] {
             let instant = mainWindow.textFields["investmentValuation-" + day]
-            XCTAssertTrue(instant.waitForExistence(timeout: 5))
+            XCTAssertTrue(instant.exists || instant.waitForExistence(timeout: 5))
             XCTAssertEqual(instant.value as? String, "") // No current date or close time is invented.
             fill(instant, day + "T21:00:00Z")
         }
         let flows = mainWindow.checkBoxes["investmentConfirmFlows"]
-        XCTAssertTrue(flows.waitForExistence(timeout: 5)); XCTAssertEqual(flows.value as? String, "0")
+        XCTAssertTrue(flows.exists || flows.waitForExistence(timeout: 5)); reach(flows)
+        assertInvestmentToggleState(flows, false)
         evidence("investmentFlow", reference: "empty-account-flows-v1")
-        reach(flows); flows.click()
+        reach(flows); waitEnabled(flows); assertInvestmentToggleState(flows, false)
+        flows.click(); assertInvestmentToggleState(flows, true)
         let calculate = mainWindow.buttons["investmentCalculate"]
         reach(calculate); waitEnabled(calculate); calculate.click()
         waitText("0.00 USD", in: mainWindow.staticTexts["investmentCalculationPnL"])
         let review = mainWindow.buttons["investmentSaveCalculation"]
         reach(review); waitEnabled(review); review.click()
         let confirmation = mainWindow.sheets.containing(.button, identifier: "investmentConfirmSave").firstMatch
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.exists || confirmation.waitForExistence(timeout: 5))
         let commit = confirmation.buttons["investmentConfirmSave"]
         XCTAssertFalse(commit.isEnabled)
         app.typeKey(.return, modifierFlags: [])
@@ -551,44 +673,142 @@ import XCTest
         let text = confirmation.textFields["investmentSaveConfirmation"]
         text.click(); text.typeText("保存"); waitEnabled(commit); commit.click()
         waitAbsent(confirmation)
-        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share)
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share)
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
-        share.click()
+        // Full valuation cards retain their own saved/replayed-report gate.
+        let frozenShare = mainWindow.buttons["investmentShareFrozen"]
+        expandDisclosure("investmentPeriodReport", revealing: frozenShare)
+        reach(frozenShare); waitEnabled(frozenShare); frozenShare.click()
         let sharing = mainWindow.sheets.containing(.button, identifier: "investmentShareCopy").firstMatch
-        XCTAssertTrue(sharing.waitForExistence(timeout: 5))
+        XCTAssertTrue(sharing.exists || sharing.waitForExistence(timeout: 5))
         XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
         XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
         XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
-        XCTAssertEqual(sharing.checkBoxes["investmentShareAmounts"].value as? String, "0")
-        XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
+        assertInvestmentToggleState(sharing.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch, true)
+        assertInvestmentToggleState(sharing.checkBoxes["investmentShareHoldings"], false)
         // Preview only: no clipboard mutation, browser launch, file panel or post.
-        sharing.buttons["完成"].click(); waitAbsent(sharing)
-        // The daily button now creates all rolling periods directly, without
-        // replacing the independently frozen valuation/share report above.
-        let quick = mainWindow.buttons["investmentGenerateReport"]
-        XCTAssertTrue(quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
-        let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
-        XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
-        for period in ["year", "quarter", "month"] {
-            waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
-        }
-        XCTAssertFalse(quickSheet.textViews["investmentCalendarDays"].exists)
-        XCTAssertFalse(quickSheet.textFields["investmentStartDay"].exists)
-        XCTAssertFalse(quickSheet.buttons["investmentConfirmSave"].exists)
-        quickSheet.buttons["investmentQuickReportsClose"].click(); waitAbsent(quickSheet)
-        waitEnabled(share)
+        sharing.buttons["investmentShareClose"].click(); waitAbsent(sharing)
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
         openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]
-        XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
+        XCTAssertTrue(reuse.exists || reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
         XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))
         XCTAssertEqual(mainWindow.textFields["investmentStartDay"].value as? String, "2026-01-05")
         XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
         XCTAssertFalse(calendar.exists)
         XCTAssertFalse(mainWindow.textFields["investmentValuation-2026-01-05"].exists)
-        XCTAssertEqual(flows.value as? String, "0") // Reuse never re-approves completeness.
+        reach(flows)
+        assertInvestmentToggleState(flows, false) // Reuse never re-approves completeness.
         reach(calculate); waitEnabled(calculate); calculate.click()
         waitText("待补数据", in: mainWindow.staticTexts["investmentCalculationPnL"])
+    }
+    func testInvestmentQuickReportsAndSharesReopenWithoutBlocking() {
+        configure(); launchMainWindow(); selectPage("pageInvestments")
+        let share = mainWindow.buttons["investmentShare"]
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share, false)
+        let record = mainWindow.buttons["investmentRecord"]
+        waitEnabled(record); record.click()
+        let accountName = mainWindow.textFields["ledgerAccountName"]
+        XCTAssertTrue(accountName.exists || accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
+        accountName.click(); accountName.typeText("Quick reports test")
+        let create = mainWindow.buttons["ledgerCreateAccount"]
+        waitEnabled(create); create.click()
+        let next = mainWindow.buttons["ledgerContinueCalculation"]
+        XCTAssertTrue(next.exists || next.waitForExistence(timeout: 5)); waitEnabled(next)
+        // This fresh ordinary account has no frozen report or market evidence.
+        // Return through the normal UI; reload selects its only ledger account.
+        closeInvestmentDetail()
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share)
+        XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
+        // Quick cards use booked P&L only, without promoting their results to
+        // complete valuation, return-rate or frozen-report evidence.
+        let quick = mainWindow.buttons["investmentGenerateReport"]
+        func waitReportAction(_ element: XCUIElement) {
+            let ready = NSPredicate { _, _ in element.exists && element.isEnabled && element.isHittable }
+            if ready.evaluate(with: element) { return }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: element)], timeout: 10),
+                           .completed, element.debugDescription)
+        }
+        XCTAssertTrue(quick.exists || quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
+        let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
+        XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5),
+                      "Quick report sheet with its close action did not appear in the main window:\n\(mainWindow.debugDescription)")
+        for period in ["year", "quarter", "month"] {
+            waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
+            XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
+        }
+        XCTAssertFalse(quickSheet.textViews["investmentCalendarDays"].exists)
+        XCTAssertFalse(quickSheet.textFields["investmentStartDay"].exists)
+        XCTAssertFalse(quickSheet.buttons["investmentConfirmSave"].exists)
+        let monthShare = quickSheet.buttons["investmentQuickShare-month"]
+        waitEnabled(monthShare); monthShare.click()
+        // Native nested sheets may be exposed as siblings or descendants.
+        // Use unique controls and the card itself, not an ancestor's sheet match.
+        let quickPreview = mainWindow.descendants(matching: .any)["investmentSharePreview"].firstMatch
+        let shareClose = mainWindow.buttons["investmentShareClose"]
+        XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 5))
+        XCTAssertTrue(quickPreview.staticTexts["已入账收益"].exists)
+        waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+        XCTAssertFalse(mainWindow.checkBoxes["investmentShareReturn"].exists)
+        XCTAssertFalse(mainWindow.checkBoxes["investmentShareHoldings"].exists)
+        XCTAssertFalse(quickPreview.staticTexts["Quick reports test"].exists)
+        let amounts = mainWindow.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch
+        assertInvestmentToggleState(amounts, true)
+        for index in 0..<3 {
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
+        }
+        amounts.click()
+        assertInvestmentToggleState(amounts, false)
+        waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
+        // Native preview only: changing periods must recheck storage and retain
+        // privacy settings. Do not open the save panel or invoke clipboard/X.
+        for (period, title) in [("year", "近1年"), ("quarter", "近1季度"), ("month", "近1个月")] {
+            let select = mainWindow.buttons["investmentSharePeriod-" + period]
+            waitEnabled(select); select.click()
+            waitText(title, in: quickPreview.staticTexts["investmentShareCardPeriod"])
+            waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
+        }
+        amounts.click()
+        assertInvestmentToggleState(amounts, true)
+        waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+        for index in 0..<3 {
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
+        }
+        waitEnabled(mainWindow.buttons["investmentShareSave"])
+        waitEnabled(shareClose); shareClose.click(); waitAbsent(shareClose)
+        waitAbsent(quickPreview)
+        quickSheet.buttons["investmentQuickReportsClose"].click(); waitAbsent(quickSheet)
+        // The ordinary report must finish its loading-to-table transition and
+        // return control to the main window on every presentation. Merely
+        // finding three values does not prove the sheet can still be dismissed.
+        for _ in 0..<3 {
+            waitReportAction(quick); quick.click()
+            XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5))
+            for period in ["year", "quarter", "month"] {
+                waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
+                XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
+            }
+            waitAbsent(quickSheet.descendants(matching: .any)["investmentQuickReportsLoading"].firstMatch)
+            XCTAssertFalse(quickSheet.staticTexts["investmentQuickReportsError"].exists)
+            let closeReport = quickSheet.buttons["investmentQuickReportsClose"]
+            waitReportAction(closeReport); closeReport.click(); waitAbsent(quickSheet)
+            waitReportAction(quick)
+        }
+        waitEnabled(share)
+        // Fast, read-only generation must reach the card without observing a
+        // transient busy edge. Reopening starts a fresh presentation each time.
+        for _ in 0..<3 {
+            waitReportAction(share); share.click()
+            XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 10))
+            waitAbsent(mainWindow.descendants(matching: .any)["investmentQuickReportsLoading"].firstMatch)
+            XCTAssertFalse(mainWindow.staticTexts["investmentQuickReportsError"].exists)
+            waitText("近1个月", in: quickPreview.staticTexts["investmentShareCardPeriod"])
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+            waitReportAction(shareClose); shareClose.click(); waitAbsent(quickPreview)
+            waitReportAction(quick)
+        }
+        // Read-only booked reports never create a complete frozen valuation.
+        XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
     }
     func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
         configure(); launchMainWindow()
@@ -599,34 +819,43 @@ import XCTest
         let template = mainWindow.buttons["optionEvidenceTemplate"]
         let calculate = mainWindow.buttons["optionEvidenceCalculate"]
         XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
-        template.click(); waitEnabled(calculate); calculate.click()
+        revealOptionControl(template); template.click(); waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         XCTAssertTrue(mainWindow.staticTexts["optionEvidenceProviderTitle"].waitForExistence(timeout: 15))
         waitText("SYNTHETIC", in: mainWindow.staticTexts["optionEvidenceOrigin"])
         let save = mainWindow.buttons["optionEvidenceSave"]
-        waitEnabled(save); save.click(); waitEnabled(save, false)
+        waitEnabled(save); revealOptionControl(save); save.click(); waitEnabled(save, false)
         waitText("完整重放核对", in: mainWindow.staticTexts["optionEvidenceReplay"])
         researchTab("25-Delta 波动率")
         XCTAssertFalse(mainWindow.staticTexts["optionEvidenceProviderTitle"].exists)
         waitEnabled(calculate, false)
-        waitEnabled(template); template.click(); waitEnabled(calculate); calculate.click()
+        waitEnabled(template); revealOptionControl(template); template.click(); waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         XCTAssertTrue(mainWindow.staticTexts["optionEvidenceDeltaTitle"].waitForExistence(timeout: 15))
         waitText("Call IV", in: mainWindow.staticTexts["optionEvidenceDeltaValues"])
         researchTab("交易时点归因")
         XCTAssertFalse(mainWindow.staticTexts["optionEvidenceDeltaTitle"].exists)
-        waitEnabled(template); template.click(); waitEnabled(calculate); calculate.click()
+        waitEnabled(template); revealOptionControl(template); template.click(); waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         XCTAssertTrue(mainWindow.staticTexts["optionEvidenceAttributionTitle"].waitForExistence(timeout: 15))
         // Reload clears unsaved numbers; catalog rows alone cannot publish cached results.
         let scroll = mainWindow.scrollViews.firstMatch
         let reload = mainWindow.buttons["optionEvidenceReload"]
-        for _ in 0..<24 where !reload.exists || !reload.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -150) }
+        for _ in 0..<24 {
+            if reload.exists && reload.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -150)
+        }
         XCTAssertTrue(reload.exists && reload.isHittable, mainWindow.debugDescription)
-        waitEnabled(reload); reload.click()
+        waitEnabled(reload); revealOptionControl(reload); reload.click()
         let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionEvidenceOpen-")).firstMatch
-        for _ in 0..<24 where !open.exists || !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -100) }
+        for _ in 0..<24 {
+            if open.exists && open.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -100)
+        }
         XCTAssertTrue(open.exists && open.isHittable, mainWindow.debugDescription)
         waitEnabled(open); open.click()
         let status = mainWindow.staticTexts["optionEvidenceReplay"]
-        for _ in 0..<24 where !status.exists || !status.isHittable { scroll.scroll(byDeltaX: 0, deltaY: 150) }
+        for _ in 0..<24 {
+            if status.exists && status.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: 150)
+        }
         waitText("完整重放核对", in: status)
         XCTAssertTrue(mainWindow.staticTexts["optionEvidenceProviderTitle"].exists)
         // Opening the provider report also synchronizes the kind picker. A deliberate
@@ -642,14 +871,14 @@ import XCTest
         XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
         researchTab("组合风险")
         let complete = mainWindow.buttons["portfolioGreeksSyntheticComplete"]
-        XCTAssertTrue(complete.waitForExistence(timeout: 15)); waitEnabled(complete); complete.click()
+        XCTAssertTrue(complete.waitForExistence(timeout: 15)); waitEnabled(complete); revealOptionControl(complete); complete.click()
         waitText("SYNTHETIC", in: mainWindow.staticTexts["portfolioGreeksOrigin"])
         waitText("声明持仓范围完整覆盖", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
         let save = mainWindow.buttons["portfolioGreeksSave"]
-        waitEnabled(save); save.click(); waitEnabled(save, false)
+        waitEnabled(save); revealOptionControl(save); save.click(); waitEnabled(save, false)
         waitText("完整重放核对", in: mainWindow.staticTexts["portfolioGreeksReplayStatus"])
         let missing = mainWindow.buttons["portfolioGreeksSyntheticMissing"]
-        waitEnabled(missing); missing.click()
+        waitEnabled(missing); revealOptionControl(missing); missing.click()
         waitText("覆盖不完整", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
         waitText("缺口 1", in: mainWindow.staticTexts["portfolioGreeksCoverage"])
         waitEnabled(save)
@@ -661,11 +890,17 @@ import XCTest
         XCTAssertFalse(mainWindow.staticTexts["portfolioGreeksNetDelta"].exists)
         let open = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "portfolioGreeksOpen-")).firstMatch
         let scroll = mainWindow.scrollViews.firstMatch
-        for _ in 0..<18 where !open.exists || !open.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
+        for _ in 0..<18 {
+            if open.exists && open.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -80)
+        }
         XCTAssertTrue(open.exists && open.isHittable, mainWindow.debugDescription)
         waitEnabled(open); open.click()
         let status = mainWindow.staticTexts["portfolioGreeksReplayStatus"]
-        for _ in 0..<18 where !status.exists || !status.isHittable { scroll.scroll(byDeltaX: 0, deltaY: 80) }
+        for _ in 0..<18 {
+            if status.exists && status.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: 80)
+        }
         waitText("完整重放核对", in: status)
         waitText("声明持仓范围完整覆盖", in: mainWindow.staticTexts["portfolioGreeksCompleteness"])
         XCTAssertFalse(save.isEnabled)
@@ -696,7 +931,10 @@ import XCTest
         XCTAssertFalse(handoff.isEnabled) // Opening never silently chooses the first contract.
         let scroll = mainWindow.scrollViews.element(boundBy: 0)
         func reveal(_ element: XCUIElement, delta: CGFloat) {
-            for _ in 0..<24 where !element.exists || !element.isHittable { scroll.scroll(byDeltaX: 0, deltaY: delta) }
+            for _ in 0..<24 {
+                if element.exists && element.isHittable { break }
+                scroll.scroll(byDeltaX: 0, deltaY: delta)
+            }
             XCTAssertTrue(element.exists && element.isHittable, mainWindow.debugDescription)
         }
         let expiry = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionChainExpiry-")).firstMatch
@@ -799,7 +1037,10 @@ import XCTest
         let preview = mainWindow.buttons["marketArchiveClear"]
         XCTAssertTrue(preview.waitForExistence(timeout: 10)); waitEnabled(preview)
         let scroll = mainWindow.scrollViews.element(boundBy: 0)
-        for _ in 0..<20 where !preview.isHittable { scroll.scroll(byDeltaX: 0, deltaY: -80) }
+        for _ in 0..<20 {
+            if preview.isHittable { break }
+            scroll.scroll(byDeltaX: 0, deltaY: -80)
+        }
         XCTAssertTrue(preview.isHittable); preview.click()
         let panel = sheet(in: mainWindow)
         XCTAssertTrue(panel.waitForExistence(timeout: 10))
@@ -819,20 +1060,20 @@ import XCTest
         XCTAssertTrue(mainWindow.buttons["optionLabTemplate"].waitForExistence(timeout: 15))
         researchTab("波动率历史")
         let template = mainWindow.buttons["optionDailyTemplate"]
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); revealOptionControl(template); template.click()
         waitText("SYNTHETIC", in: mainWindow.staticTexts["optionDailyOrigin"])
         let calculate = mainWindow.buttons["optionDailyCalculate"]
-        waitEnabled(calculate); calculate.click()
+        waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         waitText("25.00%", in: mainWindow.staticTexts["optionDailyResult"])
         let saveDaily = mainWindow.buttons["optionDailySave"]
-        waitEnabled(saveDaily); saveDaily.click()
+        waitEnabled(saveDaily); revealOptionControl(saveDaily); saveDaily.click()
         waitText("日摘要已保存", in: mainWindow.staticTexts["optionHistoryMessage"])
         waitEnabled(saveDaily, false)
         researchTab("摘要目录")
         let reload = mainWindow.buttons["optionHistoryReload"]
-        waitEnabled(reload); reload.click()
+        waitEnabled(reload); revealOptionControl(reload); reload.click()
         let openDaily = mainWindow.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "optionDailyOpen-")).firstMatch
-        XCTAssertTrue(openDaily.waitForExistence(timeout: 15)); waitEnabled(openDaily); openDaily.click()
+        XCTAssertTrue(openDaily.waitForExistence(timeout: 15)); waitEnabled(openDaily); revealOptionControl(openDaily); openDaily.click()
         waitText("完整输入重算并核对", in: mainWindow.staticTexts["optionHistoryMessage"])
         waitText("25.00%", in: mainWindow.staticTexts["optionDailyResult"])
         researchTab("期权归档")
@@ -848,7 +1089,8 @@ import XCTest
         }
         // macOS 15 reports a clipped button as hittable. Bring the whole action
         // into its viewport before clicking its center, not the exposed edge.
-        for _ in 0..<20 where !previewFullyVisible() {
+        for _ in 0..<20 {
+            if previewFullyVisible() { break }
             guard preview.exists else { XCTFail("Archive action disappeared before scrolling"); return }
             let distance = scroll.frame.intersection(mainWindow.frame).midY - preview.frame.midY
             scroll.scroll(byDeltaX: 0, deltaY: max(-100, min(100, distance)))
@@ -975,16 +1217,15 @@ import XCTest
 
     func testOptionPricingExplicitAssumptionsReplayAndEditInvalidation() {
         configure(); launchMainWindow()
-        XCTAssertTrue(app.buttons["pageOptions"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["pageOptions"].exists || app.buttons["pageOptions"].waitForExistence(timeout: 15))
         app.typeKey("2", modifierFlags: .command)
         let template = mainWindow.buttons["optionLabTemplate"]
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        XCTAssertTrue(template.exists || template.waitForExistence(timeout: 15)); waitEnabled(template); revealOptionControl(template); template.click()
         let assumptions = mainWindow.buttons["optionLabPricingSynthetic"]
         expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabPricingDetails"])
         expandDisclosure("optionLabPricingDetails", revealing: assumptions)
-        XCTAssertTrue(assumptions.waitForExistence(timeout: 5))
-        for _ in 0..<10 where !assumptions.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
-        XCTAssertTrue(assumptions.isHittable); assumptions.click()
+        XCTAssertTrue(assumptions.exists || assumptions.waitForExistence(timeout: 5))
+        revealOptionControl(assumptions); assumptions.click()
         let calculate = mainWindow.buttons["optionLabCalculate"]
         let saveSnapshot = mainWindow.buttons["optionLabSave"]
         waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
@@ -994,23 +1235,22 @@ import XCTest
         waitText("SYNTHETIC", in: status)
         waitText("RISK_NEUTRAL", in: mainWindow.staticTexts["optionLabRiskNeutralBoundary"])
         let localIV = mainWindow.staticTexts["optionLabIVState-SYNTHETIC-P100"]
-        XCTAssertTrue(localIV.waitForExistence(timeout: 10)); waitText("可用", in: localIV)
+        XCTAssertTrue(localIV.exists || localIV.waitForExistence(timeout: 10)); waitText("可用", in: localIV)
         let screenshot = XCTAttachment(screenshot: mainWindow.screenshot())
         screenshot.name = "Options-pricing-synthetic-model-reference"; screenshot.lifetime = .keepAlways
         add(screenshot)
         saveOptionDraftFromInput()
         researchTab("模型分析"); waitText("已按完整输入重算", in: status)
         app.typeKey("1", modifierFlags: .command); app.typeKey("2", modifierFlags: .command)
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        XCTAssertTrue(template.exists || template.waitForExistence(timeout: 15)); waitEnabled(template)
         researchTab("已保存")
         let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
-        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        XCTAssertTrue(openSaved.exists || openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); revealOptionControl(openSaved); openSaved.click()
         waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
         researchTab("模型分析"); waitText("已按完整输入重算", in: status)
         XCTAssertFalse(saveSnapshot.exists)
         let copy = mainWindow.buttons["optionLabCopy"]
-        for _ in 0..<10 where !copy.isHittable { mainWindow.scrollViews.firstMatch.swipeDown() }
-        XCTAssertTrue(copy.isHittable); copy.click()
+        revealOptionControl(copy); copy.click()
         // Editing must invalidate a freshly computed result, not an already-cleared copy.
         waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         waitOptionInputSummary()
@@ -1018,14 +1258,11 @@ import XCTest
         researchTab("输入")
         let rate = mainWindow.textFields["optionLabPricingRate"]
         expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabPricingDetails"])
-        // copyToDraft restores this report's enabled pricing disclosure. Do not
-        // toggle it based on a lazy rate field that is merely below the viewport.
-        // Section identity resets the outer viewport, but the field can still
-        // lie below the initial visible input content.
-        // The rate belongs to a LazyVGrid: on macOS 15 it may not enter the AX
-        // tree until scrolled into view. Never locate the viewport through it.
+        // The rate belongs to a LazyVGrid and may not enter the AX tree until
+        // its pricing section is visible. Keep a known editor anchor, then
+        // reveal the section itself rather than guessing the field's distance.
         let editor = mainWindow.scrollViews.element(boundBy: 0)
-        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        XCTAssertTrue(editor.exists || editor.waitForExistence(timeout: 5))
         let origin = mainWindow.staticTexts["optionLabOrigin"]
         func originFullyVisible() -> Bool {
             guard origin.exists else { return false }
@@ -1036,37 +1273,27 @@ import XCTest
             return !origin.frame.isEmpty && !viewport.isEmpty
                 && origin.frame.minY >= viewport.minY && origin.frame.maxY <= viewport.maxY
         }
-        // Establish a known top anchor before searching downwards. Both loops
-        // are bounded; missing controls remain failures rather than skips.
-        for _ in 0..<30 where !originFullyVisible() { editor.scroll(byDeltaX: 0, deltaY: 160) }
+        // Establish a known top anchor before locating the pricing section.
+        // Scrolling remains bounded; missing controls fail rather than skip.
+        for _ in 0..<30 {
+            if originFullyVisible() { break }
+            editor.scroll(byDeltaX: 0, deltaY: 160)
+        }
         XCTAssertTrue(originFullyVisible(), "Missing input top anchor: \(mainWindow.debugDescription)")
-        for _ in 0..<24 where !rate.exists { editor.scroll(byDeltaX: 0, deltaY: -80) }
-        XCTAssertTrue(rate.waitForExistence(timeout: 5), "Missing rate after scrolling: \(mainWindow.debugDescription)")
+        // copyToDraft restores the expanded pricing state. The disclosure
+        // helper checks that state before clicking, so this does not collapse
+        // an already open section just because its field is below the viewport.
+        expandDisclosure("optionLabPricingDetails", revealing: rate)
+        XCTAssertTrue(rate.exists || rate.waitForExistence(timeout: 5), "Missing rate after revealing pricing: \(mainWindow.debugDescription)")
         waitEnabled(rate)
+        revealOptionControl(rate)
         func rateFullyVisible() -> Bool {
             guard rate.exists else { return false }
             let viewport = editor.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
             return !rate.frame.isEmpty && !viewport.isEmpty && viewport.contains(rate.frame)
         }
-        // isHittable can be true with only two visible points. Use bounded
-        // pixel scrolling rather than a fast swipe that can overshoot the field.
-        var lastScroll: CGFloat = 0
-        var recoveringMissingRate = false
-        for _ in 0..<10 {
-            if rateFullyVisible() { break }
-            if !rate.exists {
-                // Recover an overshoot without asking an absent field for its frame.
-                if !recoveringMissingRate { lastScroll = -lastScroll / 2 }
-                recoveringMissingRate = true
-                guard abs(lastScroll) >= 1 else { XCTFail("Rate field disappeared before scrolling"); return }
-                editor.scroll(byDeltaX: 0, deltaY: lastScroll)
-                continue
-            }
-            recoveringMissingRate = false
-            let distance = editor.frame.midY - rate.frame.midY
-            lastScroll = max(-80, min(80, distance))
-            editor.scroll(byDeltaX: 0, deltaY: lastScroll)
-        }
+        // isHittable alone can be true for a clipped field. Keep the explicit
+        // full-viewport assertion in addition to the shared bounded reveal.
         guard rate.exists else { XCTFail("Rate field missing after bounded scrolling"); return }
         XCTAssertTrue(rateFullyVisible(), "Rate frame \(rate.frame), editor frame \(editor.frame)")
         XCTAssertTrue(rate.isHittable)
@@ -1087,27 +1314,15 @@ import XCTest
 
     func testOptionRiskScenarioExplicitEvidenceReplayAndInvalidation() {
         configure(); launchMainWindow()
-        XCTAssertTrue(app.buttons["pageOptions"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["pageOptions"].exists || app.buttons["pageOptions"].waitForExistence(timeout: 15))
         app.typeKey("2", modifierFlags: .command)
         let template = mainWindow.buttons["optionLabTemplate"]
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        XCTAssertTrue(template.exists || template.waitForExistence(timeout: 15)); waitEnabled(template); revealOptionControl(template); template.click()
         let example = mainWindow.buttons["optionLabRiskScenarioSynthetic"]
         expandDisclosure("optionLabQuoteDetails", revealing: mainWindow.buttons["optionLabAdvancedAssumptions"])
         expandDisclosure("optionLabAdvancedAssumptions", revealing: example)
-        XCTAssertTrue(example.waitForExistence(timeout: 5)); waitEnabled(example)
-        // This action now lives below the advanced fee, ledger and scenario
-        // inputs. Expanding their disclosure does not bring the action onscreen.
-        let assumptionScroll = mainWindow.scrollViews.firstMatch
-        func exampleFullyVisible() -> Bool {
-            guard example.exists, assumptionScroll.exists else { return false }
-            let viewport = assumptionScroll.frame.intersection(mainWindow.frame).insetBy(dx: 0, dy: 8)
-            return !example.frame.isEmpty && !viewport.isEmpty && viewport.contains(example.frame)
-        }
-        for _ in 0..<24 where !exampleFullyVisible() {
-            assumptionScroll.scroll(byDeltaX: 0, deltaY: -100)
-        }
-        XCTAssertTrue(exampleFullyVisible(), "Risk example must be fully visible before clicking: \(example.debugDescription)")
-        XCTAssertTrue(example.isHittable); example.click()
+        XCTAssertTrue(example.exists || example.waitForExistence(timeout: 5)); waitEnabled(example)
+        revealOptionControl(example); example.click()
         let calculate = mainWindow.buttons["optionLabCalculate"], saveSnapshot = mainWindow.buttons["optionLabSave"]
         XCTAssertFalse(saveSnapshot.isEnabled)
         waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
@@ -1124,7 +1339,7 @@ import XCTest
         for spot in ["-0.1", "0", "0.1"] {
             for iv in ["-10", "0", "10"] {
                 let cell = mainWindow.staticTexts["optionLabScenarioCell-" + spot + "-" + iv]
-                XCTAssertTrue(cell.waitForExistence(timeout: 5))
+                XCTAssertTrue(cell.exists || cell.waitForExistence(timeout: 5))
                 let displayed = (cell.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? cell.label
                 XCTAssertNotNil(Double(displayed), cell.debugDescription)
             }
@@ -1133,21 +1348,21 @@ import XCTest
         saveOptionDraftFromInput()
         researchTab("风险与情景"); waitText("已按完整输入重算", in: status)
         app.typeKey("1", modifierFlags: .command); app.typeKey("2", modifierFlags: .command)
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        XCTAssertTrue(template.exists || template.waitForExistence(timeout: 15)); waitEnabled(template)
         researchTab("已保存")
         let openSaved = mainWindow.buttons["optionLabSavedOpen"].firstMatch
-        XCTAssertTrue(openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); openSaved.click()
+        XCTAssertTrue(openSaved.exists || openSaved.waitForExistence(timeout: 10)); waitEnabled(openSaved); revealOptionControl(openSaved); openSaved.click()
         waitText("已按完整输入重算", in: mainWindow.staticTexts["optionLabReportStatus"])
         researchTab("风险与情景"); waitText("已按完整输入重算", in: status)
         XCTAssertFalse(saveSnapshot.exists)
         let copy = mainWindow.buttons["optionLabCopy"]
-        XCTAssertTrue(copy.waitForExistence(timeout: 5)); XCTAssertTrue(copy.isHittable); copy.click()
+        XCTAssertTrue(copy.exists || copy.waitForExistence(timeout: 5)); revealOptionControl(copy); copy.click()
         waitEnabled(calculate); revealOptionControl(calculate); calculate.click()
         waitOptionInputSummary()
         researchTab("风险与情景"); waitText("SYNTHETIC", in: status)
         researchTab("输入")
         let symbol = mainWindow.textFields["optionLabSymbol"]
-        XCTAssertTrue(symbol.waitForExistence(timeout: 5)); XCTAssertTrue(symbol.isHittable)
+        XCTAssertTrue(symbol.exists || symbol.waitForExistence(timeout: 5)); revealOptionControl(symbol)
         symbol.click(); symbol.typeKey("a", modifierFlags: .command); symbol.typeText("OTHER")
         XCTAssertEqual(symbol.value as? String, "OTHER")
         waitEnabled(saveSnapshot, false)
@@ -1171,12 +1386,18 @@ import XCTest
         XCTAssertEqual(filter.value as? String, "income.revenue")
         let field = mainWindow.descendants(matching: .any)["researchFact-income.revenue"].firstMatch
         // The source rows are lazy and may be below the runner's smaller viewport.
-        for _ in 0..<8 where !field.exists { mainWindow.scrollViews.firstMatch.swipeUp() }
+        for _ in 0..<8 {
+            if field.exists { break }
+            mainWindow.scrollViews.firstMatch.swipeUp()
+        }
         XCTAssertTrue(field.waitForExistence(timeout: 5), mainWindow.debugDescription)
         waitText("income.revenue", in: field)
         researchTab("概览")
         let replay = app.buttons["researchReplay"]
-        for _ in 0..<8 where !replay.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        for _ in 0..<8 {
+            if replay.isHittable { break }
+            app.scrollViews.firstMatch.swipeUp()
+        }
         XCTAssertTrue(replay.isHittable); replay.click()
         let message = app.staticTexts["researchMessage"]
         waitText("复算一致", in: message)
@@ -1201,7 +1422,10 @@ import XCTest
         let save = app.buttons["researchSave"]; waitEnabled(save); save.click(); waitEnabled(save,false)
         researchTab("备份")
         let preview = mainWindow.buttons["researchClearPreview"]
-        for _ in 0..<10 where !preview.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        for _ in 0..<10 {
+            if preview.isHittable { break }
+            mainWindow.scrollViews.firstMatch.swipeUp()
+        }
         XCTAssertTrue(preview.isHittable); preview.click()
         let panel = sheet(in:mainWindow)
         XCTAssertTrue(panel.waitForExistence(timeout:5))
@@ -1213,7 +1437,10 @@ import XCTest
         researchTab("快照")
         XCTAssertTrue(mainWindow.buttons["researchOpenSaved"].firstMatch.waitForExistence(timeout:5))
         researchTab("备份")
-        for _ in 0..<10 where !preview.isHittable { mainWindow.scrollViews.firstMatch.swipeUp() }
+        for _ in 0..<10 {
+            if preview.isHittable { break }
+            mainWindow.scrollViews.firstMatch.swipeUp()
+        }
         preview.click(); XCTAssertTrue(panel.waitForExistence(timeout:5))
         let input = panel.textFields["researchTransferConfirmText"]
         input.click(); input.typeText("确认"); waitEnabled(commit)
@@ -1225,7 +1452,7 @@ import XCTest
         launchSettings()
         let main = mainWindow
         firstSave()
-        delete.click()
+        clickCredentialButton("credentialDelete", in: main)
         XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("d", modifierFlags: .command)
         waitNoSheet(in: main); waitEnabled(delete, false)
@@ -1269,7 +1496,7 @@ import XCTest
         XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey("r", modifierFlags: .command)
         waitNoSheet(in: main); waitEnabled(save, false)
-        delete.click()
+        clickCredentialButton("credentialDelete", in: main)
         XCTAssertTrue(sheet(in: main).waitForExistence(timeout: 5))
         app.typeKey(.return, modifierFlags: [])
         XCTAssertTrue(sheet(in: main).exists)

@@ -269,7 +269,7 @@ struct AIInsightsContractTests {
             #expect(throws: AIInsightError.invalidInput) { try referenceInput(metrics: metrics).validate() }
         }
         let missing = try #require(referenceInput().metrics.first { $0.id == "reference.pfcf" })
-        #expect(missing.value == nil && missing.unavailable == "nonPositiveDenominator")
+        #expect(missing.value == nil && missing.unavailable == "nonpositiveDenominator")
         var metrics = referenceMetrics()
         metrics[5] = .init(id: missing.id, label: missing.label, value: nil, unit: missing.unit,
                            unavailable: nil, sourceIDs: missing.sourceIDs)

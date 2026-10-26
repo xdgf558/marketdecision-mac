@@ -38,12 +38,19 @@ private enum InvestmentDetail: Identifiable {
     }
 }
 
-private struct InvestmentQuickReportRequest {
+private struct InvestmentQuickReportRequest: Identifiable {
     let id = UUID()
     let accountID: String
     let accountName: String
     let baseline: PortfolioPreparationBaseline
     let cutoff: Date
+    let startWithShare: Bool
+}
+
+private struct InvestmentQuickShareRequest {
+    let id = UUID()
+    let report: InvestmentPeriodReport
+    let inputEpoch: UUID
 }
 
 private struct InvestmentsContent: View {
@@ -61,7 +68,6 @@ private struct InvestmentsContent: View {
     @State private var contributionPeriod = "全部"
     @State private var showsPeriodReport = false
     @State private var quickReportRequest: InvestmentQuickReportRequest?
-    @State private var showsQuickReports = false
     @State private var positionRequest: OptionPositionRequest?
     @State private var positionPresentationID: UUID?
     @State private var positionInputEpoch: UUID?
@@ -100,9 +106,18 @@ private struct InvestmentsContent: View {
             } else { dashboard }
         }
         .sheet(item: $share) { InvestmentShareSheet(snapshot: $0) }
-        .sheet(isPresented: $showsQuickReports, onDismiss: endQuickReports) {
-            InvestmentQuickReportsSheet(model: model, accountName: quickReportRequest?.accountName ?? "当前账户",
-                                        accent: accent, lossColor: lossColor) { showsQuickReports = false }
+        .sheet(item: $quickReportRequest, onDismiss: {
+            // A late dismissal must not cancel a newly presented request.
+            if quickReportRequest == nil { model.cancelPeriodReports() }
+        }) { request in
+            // Presentation and content share one identity; a separate Boolean
+            // can present before the optional request is read by sheet content.
+            InvestmentQuickReportsSheet(model: model, request: request,
+                                        accent: accent, lossColor: lossColor, close: {
+                guard quickReportRequest?.id == request.id else { return }
+                endQuickReports()
+            })
+            .id(request.id)
         }
         .sheet(item: $positionRequest, onDismiss: finishPositionRequest) { request in
             let epoch = positionInputEpoch
@@ -116,10 +131,6 @@ private struct InvestmentsContent: View {
                     // navigate or replace the account behind a native sheet.
                     positionRefreshAccountID = accountID
                 })
-        }
-        .task(id: quickReportRequest?.id) {
-            guard let request = quickReportRequest, detail == nil else { return }
-            await model.generatePeriodReports(accountID: request.accountID, baseline: request.baseline, at: request.cutoff)
         }
         .task(id: "\(detail?.id ?? "overview")-\(reloadID)") {
             guard detail == nil else { return }
@@ -326,17 +337,16 @@ private struct InvestmentsContent: View {
         return VStack(alignment: .leading, spacing: 6) {
             Divider()
             HStack(alignment: .top, spacing: 12) {
-                DisclosureGroup(isExpanded: $showsPeriodReport) {
-                    if let summary {
-                        if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
-                        reportDetails(summary)
-                    } else {
-                        Text("尚无完整估值报告。快捷区间报告直接汇总已入账收益；含持仓浮盈与收益率的报告可在高级详情中核算。")
-                            .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
-                    }
-                } label: {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) {
-                        Text("冻结区间报告").font(.callout.weight(.medium))
+                        Button { showsPeriodReport.toggle() } label: {
+                            Label("冻结区间报告", systemImage: showsPeriodReport ? "chevron.down" : "chevron.right")
+                                .font(.callout.weight(.medium))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(showsPeriodReport ? "已展开" : "已收起")
+                        .accessibilityIdentifier("investmentPeriodReport")
                         if let summary {
                             Text("\(summary.startDay) → \(summary.endDay)").font(.caption).foregroundStyle(.secondary)
                             Text(InvestmentSummary.amountText(summary.netPnL) + " USD")
@@ -345,11 +355,25 @@ private struct InvestmentsContent: View {
                                 .accessibilityIdentifier("investmentNetPnL")
                         }
                     }
-                }.accessibilityIdentifier("investmentPeriodReport")
+                    if showsPeriodReport {
+                        if let summary {
+                            if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
+                            reportDetails(summary)
+                            Button { prepareShare() } label: { Label("分享完整估值报告", systemImage: "square.and.arrow.up") }
+                                .buttonStyle(.plain).foregroundStyle(accent)
+                                .disabled(model.isBusy || model.savedReport == nil || summary.netPnL == nil)
+                                .accessibilityIdentifier("investmentShareFrozen")
+                        } else {
+                            Text("尚无完整估值报告。快捷区间报告直接汇总已入账收益；含持仓浮盈与收益率的报告可在高级详情中核算。")
+                                .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+                        }
+                    }
+                }
                 Spacer(minLength: 0)
-                Button { prepareShare() } label: { Label("分享区间报告", systemImage: "square.and.arrow.up") }
+                Button { generateQuickReports(sharing: true) } label: { Label("分享区间报告", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.plain).foregroundStyle(accent)
-                    .disabled(model.isBusy || model.savedReport == nil || summary?.netPnL == nil).accessibilityIdentifier("investmentShare")
+                    .disabled(!model.canPrepare).accessibilityIdentifier("investmentShare")
+                    .help("直接预览近一月已入账收益；分享页内可切换近一年或近一季度")
             }
             if let summary, summary.containsSyntheticEvidence || summary.usesStalePrices {
                 HStack(spacing: 12) {
@@ -571,18 +595,17 @@ private struct InvestmentsContent: View {
               model.context?.ledger.state.lots.contains(lot) == true else { return }
         showDetail(.ledger("手工录入"))
     }
-    private func generateQuickReports() {
+    private func generateQuickReports(sharing: Bool = false) {
         guard model.canPrepare, let account = model.selectedAccountID,
               let baseline = model.preparationBaseline,
               let selected = model.context?.ledger.accounts.first(where: { $0.id == account }) else { return }
         model.cancelPeriodReports()
         share = nil; shareError = nil
-        quickReportRequest = .init(accountID: account, accountName: selected.name, baseline: baseline, cutoff: Date())
-        showsQuickReports = true
+        quickReportRequest = .init(accountID: account, accountName: selected.name, baseline: baseline, cutoff: Date(), startWithShare: sharing)
     }
     private func endQuickReports() {
         model.cancelPeriodReports()
-        quickReportRequest = nil; showsQuickReports = false
+        quickReportRequest = nil
     }
     private func prepareShare() {
         guard model.origin == .frozen, let saved = model.savedReport, saved.report == model.report,
@@ -592,38 +615,159 @@ private struct InvestmentsContent: View {
     }
 }
 
-/// All three periods are generated together. This deliberately does not use the
-/// frozen NAV report/share route: no prices or complete-flow assertion is added.
+/// All three periods are generated together. Their share cards contain booked
+/// results only; the frozen NAV report keeps its independent reconciliation gate.
 private struct InvestmentQuickReportsSheet: View {
     @Bindable var model: PortfolioWorkspaceModel
-    let accountName: String
+    let request: InvestmentQuickReportRequest
     let accent: Color
     let lossColor: Color
     let close: () -> Void
+    @State private var preparationID = UUID()
+    @State private var isPreparing = true
+    @State private var isVisible = true
+    @State private var preparationError: String?
+    @State private var shareRequest: InvestmentQuickShareRequest?
+    @State private var share: InvestmentShareSnapshot?
+    @State private var shareReport: InvestmentPeriodReport?
+    private var startWithShare: Bool { request.startWithShare }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if startWithShare, let share {
+                ScrollView(.vertical) {
+                    shareSheet(share)
+                }
+            } else {
+                reportPanel
+            }
+        }
+        // Keep one finite viewport throughout loading, failure and publication.
+        // Content must not negotiate the sheet size again when async results arrive.
+        .frame(width: startWithShare ? 944 : 800, height: startWithShare ? 720 : 620,
+               alignment: .topLeading)
+        // Keep identifiers on the actual controls. An identifier on this
+        // transparent stack can overwrite the header and close button on macOS.
+        .sheet(item: Binding(get: { startWithShare ? nil : share }, set: {
+            share = $0
+            if $0 == nil { shareReport = nil }
+        })) { shareSheet($0) }
+        // One presentation owns the whole initial operation. Busy can change
+        // twice between SwiftUI updates; it is not a reliable completion event.
+        .task(id: preparationID) { await prepareReports() }
+        .task(id: shareRequest?.id) {
+            guard let request = shareRequest else { return }
+            let snapshot = await model.preparePeriodShare(request.report)
+            guard !Task.isCancelled, isVisible, shareRequest?.id == request.id,
+                  model.inputEpoch == request.inputEpoch,
+                  model.selectedAccountID == request.report.accountID else { return }
+            shareRequest = nil
+            guard let snapshot, model.periodReports.contains(request.report) else {
+                preparationError = failureMessage
+                return
+            }
+            shareReport = request.report; share = snapshot
+        }
+        .onChange(of: model.inputEpoch) { _, _ in invalidatePresentation() }
+        .onChange(of: model.selectedAccountID) { _, _ in invalidatePresentation() }
+        .onChange(of: model.periodReports) { _, _ in
+            // Publishing the reports we just generated must not cancel their
+            // pending share. Only invalidate a selection that actually vanished.
+            if let selected = shareRequest?.report ?? shareReport, !model.periodReports.contains(selected) {
+                invalidatePresentation()
+            }
+        }
+        .onDisappear { isVisible = false; isPreparing = false; clearShare() }
+    }
+
+    private var reportPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("区间收益报告").font(.title2.weight(.semibold))
+                Text(startWithShare ? "收益分享" : "区间收益报告").font(.title2.weight(.semibold))
                 Spacer()
                 Button("完成", action: close).keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("investmentQuickReportsClose")
             }
-            Text(accountName + " · USD · 当前有效账本，含已入账费用")
+            Text(request.accountName + " · USD · 当前有效账本，含已入账费用")
                 .font(.callout).foregroundStyle(.secondary)
-            if model.periodReports.count == 3 {
-                reports
-            } else if model.hasError {
-                Text(model.message ?? "未完成账本核对，请刷新后重试。")
-                    .foregroundStyle(.red).padding(.vertical, 16)
-                    .accessibilityIdentifier("investmentQuickReportsError")
-            } else {
-                ProgressView("正在汇总近一年、近一季度和近一月…")
-                    .frame(maxWidth: .infinity).padding(.vertical, 40)
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if isPreparing {
+                        ProgressView(startWithShare ? "正在核对分享数据…" : "正在汇总近一年、近一季度和近一月…")
+                            .frame(maxWidth: .infinity).padding(.vertical, 40)
+                            .accessibilityIdentifier("investmentQuickReportsLoading")
+                    } else if !startWithShare, model.periodReports.count == 3 {
+                        reports
+                    } else {
+                        Text(preparationError ?? failureMessage)
+                            .foregroundStyle(.red).padding(.vertical, 16)
+                            .accessibilityIdentifier("investmentQuickReportsError")
+                        if model.canPrepare, request.baseline == model.preparationBaseline {
+                            Button(startWithShare ? "重新核对分享数据" : "重新生成区间报告") {
+                                preparationError = nil; isPreparing = true; preparationID = UUID()
+                            }.accessibilityIdentifier("investmentQuickReportsRetry")
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var failureMessage: String {
+        if model.hasError, let message = model.message { return message }
+        return "本次分享数据核对未完成，请重试；如账户或账本已变化，请关闭后刷新。"
+    }
+
+    private func prepareReports() async {
+        let attempt = preparationID
+        isPreparing = true; preparationError = nil; clearShare()
+        defer {
+            if preparationID == attempt { isPreparing = false }
         }
-        .padding(20).frame(width: 800)
-        .accessibilityIdentifier("investmentQuickReports")
+        if startWithShare {
+            let snapshot = await model.generatePeriodShare(accountID: request.accountID,
+                                                          baseline: request.baseline, at: request.cutoff)
+            guard ownsPreparation(attempt) else { return }
+            guard let snapshot, request.baseline == model.preparationBaseline,
+                  let report = model.periodReports.first(where: {
+                      $0.period == .month && $0.accountID == request.accountID && $0.endDate == request.cutoff
+                  }) else {
+                preparationError = failureMessage
+                return
+            }
+            shareReport = report; share = snapshot
+        } else {
+            let completed = await model.generatePeriodReports(accountID: request.accountID,
+                                                               baseline: request.baseline, at: request.cutoff)
+            guard ownsPreparation(attempt) else { return }
+            if !completed { preparationError = failureMessage }
+        }
+    }
+
+    private func ownsPreparation(_ attempt: UUID) -> Bool {
+        !Task.isCancelled && isVisible && preparationID == attempt &&
+            model.inputEpoch == request.baseline.inputEpoch && model.selectedAccountID == request.accountID
+    }
+
+    private func invalidatePresentation() {
+        clearShare(); isPreparing = false
+        preparationError = "账户或报告已变化，请关闭后重新生成分享。"
+    }
+
+    private func shareSheet(_ snapshot: InvestmentShareSnapshot) -> some View {
+        // Freeze the account/page identity when this presentation is made. Each
+        // period switch still uses the model's fresh storage revision check.
+        let epoch = model.inputEpoch
+        let account = model.selectedAccountID
+        return InvestmentShareSheet(snapshot: snapshot) { period in
+            guard model.inputEpoch == epoch, model.selectedAccountID == account,
+                  let report = model.periodReports.first(where: { $0.period == period && $0.accountID == account }) else { return nil }
+            let result = await model.preparePeriodShare(report)
+            guard !Task.isCancelled, model.inputEpoch == epoch, model.selectedAccountID == account,
+                  model.periodReports.contains(report) else { return nil }
+            return result
+        }
     }
 
     private var reports: some View {
@@ -638,21 +782,23 @@ private struct InvestmentQuickReportsSheet: View {
             Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
                 GridRow(alignment: .top) {
                     Text("统计期间").font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 190, alignment: .leading)
                     ForEach(model.periodReports) { report in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(report.title).font(.headline)
                             Text(dateText(report.startDate) + " → " + dateText(report.endDate))
                                 .font(.caption2).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        }.frame(width: 172, alignment: .leading)
                             .help("美东时间 " + dateText(report.startDate, withTime: true) + " 至 " + dateText(report.endDate, withTime: true) + "，含起止时刻")
                     }
                 }
-                Divider().gridCellColumns(4)
+                Divider().gridCellColumns(4).gridCellUnsizedAxes(.horizontal)
                 GridRow {
                     Text("已入账收益").font(.headline)
                     ForEach(model.periodReports) { report in
                         Text(investmentCurrency(report.bookedPnL)).font(.title3.weight(.semibold)).monospacedDigit()
                             .foregroundStyle(report.bookedPnL.amount < 0 ? lossColor : accent)
+                            .frame(width: 172, alignment: .leading)
                             .accessibilityIdentifier("investmentQuickReport-" + report.id)
                     }
                 }
@@ -661,29 +807,53 @@ private struct InvestmentQuickReportsSheet: View {
                 amountRow("其他已入账费用／税款", value: \.cashCharges, signed: false)
                 GridRow {
                     Text("已实现记录").font(.callout).foregroundStyle(.secondary)
-                    ForEach(model.periodReports) { report in Text("\(report.realizedEventCount) 笔").font(.callout).monospacedDigit() }
+                    ForEach(model.periodReports) { report in
+                        Text("\(report.realizedEventCount) 笔").font(.callout).monospacedDigit()
+                            .frame(width: 172, alignment: .leading)
+                    }
                 }
-                Divider().gridCellColumns(4)
+                Divider().gridCellColumns(4).gridCellUnsizedAxes(.horizontal)
                 amountRow("入金（不计收益）", value: \.deposits, signed: false)
                 amountRow("出金（不计亏损）", value: \.withdrawals, signed: false)
                 amountRow("期初账本现金", value: \.openingCash, signed: false)
                 amountRow("期末账本现金", value: \.closingCash, signed: false)
+                GridRow {
+                    Text("分享卡片").font(.callout).foregroundStyle(.secondary)
+                    ForEach(model.periodReports) { report in
+                        Button("分享" + report.title) {
+                            preparationError = nil; share = nil; shareReport = nil
+                            shareRequest = .init(report: report, inputEpoch: model.inputEpoch)
+                        }
+                        .buttonStyle(.bordered).tint(accent)
+                        .disabled(model.isBusy || shareRequest != nil)
+                        .frame(width: 172, alignment: .leading)
+                        .accessibilityIdentifier("investmentQuickShare-" + report.id)
+                    }
+                }
+            }
+            if model.isBusy { ProgressView("正在核对分享数据…").controlSize(.small) }
+            if let message = preparationError ?? (model.hasError ? model.message : nil) {
+                Text(message).font(.callout).foregroundStyle(.red)
+                    .accessibilityIdentifier("investmentQuickShareError")
             }
             Divider()
             Text("已入账收益＝交易已实现盈亏＋股息、利息－独立费用、税款。交易费用已计入盈亏，不重复扣除。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("不含持仓浮盈、净值或收益率；开仓权利金不直接计为利润。按当前有效记录重述历史，后补录或冲销后需重新生成。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("本次汇总仅供查看，未保存为冻结估值报告。")
+            Text("可分享已入账收益卡片，金额默认隐藏；未保存为完整估值报告。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
+    private func clearShare() { share = nil; shareReport = nil; shareRequest = nil }
+
     private func amountRow(_ title: String, value: KeyPath<InvestmentPeriodReport, Money>, signed: Bool = true) -> some View {
         GridRow {
-            Text(title).font(.callout).foregroundStyle(.secondary)
+            Text(title).font(.callout).foregroundStyle(.secondary).frame(width: 190, alignment: .leading)
             ForEach(model.periodReports) { report in
                 Text(investmentCurrency(report[keyPath: value], signed: signed)).font(.callout).monospacedDigit()
+                    .frame(width: 172, alignment: .leading)
             }
         }
     }

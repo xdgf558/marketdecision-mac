@@ -49,6 +49,56 @@ private struct OptionExpiryPresentation: Identifiable {
     let initialDate: Date
 }
 
+/// Read the installed page bindings from the presented view. Evaluating a Bool
+/// in the deferred popover builder can capture the pre-presentation nil state.
+private struct OptionExpiryPresentationHost: View {
+    let request: OptionExpiryPresentation
+    @Binding var current: OptionExpiryPresentation?
+    @Binding var draft: OptionLabInputDraft
+    @Binding var session: UUID
+    @Binding var navigation: UUID
+    @Binding var section: String
+    @Binding var preparingLedger: Bool
+    @Bindable var model: OptionLabWorkspaceModel
+    let didApply: (Date) -> Void
+
+    private var canApply: Bool {
+        current?.id == request.id && draft == request.draft
+            && session == request.session && navigation == request.navigation
+            && section == "输入" && !model.isBusy && !preparingLedger
+    }
+
+    var body: some View {
+        OptionExpiryPicker(initialDate: request.initialDate, canApply: canApply,
+            contractOnly: request.draft.usesContractParametersOnly,
+            cancel: dismiss, apply: apply)
+    }
+
+    private func dismiss() {
+        guard current?.id == request.id else { return }
+        current = nil
+    }
+
+    private func apply(_ selectedDate: Date) {
+        // Recheck the same live bindings at the action boundary. An old popup
+        // cannot update the draft or dismiss a newer presentation.
+        guard current?.id == request.id else { return }
+        guard canApply, selectedDate.timeIntervalSince1970.isFinite,
+              let zone = TimeZone(identifier: "America/New_York") else {
+            dismiss(); return
+        }
+        let timestamp = ISO8601DateFormatter()
+        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX")
+        day.calendar = Calendar(identifier: .gregorian); day.timeZone = zone; day.dateFormat = "yyyy-MM-dd"
+        var changed = draft
+        changed.settlementAt = timestamp.string(from: selectedDate)
+        changed.expirationDate = day.string(from: selectedDate)
+        dismiss(); draft = changed
+        didApply(selectedDate)
+    }
+}
+
 struct OptionLabContent: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var model: OptionLabWorkspaceModel
@@ -510,11 +560,13 @@ struct OptionLabContent: View {
             }.buttonStyle(.plain).accessibilityIdentifier("optionReferenceExpiry")
                 .accessibilityLabel("到期时间，美东时间，" + expiryLabel)
                 .popover(item: $expiryPresentation) { presentation in
-                    OptionExpiryPicker(initialDate: presentation.initialDate,
-                        canApply: canApplyExpiry(presentation), contractOnly: draft.usesContractParametersOnly,
-                        cancel: { dismissExpiry(presentation) },
-                        apply: { applyExpirySelection($0, presentation: presentation) })
-                        .id(presentation.id)
+                    OptionExpiryPresentationHost(request: presentation,
+                        current: $expiryPresentation, draft: $draft, session: $visibleSession,
+                        navigation: $navigationEpoch, section: $section,
+                        preparingLedger: $preparingLedger, model: model) { selectedDate in
+                            manualSettlementAt = selectedDate
+                            manualCommonTimeConfirmed = false; manualAssistanceMessage = nil
+                        }.id(presentation.id)
                 }
         }
     }
@@ -527,33 +579,6 @@ struct OptionLabContent: View {
         formatter.timeZone = TimeZone(identifier: "America/New_York")
         formatter.dateFormat = "yyyy/MM/dd HH:mm"
         return formatter.string(from: date)
-    }
-    private func canApplyExpiry(_ presentation: OptionExpiryPresentation) -> Bool {
-        !blocked && section == "输入" && expiryPresentation?.id == presentation.id
-            && presentation.draft == draft && presentation.session == visibleSession
-            && presentation.navigation == navigationEpoch
-    }
-    private func dismissExpiry(_ presentation: OptionExpiryPresentation) {
-        guard expiryPresentation?.id == presentation.id else { return }
-        expiryPresentation = nil
-    }
-    private func applyExpirySelection(_ selectedDate: Date, presentation: OptionExpiryPresentation) {
-        // A delayed callback from an old popup must not close a newer one.
-        guard expiryPresentation?.id == presentation.id else { return }
-        guard canApplyExpiry(presentation), selectedDate.timeIntervalSince1970.isFinite,
-              let zone = TimeZone(identifier: "America/New_York") else {
-            dismissExpiry(presentation); return
-        }
-        let timestamp = ISO8601DateFormatter()
-        timestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let day = DateFormatter(); day.locale = Locale(identifier: "en_US_POSIX")
-        day.calendar = Calendar(identifier: .gregorian); day.timeZone = zone; day.dateFormat = "yyyy-MM-dd"
-        var changed = draft
-        changed.settlementAt = timestamp.string(from: selectedDate)
-        changed.expirationDate = day.string(from: selectedDate)
-        dismissExpiry(presentation)
-        draft = changed; manualSettlementAt = selectedDate
-        manualCommonTimeConfirmed = false; manualAssistanceMessage = nil
     }
     private var referenceActions: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -617,18 +642,31 @@ struct OptionLabContent: View {
             .accessibilityIdentifier("optionLabAdvancedTools")
             .accessibilityValue(advancedToolsExpanded ? "已展开" : "已收起")
             if advancedToolsExpanded {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 125))], alignment: .leading, spacing: 8) {
-                    ForEach(advancedSections, id: \.self) { value in
-                        Button(value) { section = value }
-                            .accessibilityIdentifier("optionLabAdvanced-" + value)
+                // Eight navigation actions need a stable, complete layout even
+                // when expanded near the bottom of a long research report.
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow {
+                        ForEach(Array(advancedSections.prefix(4)), id: \.self) { value in
+                            advancedTab(value)
+                        }
                     }
-                    Button("重新载入") {
-                        let session = visibleSession
-                        Task { guard visibleSession == session else { return }; await model.load() }
-                    }.disabled(blocked).accessibilityIdentifier("optionLabReload")
+                    GridRow {
+                        ForEach(Array(advancedSections.suffix(3)), id: \.self) { value in
+                            advancedTab(value)
+                        }
+                        Button("重新载入") {
+                            let session = visibleSession
+                            Task { guard visibleSession == session else { return }; await model.load() }
+                        }.disabled(blocked).accessibilityIdentifier("optionLabReload")
+                    }
                 }.padding(.top, 10)
             }
         }
+    }
+    private func advancedTab(_ value: String) -> some View {
+        Button(value) { section = value }
+            .accessibilityIdentifier("optionLabAdvanced-" + value)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
     @ViewBuilder private var editor: some View {
         if draft.usesContractParametersOnly { simpleOptions }
