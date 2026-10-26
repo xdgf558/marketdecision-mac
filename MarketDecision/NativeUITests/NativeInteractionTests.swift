@@ -603,6 +603,36 @@ import XCTest
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: updated, object: element)], timeout: 5),
                            .completed, "Investment input did not accept the entered value: \(element.debugDescription)")
         }
+        func assertToggleState(_ element: XCUIElement, _ expected: Bool,
+                               file: StaticString = #filePath, line: UInt = #line) {
+            guard element.exists else {
+                XCTFail("Missing investment toggle: \(element.identifier)", file: file, line: line)
+                return
+            }
+            let raw = element.value
+            let actual: Bool?
+            let valueDescription: String
+            if let number = raw as? NSNumber {
+                // AX may bridge a native checkbox or switch through NSNumber.
+                // Mixed/unknown states are not equivalent to unchecked.
+                actual = number == NSNumber(value: 0) ? false
+                    : (number == NSNumber(value: 1) ? true : nil)
+                valueDescription = number.stringValue
+            } else if let text = raw as? String {
+                // This also accepts NSString through Foundation bridging.
+                actual = text == "0" ? false : (text == "1" ? true : nil)
+                valueDescription = String(reflecting: text)
+            } else {
+                actual = nil
+                valueDescription = raw == nil ? "nil" : "unsupported non-scalar value"
+            }
+            let typeDescription = raw.map { String(reflecting: type(of: $0)) } ?? "nil"
+            // Only this synthetic host's toggle identifier and scalar AX value
+            // are included; no window/account/record hierarchy is logged.
+            XCTAssertEqual(actual, Optional(expected),
+                "Toggle \(element.identifier): AX type=\(typeDescription), value=\(valueDescription)",
+                file: file, line: line)
+        }
         func evidence(_ prefix: String, reference: String) {
             let source = mainWindow.textFields[prefix + "Source"]
             expandDisclosure(prefix + "Details", revealing: source)
@@ -624,9 +654,11 @@ import XCTest
             fill(instant, day + "T21:00:00Z")
         }
         let flows = mainWindow.checkBoxes["investmentConfirmFlows"]
-        XCTAssertTrue(flows.exists || flows.waitForExistence(timeout: 5)); XCTAssertEqual(flows.value as? String, "0")
+        XCTAssertTrue(flows.exists || flows.waitForExistence(timeout: 5)); reach(flows)
+        assertToggleState(flows, false)
         evidence("investmentFlow", reference: "empty-account-flows-v1")
-        reach(flows); flows.click()
+        reach(flows); waitEnabled(flows); assertToggleState(flows, false)
+        flows.click(); assertToggleState(flows, true)
         let calculate = mainWindow.buttons["investmentCalculate"]
         reach(calculate); waitEnabled(calculate); calculate.click()
         waitText("0.00 USD", in: mainWindow.staticTexts["investmentCalculationPnL"])
@@ -652,8 +684,8 @@ import XCTest
         XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
         XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
         XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
-        XCTAssertEqual(sharing.descendants(matching: .any)["investmentShareHideAmounts"].value as? String, "1")
-        XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
+        assertToggleState(sharing.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch, true)
+        assertToggleState(sharing.checkBoxes["investmentShareHoldings"], false)
         // Preview only: no clipboard mutation, browser launch, file panel or post.
         sharing.buttons["investmentShareClose"].click(); waitAbsent(sharing)
         // Quick cards use booked P&L only, without promoting their results to
@@ -688,11 +720,12 @@ import XCTest
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareHoldings"].exists)
         XCTAssertFalse(quickPreview.staticTexts["Daily workflow test"].exists)
         let amounts = mainWindow.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch
-        XCTAssertEqual(amounts.value as? String, "1")
+        assertToggleState(amounts, true)
         for index in 0..<3 {
             waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
         }
         amounts.click()
+        assertToggleState(amounts, false)
         waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
         // Native preview only: changing periods must recheck storage and retain
         // privacy settings. Do not open the save panel or invoke clipboard/X.
@@ -703,6 +736,7 @@ import XCTest
             waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
         }
         amounts.click()
+        assertToggleState(amounts, true)
         waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
         for index in 0..<3 {
             waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
@@ -749,7 +783,8 @@ import XCTest
         XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
         XCTAssertFalse(calendar.exists)
         XCTAssertFalse(mainWindow.textFields["investmentValuation-2026-01-05"].exists)
-        XCTAssertEqual(flows.value as? String, "0") // Reuse never re-approves completeness.
+        reach(flows)
+        assertToggleState(flows, false) // Reuse never re-approves completeness.
         reach(calculate); waitEnabled(calculate); calculate.click()
         waitText("待补数据", in: mainWindow.staticTexts["investmentCalculationPnL"])
     }
