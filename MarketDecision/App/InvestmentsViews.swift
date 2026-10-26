@@ -38,7 +38,7 @@ private enum InvestmentDetail: Identifiable {
     }
 }
 
-private struct InvestmentQuickReportRequest {
+private struct InvestmentQuickReportRequest: Identifiable {
     let id = UUID()
     let accountID: String
     let accountName: String
@@ -68,7 +68,6 @@ private struct InvestmentsContent: View {
     @State private var contributionPeriod = "全部"
     @State private var showsPeriodReport = false
     @State private var quickReportRequest: InvestmentQuickReportRequest?
-    @State private var showsQuickReports = false
     @State private var positionRequest: OptionPositionRequest?
     @State private var positionPresentationID: UUID?
     @State private var positionInputEpoch: UUID?
@@ -107,12 +106,18 @@ private struct InvestmentsContent: View {
             } else { dashboard }
         }
         .sheet(item: $share) { InvestmentShareSheet(snapshot: $0) }
-        .sheet(isPresented: $showsQuickReports, onDismiss: endQuickReports) {
-            if let request = quickReportRequest {
-                InvestmentQuickReportsSheet(model: model, request: request,
-                                            accent: accent, lossColor: lossColor, close: endQuickReports)
-                    .id(request.id)
-            }
+        .sheet(item: $quickReportRequest, onDismiss: {
+            // A late dismissal must not cancel a newly presented request.
+            if quickReportRequest == nil { model.cancelPeriodReports() }
+        }) { request in
+            // Presentation and content share one identity; a separate Boolean
+            // can present before the optional request is read by sheet content.
+            InvestmentQuickReportsSheet(model: model, request: request,
+                                        accent: accent, lossColor: lossColor, close: {
+                guard quickReportRequest?.id == request.id else { return }
+                endQuickReports()
+            })
+            .id(request.id)
         }
         .sheet(item: $positionRequest, onDismiss: finishPositionRequest) { request in
             let epoch = positionInputEpoch
@@ -597,11 +602,10 @@ private struct InvestmentsContent: View {
         model.cancelPeriodReports()
         share = nil; shareError = nil
         quickReportRequest = .init(accountID: account, accountName: selected.name, baseline: baseline, cutoff: Date(), startWithShare: sharing)
-        showsQuickReports = true
     }
     private func endQuickReports() {
         model.cancelPeriodReports()
-        quickReportRequest = nil; showsQuickReports = false
+        quickReportRequest = nil
     }
     private func prepareShare() {
         guard model.origin == .frozen, let saved = model.savedReport, saved.report == model.report,

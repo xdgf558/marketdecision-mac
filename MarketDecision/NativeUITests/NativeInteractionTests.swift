@@ -731,7 +731,8 @@ import XCTest
         }
         XCTAssertTrue(quick.exists || quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
         let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
-        XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5),
+                      "Quick report sheet with its close action did not appear in the main window:\n\(mainWindow.debugDescription)")
         for period in ["year", "quarter", "month"] {
             waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
             XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
