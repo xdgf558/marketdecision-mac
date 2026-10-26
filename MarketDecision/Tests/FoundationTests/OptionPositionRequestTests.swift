@@ -57,7 +57,8 @@ struct OptionPositionRequestTests {
         #expect(request.ledgerRevision == ledger.revision && request.action == .closing)
         #expect(draft.accountID == account.id && draft.action == .closing)
         #expect(draft.closingAllocations == [lot.id: "2"])
-        #expect(leg.form.quantity == "2" && leg.form.existingOption == (try contract()))
+        let expectedContract = try contract()
+        #expect(leg.form.quantity == "2" && leg.form.existingOption == expectedContract)
         #expect(leg.form.side == .buy && leg.form.effect == .close)
         #expect(draft.timestamp.isEmpty && draft.sourceSystem.isEmpty && draft.externalID.isEmpty)
         #expect(draft.evidence.isEmpty && draft.notes.isEmpty)
@@ -90,7 +91,8 @@ struct OptionPositionRequestTests {
         try #require(events.count == 1)
         #expect(events[0].source.externalTransactionID == "single-close-fill")
         guard case .trade(let trade) = events[0].payload else { Issue.record("Expected one closing event"); return }
-        #expect(trade.quantity == (try Money("2")) && trade.fee == (try Money("1.3")))
+        let expectedQuantity = try Money("2"), expectedFee = try Money("1.3")
+        #expect(trade.quantity == expectedQuantity && trade.fee == expectedFee)
         #expect(trade.selections.map(\.lotID) == ["first-lot", "second-lot"])
     }
 

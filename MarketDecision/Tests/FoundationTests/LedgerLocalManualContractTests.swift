@@ -151,17 +151,20 @@ struct LedgerLocalManualContractTests {
         let terms = try local(), openAt = try date("2026-11-19T15:00:00Z")
         let open = try opening(terms, at: openAt)
         let retained = try LedgerEngine.replay(accounts: [account], events: [open])
-        #expect(retained.lots.count == 1 && retained.lots[0].quantityRemaining == (try Money("1")))
+        let expectedQuantity = try Money("1")
+        #expect(retained.lots.count == 1 && retained.lots[0].quantityRemaining == expectedQuantity)
         #expect(retained.realizations.isEmpty)
         let close = event("close", at: try date("2026-11-20T15:00:00Z"), .trade(.init(
             instrument: .option(terms), side: .buy, effect: .close, quantity: try Money("1"),
             unitPrice: try Money("0.5"), fee: try Money("1"),
             selections: [.init(lotID: "manual-lot", quantity: try Money("1"))])))
         let closed = try LedgerEngine.replay(accounts: [account], events: [open, close])
-        #expect(closed.lots[0].isClosed && closed.realizations[0].pnl == (try Money("148")))
+        let expectedClosingPnL = try Money("148")
+        #expect(closed.lots[0].isClosed && closed.realizations[0].pnl == expectedClosingPnL)
         let expired = try settlement(terms, at: date("2026-11-20T05:00:00Z"))
         let settled = try LedgerEngine.replay(accounts: [account], events: [open, expired])
-        #expect(settled.lots[0].isClosed && settled.realizations[0].pnl == (try Money("199")))
+        let expectedExpirationPnL = try Money("199")
+        #expect(settled.lots[0].isClosed && settled.realizations[0].pnl == expectedExpirationPnL)
         #expect(throws: LedgerError.invalidContract) {
             try settlement(terms, at: date("2026-11-20T04:59:59Z")).validate()
         }

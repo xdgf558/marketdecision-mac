@@ -321,7 +321,8 @@ struct OptionLabDailyInputTests {
         let report = try OptionLabEngine.calculate(supplemented)
         #expect(report.selectedOutcome == original.selectedOutcome)
         #expect(report.underlyingMid == original.underlyingMid)
-        #expect(supplemented.shortLeg.bid == (try Money("1")) && supplemented.shortLeg.ask == (try Money("4")))
+        let expectedBid = try Money("1"), expectedAsk = try Money("4")
+        #expect(supplemented.shortLeg.bid == expectedBid && supplemented.shortLeg.ask == expectedAsk)
         #expect(supplemented.shortLeg.bidSize == nil && supplemented.shortLeg.tick == nil)
         #expect(try OptionLabEngine.replay(report) == report)
     }

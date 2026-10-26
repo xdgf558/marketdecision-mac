@@ -45,7 +45,8 @@ struct OptionCoveredCallCostTests {
         let cost = try #require(report.coveredCallCostBasis), selected = cost.selectedOutcome
         #expect(report.schemaVersion == OptionLabEngine.coveredCostSchemaVersion)
         #expect(cost.schemaVersion == OptionLabEngine.coveredCostReportSchemaVersion)
-        #expect(cost.costPerShare == (try Money("50")) && cost.coveredShares == (try Money("1000")))
+        let expectedCost = try Money("50"), expectedShares = try Money("1000")
+        #expect(cost.costPerShare == expectedCost && cost.coveredShares == expectedShares)
         #expect(selected.netCreditTotal == (try Money("693.5")))
         #expect(selected.maxProfit == (try Money("10693.5")))
         #expect(selected.maxLoss == (try Money("49306.5")))

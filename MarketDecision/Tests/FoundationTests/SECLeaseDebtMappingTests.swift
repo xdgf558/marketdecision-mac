@@ -92,7 +92,8 @@ import DataContracts
         let second = try fact("FinanceLeaseLiabilityNoncurrent", "0")
         #expect(try normalized([first]).values.isEmpty)
         let total = try #require(normalized([first, second]).values.first)
-        #expect(total.fieldID == "debt.finance-lease-total" && total.value == (try Money("0")))
+        let zero = try Money("0")
+        #expect(total.fieldID == "debt.finance-lease-total" && total.value == zero)
         #expect(total.sourceFactIDs.count == 2)
     }
 

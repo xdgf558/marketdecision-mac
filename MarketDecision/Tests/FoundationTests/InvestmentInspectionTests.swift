@@ -28,6 +28,10 @@ private actor InvestmentInspectionProbe {
 
 private enum InvestmentInspectionFailure: Error { case rejected }
 
+// Sample the synchronous worker entry before its first suspension; this is not
+// an assertion that a task keeps the same thread after an await.
+private func investmentInspectionIsMainThread() -> Bool { Thread.isMainThread }
+
 @Suite("Investment preparation worker lifecycle") @MainActor
 struct InvestmentInspectionTests {
     private func baseline() -> PortfolioPreparationBaseline {
@@ -42,7 +46,7 @@ struct InvestmentInspectionTests {
         let source = try draft(), expectedBaseline = baseline()
         let accounts = [LedgerAccount(id: source.accountID, name: "Local account")]
         let model = InvestmentInspectionModel { input, accounts, events in
-            let offMainThread = !Thread.isMainThread
+            let offMainThread = !investmentInspectionIsMainThread()
             await probe.record(offMainThread: offMainThread, accounts: accounts, events: events)
             await gate.hold()
             var output = input; output.startDay = "2026-01-02"
