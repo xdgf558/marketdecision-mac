@@ -31,7 +31,9 @@ struct OptionPositionRequestTests {
                                 evidence: "Retained opening fixture"),
                   payload: .trade(.init(instrument: .option(contract(version: version, memo: memo)),
                     side: side, effect: .open, quantity: Money(quantity), unitPrice: Money("2"),
-                    fee: Money("0.65"), openingLotID: id + "-lot")))
+                    fee: Money("0.65"), openingLotID: id + "-lot",
+                    strategy: .init(id: id + "-purpose", purpose: .totalReturn,
+                        successDefinition: "Closed economic return net of confirmed fees"))))
     }
     private func close(_ id: String, lotID: String, quantity: String = "1") throws -> LedgerEvent {
         try .init(id: id, accountID: account.id, effectiveAt: date("2026-10-20T14:00:00Z"),

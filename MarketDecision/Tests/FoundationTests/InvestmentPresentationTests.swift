@@ -174,7 +174,9 @@ struct InvestmentPresentationTests {
             memoReferences: ["private-contract-memo"])
         let opening = try quickEvent("private-option-opening", payload: .trade(.init(instrument: .option(contract),
             side: .sell, effect: .open, quantity: Money("1"), unitPrice: Money("2"), fee: Money("2"),
-            openingLotID: "private-option-lot")))
+            openingLotID: "private-option-lot",
+            strategy: .init(id: "private-option-purpose", purpose: .totalReturn,
+                successDefinition: "Closed economic return net of confirmed fees"))))
         for report in try quickReports(events: [opening]) {
             #expect(report.closingCash == (try Money("198")))
             #expect(report.realizedEventCount == 0)
