@@ -336,6 +336,9 @@ private struct InvestmentShareCard: View {
                 .background(Color(red: 0.015, green: 0.17, blue: 0.14))
         }
         .clipShape(RoundedRectangle(cornerRadius: 20))
+        // The preview is a container; preserve each amount and period as a
+        // separate accessible child rather than propagating its identifier.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("investmentSharePreview")
     }
 

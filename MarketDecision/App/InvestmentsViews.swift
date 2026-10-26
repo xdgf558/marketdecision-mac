@@ -646,7 +646,8 @@ private struct InvestmentQuickReportsSheet: View {
         // Content must not negotiate the sheet size again when async results arrive.
         .frame(width: startWithShare ? 944 : 800, height: startWithShare ? 720 : 620,
                alignment: .topLeading)
-        .accessibilityIdentifier("investmentQuickReports")
+        // Keep identifiers on the actual controls. An identifier on this
+        // transparent stack can overwrite the header and close button on macOS.
         .sheet(item: Binding(get: { startWithShare ? nil : share }, set: {
             share = $0
             if $0 == nil { shareReport = nil }
