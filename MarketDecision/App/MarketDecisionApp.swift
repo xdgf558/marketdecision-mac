@@ -71,7 +71,7 @@ struct RootView: View {
                         Button { page = item } label: {
                             Text(item.rawValue)
                                 .font(.system(size: 16, weight: page == item ? .semibold : .medium))
-                                .padding(.vertical, page == .stocks ? 12 : 23).padding(.horizontal, 9)
+                                .padding(.vertical, page == .stocks || page == .options || page == .investments ? 12 : 23).padding(.horizontal, 9)
                                 .contentShape(Rectangle())
                                 .overlay(alignment: .bottom) {
                                     if page == item { Rectangle().fill(accent).frame(height: 3) }
@@ -95,7 +95,7 @@ struct RootView: View {
                 .accessibilityIdentifier("pageSettings")
                 .frame(width: 150, alignment: .trailing)
             }
-            .padding(.horizontal, 32).padding(.top, page == .stocks ? 6 : 17)
+            .padding(.horizontal, 32).padding(.top, page == .stocks || page == .options || page == .investments ? 6 : 17)
             Divider()
             Group {
                 if page != .settings, !model.isPrepared, let error = model.initializationError {
@@ -299,24 +299,27 @@ private struct AppReleaseNotesSection: View {
             DisclosureGroup("更新说明", isExpanded: $showsReleaseNotes) {
                 VStack(alignment: .leading, spacing: 8) {
                     // Content date only; do not present this as the build date.
-                    Text("版本 \(bundleValue("CFBundleShortVersionString")) · 2026-10-25")
+                    Text("版本 \(bundleValue("CFBundleShortVersionString")) · 2026-10-26")
                         .font(.caption).foregroundStyle(.secondary)
-                    note("紧凑股票概览", "财务指标压成两排，三档估值价格独占一行；收紧顶部和公司信息留白，优先展示日常需要的核心数据。")
-                    note("AI 结论与详情", "首页显示结论摘要及风险、待核实数量；完整解读、估值假设、资料限制和发送说明在独立详情中查看，避免长文撑高主页。原确认和来源校验继续保留。")
-                    note("三档情景估值价格", "AI 提出保守、中性、乐观三组目标市销率假设；你确认后，用本地 TTM 收入与股数计算三档每股价格。假设不代表市场事实或合理价格保证。")
-                    note("估值确认与失效", "确认计算不额外调用 API；切换报告、修改参考资料或重新分析后，清除旧价格并要求重新确认。缺少必要数据时显示原因，不编造价格。")
-                    note("AI 引用校验修复", "将 AI 回答的引用限定为本次发送资料，并对齐引用与分项数量限制；财务内容和来源校验继续保留。")
-                    note("具体失败原因", "区分引用缺失、重复、超限或未知，以及正文为空、超长或含不支持字符，指出对应分析部分；不会自动重发请求。")
-                    note("估值参考输入", "新增参考股价、价格时刻与实际股数输入；可从本地财报带入股数候选，确认股类及口径后计算参考市值、市盈率、市销率和自由现金流倍数。")
-                    note("AI 估值解读", "同一次手动 AI 分析解读参考倍数并提出估值假设，标明日期与缺项原因；情景价格仅在确认后本地计算，资料修改后清除旧解读，不自动发送。")
-                    note("估值资料重开", "保留本地估值资料入口，联合核对保存的财报和估值；切换公司或重新核对报告时清除旧 AI 结果。")
-                    note("股票概览与工具", "概览展示 AI 估值参考，并保留本地估值资料入口；本地 SEC 研究暂不可用时，仍可进入独立离线工具。")
-                    note("AI 解读展示", "首页优先展示结论，完整优势、风险、待核实事项及限制可在详情查看；逐条依据不展示，财务与来源校验继续在后台执行。")
-                    note("我的投资", "紧凑投资概览展示累计盈亏、标的贡献和持仓；确认期权实际成交后自动记账，减少重复输入。")
-                    note("期权交易", "紧凑展示合约、收益与风险，支持一笔平仓选择多个同合约持仓批次。")
-                    note("股票分析", "新增单季度与 TTM 切换，默认单季度，标明统计期间；补充债务字段识别及缺项说明，缺失不填零。")
-                    note("AI 财报解读修复", "兼容加密推理元信息与分段正文，避免正常回答被误报为内容结构异常；仍核对财务字段、来源引用和当前报告。")
-                    note("错误提示", "区分未返回最终正文、回答阶段异常和额外注释等原因；不会自动重发 API 请求。")
+                    note("合约条款自动整理", "日常开仓无需手填合约条款，软件按标准参数自动整理或复用同账户已有合约；成交时间、张数、权利金、费用及确认仍保留，不会按到期日自动确认收益。")
+                    note("开仓填写更简洁", "来源、成交编号和记录依据改为选填并默认折叠，留空时由软件生成内部记录编号；实际成交时间、价格、费用和合约仍需核对。")
+                    note("开仓信息更明确", "实际成交录入明确标为“开仓权利金单价”和“开仓成交时间”，便于核对开仓记录。")
+                    note("测算与实际交易分开", "保存测算明确标为不入账；实际成交后确认开仓，平仓或确认到期结清后才汇总盈亏，不按日期自动计收入。")
+                    note("持仓直接处理", "期权交易和我的投资共用持仓处理入口，明确区分平仓与到期，并显示本次已实现盈亏；自动带入原账户、合约和批次，同一窗口记住账户选择。")
+                    note("减少重复填写", "实际价格与测算相同时可明确点击带入，同账户已有合约自动核对复用；实际费用和时间仍需核对。编辑与最终确认分步显示，布局更紧凑。")
+                    note("一键区间报告", "我的投资一次生成近一年、近三个月和近一个月的已入账收益报告，无需另选日期；未实现盈亏与完整估值报告仍分开。")
+                    DisclosureGroup("近期更新") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            note("期权页面更紧凑", "常规窗口下合约采用两行四列输入，持股成本对照并排展示；主要操作固定在输入页底部，进阶内容默认折叠。")
+                            note("备兑持股成本", "备兑 Call 可选填平均持股成本，另列成本口径最大收益、最大亏损和盈亏平衡价；净权利金单独展示。成本随计算保存并在重开时核对，编辑后旧结果失效，不改账本成本。")
+                            note("简化期权输入", "填写主要合约参数即可测算；Bid／Ask、资金及模型资料收进进阶研究。未核对资金与持股时明确提示，缺少数据不生成概率；到期时间使用美东时间。")
+                            note("投资与成交", "紧凑概览展示累计盈亏、标的贡献和持仓；确认期权实际成交后自动记账，支持一笔平仓选择多个同合约批次。")
+                            note("紧凑股票概览", "默认显示单季度并支持 TTM 切换，标明期间与缺项；首页优先呈现财务数据和 AI 结论，完整解读收进详情。")
+                            note("情景估值", "参考股价与已确认股数用于本地倍数计算；AI 提出三档市销率假设，你确认后本地计算价格。资料或报告变更后清除旧结果，缺项不编造。")
+                            note("AI 解读与离线工具", "修复回答结构和引用兼容问题，保留财务与来源校验并显示具体错误，不自动重发；SEC 工作区不可用时仍可进入独立离线工具。")
+                        }
+                        .padding(.top, 4)
+                    }
                 }
                 .padding(.vertical, 4)
             }

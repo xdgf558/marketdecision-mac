@@ -2,6 +2,57 @@ import SwiftUI
 import AppComposition
 import PortfolioEngine
 
+/// The editor owns its pending value for one identified presentation. The parent
+/// still checks the original draft/session before applying either date field.
+struct OptionExpiryPicker: View {
+    @State private var selectedDate: Date
+    let canApply: Bool
+    let contractOnly: Bool
+    let cancel: () -> Void
+    let apply: (Date) -> Void
+
+    init(initialDate: Date, canApply: Bool, contractOnly: Bool = false, cancel: @escaping () -> Void,
+         apply: @escaping (Date) -> Void) {
+        _selectedDate = State(initialValue: initialDate)
+        self.canApply = canApply
+        self.contractOnly = contractOnly
+        self.cancel = cancel
+        self.apply = apply
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("到期时间 · 美东").font(.headline)
+            if let zone = TimeZone(identifier: "America/New_York") {
+                DatePicker("到期时间", selection: $selectedDate, displayedComponents: [.date, .hourAndMinute])
+                    .environment(\.timeZone, zone)
+                    .environment(\.calendar, calendar(in: zone))
+                    .datePickerStyle(.stepperField)
+                    .accessibilityIdentifier("optionReferenceExpiryPicker")
+            } else {
+                Text("美东时区不可用，无法应用时间。").font(.caption).foregroundStyle(.red)
+            }
+            Text(contractOnly ? "选择该合约的到期时间，应用后即可继续测算。" : "只修改到期时间；报价时间与来源依据仍需在高级参数中核对。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("取消", action: cancel).keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("optionReferenceExpiryCancel")
+                Spacer()
+                Button("应用时间") { apply(selectedDate) }
+                    .disabled(!canApply || !selectedDate.timeIntervalSince1970.isFinite
+                        || TimeZone(identifier: "America/New_York") == nil)
+                    .accessibilityIdentifier("optionReferenceExpiryApply")
+            }
+        }.padding(16).frame(width: 360)
+    }
+
+    private func calendar(in zone: TimeZone) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return calendar
+    }
+}
+
 /// Presentation-only controls for the compact contract form. Parsing and
 /// acceptance remain with the existing option draft and calculation engine.
 struct OptionReferenceField<Content: View>: View {
@@ -16,8 +67,8 @@ struct OptionReferenceField<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 13)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
             content
             if let hint {
                 Text(hint).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -53,13 +104,13 @@ struct OptionReferenceTextField: View {
                 if let unit {
                     Rectangle().fill(Color.primary.opacity(0.10)).frame(width: 1)
                     Text(unit).font(.system(size: 12)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, 7)
                         .frame(maxHeight: .infinity)
                         .background(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.025))
                         .accessibilityHidden(true)
                 }
             }
-            .frame(height: 36)
+            .frame(height: 32)
             .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -92,7 +143,7 @@ struct OptionReferenceInputSurface: ViewModifier {
         content
             .font(.system(size: 14))
             .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .background(colorScheme == .dark ? Color.white.opacity(0.035) : .white)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay {
@@ -176,12 +227,12 @@ struct OptionReferenceMetric: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
             identifiedValue
             if let footnote {
                 Text(footnote)
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -190,7 +241,7 @@ struct OptionReferenceMetric: View {
 
     private var valueText: some View {
         Text(value)
-            .font(.system(size: 28, weight: .semibold).monospacedDigit())
+            .font(.system(size: 26, weight: .semibold).monospacedDigit())
             .foregroundStyle(valueColor)
             .lineLimit(1).minimumScaleFactor(0.65)
             .help(value).textSelection(.enabled)
@@ -231,10 +282,10 @@ struct OptionReferenceButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 14, weight: .semibold))
-            .padding(.horizontal, 18)
-            .padding(.vertical, 8)
-            .frame(minHeight: 36)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(minHeight: 32)
             .foregroundStyle(kind == .primary ? Color.white : accent)
             .background {
                 RoundedRectangle(cornerRadius: 8).fill(background)

@@ -1,5 +1,6 @@
 import Foundation
 import CoreDomain
+import DataContracts
 
 public enum LedgerError: Error, Equatable, Sendable {
     case invalidAccount, invalidIdentity, invalidEvidence, invalidAmount, invalidQuantity
@@ -72,12 +73,19 @@ public struct LedgerDeliverable: Codable, Equatable, Sendable {
     }
 }
 
+public enum LedgerOptionTermsBasis: String, Codable, Sendable {
+    /// User-declared standard terms for manual cash/premium bookkeeping only.
+    /// This does not establish an official trading, exercise or delivery schedule.
+    case localManualStandard
+}
+
 /// OCC identifies an option; a separately evidenced version defines its actual delivery.
-/// A multiplier of 100 is never inferred from the OCC spelling.
+/// Local manual terms retain the user's standard-contract declaration without
+/// inventing official dates. A multiplier is never inferred from OCC spelling.
 public struct LedgerOptionVersion: Codable, Equatable, Sendable {
     public let occSymbol: String
     public let versionID: String
-    public let effectiveFrom: Date
+    public let effectiveFrom: Date?
     public let effectiveTo: Date?
     public let quoteMultiplier: Money
     public let exerciseConsideration: Money
@@ -85,38 +93,89 @@ public struct LedgerOptionVersion: Codable, Equatable, Sendable {
     public let deliverableCash: Money
     public let settlementType: LedgerSettlementType
     public let exerciseStyle: LedgerExerciseStyle
-    public let tradingEndsAt: Date
-    public let exerciseDeadline: Date
-    public let settlementAt: Date
+    public let tradingEndsAt: Date?
+    public let exerciseDeadline: Date?
+    public let settlementAt: Date?
     public let memoReferences: [String]
-    public init(occSymbol: String, versionID: String, effectiveFrom: Date, effectiveTo: Date? = nil,
+    /// Nil retains the original evidenced-contract representation. Synthesized
+    /// Codable omits nil, preserving the encoded shape of existing records.
+    public let termsBasis: LedgerOptionTermsBasis?
+    public init(occSymbol: String, versionID: String, effectiveFrom: Date?, effectiveTo: Date? = nil,
                 quoteMultiplier: Money, exerciseConsideration: Money, deliverables: [LedgerDeliverable],
                 deliverableCash: Money, settlementType: LedgerSettlementType = .physicalEquity,
-                exerciseStyle: LedgerExerciseStyle = .american, tradingEndsAt: Date,
-                exerciseDeadline: Date, settlementAt: Date, memoReferences: [String]) {
+                exerciseStyle: LedgerExerciseStyle = .american, tradingEndsAt: Date?,
+                exerciseDeadline: Date?, settlementAt: Date?, memoReferences: [String],
+                termsBasis: LedgerOptionTermsBasis? = nil) {
         self.occSymbol = occSymbol; self.versionID = versionID; self.effectiveFrom = effectiveFrom
         self.effectiveTo = effectiveTo; self.quoteMultiplier = quoteMultiplier
         self.exerciseConsideration = exerciseConsideration; self.deliverables = deliverables
         self.deliverableCash = deliverableCash; self.settlementType = settlementType
         self.exerciseStyle = exerciseStyle; self.tradingEndsAt = tradingEndsAt
         self.exerciseDeadline = exerciseDeadline; self.settlementAt = settlementAt; self.memoReferences = memoReferences
+        self.termsBasis = termsBasis
     }
     public var right: LedgerOptionRight { occSymbol.dropLast(8).last == "C" ? .call : .put }
     public var identity: String { occSymbol + ":" + versionID }
+    public var isLocalManualStandard: Bool { termsBasis == .localManualStandard }
+
+    /// The OCC civil date is an identifier component, not a market calendar or
+    /// an exercise deadline. Local manual date checks use New York explicitly.
+    public var expirationDate: MarketDate? {
+        guard occSymbol.count == 21,
+              occSymbol.range(of: "^[A-Z0-9 ]{6}[0-9]{6}[CP][0-9]{8}$", options: .regularExpression) != nil else { return nil }
+        let day = String(occSymbol.dropFirst(6).prefix(6))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        guard let yy = Int(day.prefix(2)), let mm = Int(day.dropFirst(2).prefix(2)), let dd = Int(day.suffix(2)),
+              let date = calendar.date(from: DateComponents(year: 2000 + yy, month: mm, day: dd)),
+              calendar.component(.year, from: date) == 2000 + yy,
+              calendar.component(.month, from: date) == mm, calendar.component(.day, from: date) == dd else { return nil }
+        return .init(year: 2000 + yy, month: mm, day: dd)
+    }
+
+    public func allowsLocalManualTrade(at instant: Date) -> Bool {
+        guard isLocalManualStandard, let expiry = expirationDate, let day = newYorkDate(instant) else { return false }
+        return day <= expiry
+    }
+
+    /// Allows only an explicitly evidenced, user-reported zero settlement;
+    /// reaching this date never creates an event or closes a holding by itself.
+    public func allowsLocalManualExpiration(at instant: Date) -> Bool {
+        guard isLocalManualStandard, let expiry = expirationDate, let day = newYorkDate(instant) else { return false }
+        return day >= expiry
+    }
+
+    private func newYorkDate(_ instant: Date) -> MarketDate? {
+        guard ledgerDate(instant) else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let parts = calendar.dateComponents([.year, .month, .day], from: instant)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return nil }
+        return .init(year: year, month: month, day: day)
+    }
+
     public func validate() throws {
         guard occSymbol.count == 21,
               occSymbol.range(of: "^[A-Z0-9 ]{6}[0-9]{6}[CP][0-9]{8}$", options: .regularExpression) != nil,
-              ledgerText(String(occSymbol.prefix(6))), ledgerText(versionID), ledgerDate(effectiveFrom),
-              effectiveTo.map({ ledgerDate($0) && $0 > effectiveFrom }) ?? true,
-              ledgerDate(tradingEndsAt), ledgerDate(exerciseDeadline), ledgerDate(settlementAt),
-              tradingEndsAt <= exerciseDeadline, exerciseDeadline <= settlementAt,
+              ledgerText(String(occSymbol.prefix(6))), ledgerText(versionID), expirationDate != nil,
               quoteMultiplier.amount > 0, exerciseConsideration.amount >= 0, deliverableCash.amount >= 0,
               !memoReferences.isEmpty, memoReferences.allSatisfy(ledgerText) else { throw LedgerError.invalidContract }
-        let day = String(occSymbol.dropFirst(6).prefix(6))
-        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(secondsFromGMT: 0)!
-        guard let yy = Int(day.prefix(2)), let mm = Int(day.dropFirst(2).prefix(2)), let dd = Int(day.suffix(2)),
-              let date = cal.date(from: DateComponents(year: 2000 + yy, month: mm, day: dd)),
-              cal.component(.month, from: date) == mm, cal.component(.day, from: date) == dd else { throw LedgerError.invalidContract }
+        if isLocalManualStandard {
+            guard effectiveFrom == nil, effectiveTo == nil, tradingEndsAt == nil,
+                  exerciseDeadline == nil, settlementAt == nil,
+                  exerciseStyle == .american, quoteMultiplier == (try Money("100")),
+                  deliverableCash.amount == 0, deliverables.count == 1,
+                  let delivery = deliverables.first,
+                  delivery.quantity == (try Money("100")), delivery.basisWeight == (try Money("1")),
+                  delivery.security.symbol == String(occSymbol.prefix(6)).trimmingCharacters(in: .whitespaces),
+                  let strikeUnits = Int(occSymbol.suffix(8)), strikeUnits > 0,
+                  exerciseConsideration == (try Money(String(strikeUnits)).divided(by: "10")) else { throw LedgerError.invalidContract }
+        } else {
+            guard let effectiveFrom, let tradingEndsAt, let exerciseDeadline, let settlementAt,
+                  ledgerDate(effectiveFrom), effectiveTo.map({ ledgerDate($0) && $0 > effectiveFrom }) ?? true,
+                  ledgerDate(tradingEndsAt), ledgerDate(exerciseDeadline), ledgerDate(settlementAt),
+                  tradingEndsAt <= exerciseDeadline, exerciseDeadline <= settlementAt else { throw LedgerError.invalidContract }
+        }
         guard settlementType == .physicalEquity else { throw LedgerError.unsupportedSettlement }
         guard !deliverables.isEmpty, Set(deliverables.map { $0.security.id }).count == deliverables.count else {
             throw LedgerError.invalidContract

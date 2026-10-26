@@ -32,11 +32,16 @@ private actor PortfolioWorkspaceFake: PerformanceStorage {
     }
     func context() async throws -> PerformanceStoreContext {
         reads += 1
+        let read = reads
+        // Indexed gates let a test pause either side of one immutable read;
+        // the existing unindexed gate keeps its snapshot-before-pause behavior.
+        try await pause("context:\(read):before")
         let input = try PortfolioSyntheticExample.input()
         let accounts = input.accounts + [.init(id: "ordinary-b", name: "独立空账户")]
         let ledger = try LedgerSnapshot(revision: ledgerRevision, accounts: accounts, events: input.events,
             state: LedgerEngine.replay(accounts: accounts, events: input.events))
         let result = PerformanceStoreContext(ledger: ledger, revision: performanceRevision)
+        try await pause("context:\(read)")
         try await pause("context")
         return result
     }
@@ -346,6 +351,167 @@ struct PortfolioWorkspaceTests {
         #expect(await storage.commits == 0)
         #expect(report.daily.last?.nav == (try Money("1004")))
         #expect(report.risk.sharpe.value == nil)
+    }
+    @Test func quickPeriodReportsPublishThreeWindowsFromOneBaselineWithoutPreparingOrCommitting() async throws {
+        let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+        let account = try #require(model.selectedAccountID), reads = await storage.reads
+        let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+        await model.generatePeriodReports(accountID: account, baseline: baseline, at: cutoff)
+        #expect(model.periodReports.map(\.period) == [.year, .quarter, .month])
+        #expect(model.periodReports.allSatisfy {
+            $0.accountID == account && $0.ledgerRevision == baseline.ledgerRevision && $0.generatedAt == cutoff
+        })
+        #expect(model.periodReports.allSatisfy { $0.containsSyntheticRecords })
+        #expect(model.preparationBaseline == baseline && !model.isBusy && !model.hasError)
+        #expect(model.preview == nil && model.report == nil && model.savedReport == nil && !model.canSave)
+        #expect(await storage.reads == reads + 2)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+        #expect(await storage.records.isEmpty)
+    }
+    @Test func quickPeriodReportsForOrdinaryEmptyAccountContainRealZeroWithoutSyntheticContamination() async throws {
+        let (model, storage) = await setup()
+        await model.chooseAccount("ordinary-b")
+        let baseline = try #require(model.preparationBaseline), zero = try Money("0")
+        await model.generatePeriodReports(accountID: "ordinary-b", baseline: baseline,
+                                          at: try LedgerCSV.timestamp("2026-01-07T22:00:00Z"))
+        #expect(model.periodReports.count == 3 && !model.hasError)
+        for report in model.periodReports {
+            #expect(report.accountID == "ordinary-b" && !report.containsSyntheticRecords)
+            #expect(report.bookedPnL == zero && report.realizedPnL == zero && report.realizedEventCount == 0)
+            #expect(report.openingCash == zero && report.closingCash == zero)
+            #expect(report.timeline.isEmpty && report.contributions.isEmpty)
+        }
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+    }
+    @Test func queuedQuickPeriodRequestRejectsChangedAccountOrInputEpochBeforeReadingStorage() async throws {
+        for transition in ["account", "epoch"] {
+            let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+            let account = try #require(model.selectedAccountID)
+            if transition == "account" { await model.chooseAccount("ordinary-b") }
+            else { await model.load() }
+            let current = try #require(model.preparationBaseline), reads = await storage.reads
+            await model.generatePeriodReports(accountID: account, baseline: baseline,
+                                              at: try LedgerCSV.timestamp("2026-01-07T22:00:00Z"))
+            #expect(model.periodReports.isEmpty && !model.isBusy)
+            #expect(model.preparationBaseline == current)
+            #expect(await storage.reads == reads)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func quickPeriodInitialReadRejectsEitherChangedRevision() async throws {
+        for ledgerChanged in [true, false] {
+            let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+            let account = try #require(model.selectedAccountID), reads = await storage.reads
+            if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+            await model.generatePeriodReports(accountID: account, baseline: baseline,
+                                              at: try LedgerCSV.timestamp("2026-01-07T22:00:00Z"))
+            #expect(model.periodReports.isEmpty && model.hasError && !model.isBusy)
+            #expect(await storage.reads == reads + 1)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func quickPeriodRecheckRejectsEitherRevisionChangedAfterInitialSnapshotOrDuringRecheck() async throws {
+        for phase in ["after-initial", "before-recheck"] {
+            for ledgerChanged in [true, false] {
+                let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+                let account = try #require(model.selectedAccountID), reads = await storage.reads
+                let gate = PortfolioWorkspaceGate()
+                let key = phase == "after-initial" ? "context:\(reads + 1)" : "context:\(reads + 2):before"
+                await storage.gate(key, gate)
+                let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+                let task = Task { await model.generatePeriodReports(accountID: account, baseline: baseline, at: cutoff) }
+                await gate.wait()
+                #expect(model.isBusy && model.periodReports.isEmpty)
+                if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+                await gate.release(); await task.value
+                #expect(model.periodReports.isEmpty && model.hasError && !model.isBusy)
+                #expect(await storage.reads == reads + 2)
+                #expect(await storage.prepares == 0)
+                #expect(await storage.commits == 0)
+            }
+        }
+    }
+    @Test func departedQuickPeriodSuccessOrFailureCannotPublishIntoANewAccountOrReleaseItsBusyOperation() async throws {
+        for fails in [false, true] {
+            let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+            let account = try #require(model.selectedAccountID), read = await storage.reads + 1
+            let oldGate = PortfolioWorkspaceGate(), newGate = PortfolioWorkspaceGate()
+            let key = "context:\(read)"
+            await storage.gate(key, oldGate)
+            if fails { await storage.fail(key) }
+            let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+            let old = Task { await model.generatePeriodReports(accountID: account, baseline: baseline, at: cutoff) }
+            await oldGate.wait()
+            model.disappear(); await model.load(); await model.chooseAccount("ordinary-b")
+            let current = try #require(model.preparationBaseline), newRead = await storage.reads + 1
+            await storage.gate("context:\(newRead)", newGate)
+            let newer = Task { await model.generatePeriodReports(accountID: "ordinary-b", baseline: current, at: cutoff) }
+            await newGate.wait()
+            let currentMessage = model.message
+            await oldGate.release(); await old.value
+            #expect(model.selectedAccountID == "ordinary-b" && model.preparationBaseline == current)
+            #expect(model.isBusy && model.periodReports.isEmpty && !model.hasError && model.message == currentMessage)
+            await newGate.release(); await newer.value
+            #expect(!model.isBusy && !model.hasError && model.periodReports.count == 3)
+            #expect(model.periodReports.allSatisfy { $0.accountID == "ordinary-b" && !$0.containsSyntheticRecords })
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func cancellingQuickPeriodRequestSuppressesLatePublicationAndAllowsANewRequest() async throws {
+        let (model, storage) = await setup(), baseline = try #require(model.preparationBaseline)
+        let account = try #require(model.selectedAccountID), read = await storage.reads + 1
+        let gate = PortfolioWorkspaceGate(), cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+        await storage.gate("context:\(read)", gate)
+        let old = Task { await model.generatePeriodReports(accountID: account, baseline: baseline, at: cutoff) }
+        await gate.wait(); model.cancelPeriodReports()
+        #expect(!model.isBusy && model.periodReports.isEmpty && !model.hasError)
+        await model.chooseAccount("ordinary-b")
+        let current = try #require(model.preparationBaseline)
+        await model.generatePeriodReports(accountID: "ordinary-b", baseline: current, at: cutoff)
+        let expected = model.periodReports, message = model.message
+        #expect(expected.count == 3)
+        await gate.release(); await old.value
+        #expect(model.periodReports == expected && model.message == message && !model.isBusy && !model.hasError)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+    }
+    @Test func quickPeriodCancellationDoesNotCancelAnUnrelatedPreparation() async throws {
+        let (model, storage) = await setup(), gate = PortfolioWorkspaceGate()
+        let request = try PortfolioSyntheticExample.input().request
+        await storage.gate("prepare", gate)
+        let task = Task { await model.prepare(request) }
+        await gate.wait(); model.cancelPeriodReports()
+        #expect(model.isBusy && model.periodReports.isEmpty)
+        #expect(await storage.cancelled.isEmpty)
+        await gate.release(); await task.value
+        #expect(model.preview != nil && model.canSave && !model.hasError)
+        #expect(await storage.prepares == 1)
+        #expect(await storage.commits == 0)
+    }
+    @Test func quickPeriodResultsClearWithAccountChangeDepartureTransferAndDraftReset() async throws {
+        for transition in ["account", "departure", "transfer", "draft"] {
+            let (model, _) = await setup(), baseline = try #require(model.preparationBaseline)
+            let account = try #require(model.selectedAccountID)
+            await model.generatePeriodReports(accountID: account, baseline: baseline,
+                                              at: try LedgerCSV.timestamp("2026-01-07T22:00:00Z"))
+            #expect(model.periodReports.count == 3)
+            switch transition {
+            case "account": await model.chooseAccount("ordinary-b")
+            case "departure": model.disappear()
+            case "transfer":
+                let transfer = UUID()
+                model.beginLedgerTransfer(transfer)
+                #expect(model.periodReports.isEmpty && model.isBusy)
+                await model.refreshLedgerTransfer(transfer); model.endLedgerTransfer(transfer)
+            default: model.draftChanged()
+            }
+            #expect(model.periodReports.isEmpty)
+        }
     }
     @Test func localFormNeverInventsCalendarEvidenceOrTimezone() throws {
         let draft = PortfolioInputDraft()

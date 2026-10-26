@@ -38,6 +38,14 @@ private enum InvestmentDetail: Identifiable {
     }
 }
 
+private struct InvestmentQuickReportRequest {
+    let id = UUID()
+    let accountID: String
+    let accountName: String
+    let baseline: PortfolioPreparationBaseline
+    let cutoff: Date
+}
+
 private struct InvestmentsContent: View {
     let workspace: WorkspaceModel
     @Bindable var model: PortfolioWorkspaceModel
@@ -52,6 +60,16 @@ private struct InvestmentsContent: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var contributionPeriod = "全部"
     @State private var showsPeriodReport = false
+    @State private var quickReportRequest: InvestmentQuickReportRequest?
+    @State private var showsQuickReports = false
+    @State private var positionRequest: OptionPositionRequest?
+    @State private var positionPresentationID: UUID?
+    @State private var positionInputEpoch: UUID?
+    @State private var positionAccountID: String?
+    @State private var positionRefreshAccountID: String?
+    @State private var visible = false
+    @SceneStorage("investmentSelectedLedgerAccountID") private var preferredLedgerAccountID = ""
+    @State private var accountSelectionLoadID: UUID?
     private var accent: Color {
         colorScheme == .dark ? Color(red: 0.38, green: 0.78, blue: 0.72)
             : Color(red: 0.06, green: 0.36, blue: 0.33)
@@ -82,14 +100,45 @@ private struct InvestmentsContent: View {
             } else { dashboard }
         }
         .sheet(item: $share) { InvestmentShareSheet(snapshot: $0) }
+        .sheet(isPresented: $showsQuickReports, onDismiss: endQuickReports) {
+            InvestmentQuickReportsSheet(model: model, accountName: quickReportRequest?.accountName ?? "当前账户",
+                                        accent: accent, lossColor: lossColor) { showsQuickReports = false }
+        }
+        .sheet(item: $positionRequest, onDismiss: finishPositionRequest) { request in
+            let epoch = positionInputEpoch
+            OptionTradeSheet(workspace: workspace, opening: nil, positionRequest: request,
+                onCommitted: { accountID in
+                    guard visible, detail == nil, positionRequest?.id == request.id,
+                          positionPresentationID == request.id, positionInputEpoch == epoch,
+                          model.inputEpoch == epoch, model.selectedAccountID == request.accountID,
+                          accountID == request.accountID else { return }
+                    // Refresh after the sheet closes, so completion cannot
+                    // navigate or replace the account behind a native sheet.
+                    positionRefreshAccountID = accountID
+                })
+        }
+        .task(id: quickReportRequest?.id) {
+            guard let request = quickReportRequest, detail == nil else { return }
+            await model.generatePeriodReports(accountID: request.accountID, baseline: request.baseline, at: request.cutoff)
+        }
         .task(id: "\(detail?.id ?? "overview")-\(reloadID)") {
             guard detail == nil else { return }
-            let requested = requestedAccountID ?? model.selectedAccountID
+            let selection = UUID()
+            accountSelectionLoadID = selection
+            // Capture before load temporarily selects the first account. The
+            // preference helps navigation only; requests retain their own IDs.
+            let preference = preferredLedgerAccountID.isEmpty ? nil : preferredLedgerAccountID
+            let requested = requestedAccountID ?? preference ?? model.selectedAccountID
+            requestedAccountID = nil
+            defer { if accountSelectionLoadID == selection { accountSelectionLoadID = nil } }
             await model.load()
-            guard !Task.isCancelled, model.context != nil else { return }
-            if let requested, model.selectedAccountID != requested { await model.chooseAccount(requested) }
-            guard !Task.isCancelled, model.context != nil else { return }
+            guard !Task.isCancelled, accountSelectionLoadID == selection, let context = model.context else { return }
+            if let requested, context.ledger.accounts.contains(where: { $0.id == requested }),
+               model.selectedAccountID != requested { await model.chooseAccount(requested) }
+            guard !Task.isCancelled, accountSelectionLoadID == selection, model.context != nil else { return }
             let account = model.selectedAccountID
+            if let account { preferredLedgerAccountID = account }
+            accountSelectionLoadID = nil
             if let preferred = preferredReportID {
                 preferredReportID = nil
                 await model.open(preferred)
@@ -102,23 +151,35 @@ private struct InvestmentsContent: View {
                 if model.preparationBaseline != nil { showCalculation() }
             }
         }
-        .onDisappear { model.disappear(); shareError = nil; share = nil }
+        .onChange(of: model.inputEpoch) { _, epoch in
+            if let request = quickReportRequest, request.baseline.inputEpoch != epoch { endQuickReports() }
+            if let original = positionInputEpoch, original != epoch { discardPositionRequest() }
+        }
+        .onChange(of: model.selectedAccountID) { _, account in
+            if let original = positionAccountID, original != account { discardPositionRequest() }
+            if let account, accountSelectionLoadID == nil { preferredLedgerAccountID = account }
+        }
+        .onAppear { visible = true }
+        .onDisappear {
+            visible = false; accountSelectionLoadID = nil; discardPositionRequest(); endQuickReports()
+            model.disappear(); shareError = nil; share = nil
+        }
     }
 
     private var dashboard: some View {
         let current = ledgerSummary
         return ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
                 header(current)
                 if let message = model.message, model.hasError { Text(message).foregroundStyle(.red).accessibilityIdentifier("investmentsMessage") }
                 if let error = model.listError { Text(error).foregroundStyle(.red).accessibilityIdentifier("investmentsListError") }
                 if let shareError { Text(shareError).foregroundStyle(.red) }
                 ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 24) {
+                    HStack(alignment: .top, spacing: 18) {
                         profit(current).frame(minWidth: 310, maxWidth: 450)
                         contributions(current).frame(minWidth: 400, maxWidth: .infinity)
                     }
-                    VStack(alignment: .leading, spacing: 16) { profit(current); contributions(current) }
+                    VStack(alignment: .leading, spacing: 10) { profit(current); contributions(current) }
                 }
                 Divider()
                 holdings(current)
@@ -127,26 +188,27 @@ private struct InvestmentsContent: View {
                 periodReport
                 footer
             }
-            .frame(maxWidth: 1280, alignment: .leading)
-            .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 16)
+            .frame(maxWidth: 1400, alignment: .leading)
+            .padding(.horizontal, 20).padding(.top, 10).padding(.bottom, 10)
             .frame(maxWidth: .infinity)
         }
     }
 
     private func header(_ current: InvestmentLedgerSummary?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .center, spacing: 12) {
-                Text("投资概览").font(.system(size: 28, weight: .bold)).accessibilityAddTraits(.isHeader)
+                Text("投资概览").font(.system(size: 24, weight: .bold)).accessibilityAddTraits(.isHeader)
                 if current?.containsSyntheticRecords == true {
                     Text("含合成记录 · 非真实账户业绩")
                         .font(.caption.weight(.medium)).foregroundStyle(accent)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .padding(.horizontal, 8).padding(.vertical, 2)
                         .background(accent.opacity(0.07), in: Capsule())
                 }
                 Spacer(minLength: 8)
-                Button("生成区间报告") { showCalculation() }
+                Button("生成区间报告") { generateQuickReports() }
                     .buttonStyle(.borderedProminent).tint(accent).controlSize(.regular)
                     .disabled(!model.canPrepare).accessibilityIdentifier("investmentGenerateReport")
+                    .help("一次生成当前账户近一年、近三个月和近一个月的已入账收益，无需选择日期")
                 Button { requestReload(account: model.selectedAccountID) } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 20, height: 20)
                 }
@@ -173,20 +235,22 @@ private struct InvestmentsContent: View {
                     Button("建立账户") { showDetail(.ledger("手工录入")) }
                         .buttonStyle(.bordered).tint(accent).disabled(model.isBusy).accessibilityIdentifier("investmentRecord")
                 }
-            }.font(.callout)
+            }.font(.caption)
+            Text("确认开仓后显示持仓，平仓或到期确认后计入盈亏。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
     private func profit(_ current: InvestmentLedgerSummary?) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             Text("累计已实现盈亏").font(.headline)
             Text(investmentCurrency(current?.realizedPnL))
-                .font(.system(size: 42, weight: .semibold)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
+                .font(.system(size: 34, weight: .semibold)).monospacedDigit().minimumScaleFactor(0.5).lineLimit(1)
                 .foregroundStyle((current?.realizedPnL.amount ?? 0) < 0 ? lossColor : accent)
                 .accessibilityIdentifier("investmentRealizedPnL")
             Text("全部已入账记录 · 含相关交易费用").font(.caption).foregroundStyle(.secondary)
             InvestmentRealizedChart(points: current?.realizedTimeline ?? [], accent: accent)
-            Divider().padding(.vertical, 3)
+            Divider().padding(.vertical, 1)
             HStack {
                 Text("未实现盈亏").foregroundStyle(.secondary)
                 Spacer()
@@ -203,7 +267,7 @@ private struct InvestmentsContent: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .background(accent.opacity(colorScheme == .dark ? 0.10 : 0.045), in: RoundedRectangle(cornerRadius: 7))
     }
 
@@ -216,9 +280,9 @@ private struct InvestmentsContent: View {
         if contributionPeriod == "全部" { rows = current?.realizedContributions }
         else if let current { rows = try? current.realizedContributions(inYear: year, timeZone: timeZone) }
         else { rows = nil }
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
-                Text("已实现盈亏贡献").font(.system(size: 20, weight: .semibold))
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Text("已实现盈亏贡献").font(.system(size: 17, weight: .semibold))
                 Picker("贡献期间", selection: $contributionPeriod) {
                     Text("全部").tag("全部")
                     Text("本年").tag("本年")
@@ -229,7 +293,7 @@ private struct InvestmentsContent: View {
             InvestmentContributionChart(rows: rows ?? [], available: current != nil && rows != nil, accent: accent, lossColor: lossColor)
             Text(contributionPeriod == "全部" ? "按标的汇总已入账平仓、到期等结果 · USD" : "\(year) 年 · 美东时间 · 按标的汇总已实现结果 · USD")
                 .font(.caption).foregroundStyle(.secondary)
-        }.padding(.vertical, 14)
+        }.padding(.vertical, 8)
     }
 
     private var footer: some View {
@@ -267,7 +331,7 @@ private struct InvestmentsContent: View {
                         if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
                         reportDetails(summary)
                     } else {
-                        Text("尚无区间报告。已实现盈亏与持仓已自动汇总；区间净盈亏仍需估值与完整现金流证据。")
+                        Text("尚无完整估值报告。快捷区间报告直接汇总已入账收益；含持仓浮盈与收益率的报告可在高级详情中核算。")
                             .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
                     }
                 } label: {
@@ -319,9 +383,9 @@ private struct InvestmentsContent: View {
     }
 
     private func holdings(_ current: InvestmentLedgerSummary?) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text("当前持仓").font(.system(size: 20, weight: .semibold))
+                Text("当前持仓").font(.system(size: 17, weight: .semibold))
                 Spacer()
                 Text("持仓市值").font(.callout).foregroundStyle(.secondary)
                 Text(current == nil ? "待读取" : current?.openLots.isEmpty == true ? "无持仓" : "待估值")
@@ -338,12 +402,11 @@ private struct InvestmentsContent: View {
                 if current.openLots.isEmpty { Text("当前没有未平仓持仓。").font(.callout).foregroundStyle(.secondary) }
                 ForEach(Array(current.openLots.prefix(5))) { lot in
                     HStack(spacing: 8) {
-                        Text(lot.instrument.label).font(.callout.weight(.medium))
-                            .lineLimit(1).help(lot.instrument.label).frame(maxWidth: .infinity, alignment: .leading)
+                        holdingInstrument(lot)
                         Text(lotQuantity(lot)).font(.callout).frame(width: 150, alignment: .leading)
                         Text("待估值").frame(width: 120, alignment: .trailing)
                         Text("待估值").frame(width: 120, alignment: .trailing)
-                    }.foregroundStyle(.primary).padding(.vertical, 2)
+                    }.foregroundStyle(.primary).padding(.vertical, 1)
                     Divider()
                 }
                 if !current.openLots.isEmpty {
@@ -363,6 +426,27 @@ private struct InvestmentsContent: View {
         }
     }
 
+    private func holdingInstrument(_ lot: LedgerLot) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(lot.instrument.label).font(.callout.weight(.medium))
+                .lineLimit(1).help(lot.instrument.label)
+            if case .option = lot.instrument {
+                HStack(spacing: 10) {
+                    Text(OptionPositionRequest.status(for: lot, at: Date()))
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("平仓") { beginPositionRequest(lot, action: .closing) }
+                        .buttonStyle(.borderless).tint(accent)
+                        .accessibilityIdentifier("investmentOptionClose_" + lot.id)
+                    Menu("到期处理") {
+                        Button("确认到期未行权") { beginPositionRequest(lot, action: .expiration) }
+                        Button("行权 / 被指派：去账本") { showOptionSettlementLedger(lot) }
+                    }.menuStyle(.borderlessButton).fixedSize().tint(accent)
+                        .accessibilityIdentifier("investmentOptionExpiration_" + lot.id)
+                }.controlSize(.small).disabled(model.isBusy || positionPresentationID != nil)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func lotQuantity(_ lot: LedgerLot) -> String {
         let unit: String
         switch lot.instrument { case .equity: unit = " 股"; case .option: unit = " 张" }
@@ -370,7 +454,7 @@ private struct InvestmentsContent: View {
     }
 
     private func recentRecords(_ current: InvestmentLedgerSummary?) -> some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 12) {
             Text("最近记录").font(.headline)
             if let event = events.first {
                 Text(event.effectiveAt.formatted(date: .numeric, time: .omitted)).font(.callout).foregroundStyle(.secondary)
@@ -384,7 +468,7 @@ private struct InvestmentsContent: View {
             } else { Text("确认实际成交后自动显示").font(.callout).foregroundStyle(.secondary) }
             Spacer(minLength: 0)
             Button("查看全部 ›") { showDetail(.ledger("来源与审计")) }.buttonStyle(.plain).foregroundStyle(accent)
-        }.padding(.vertical, 2)
+        }.padding(.vertical, 1)
     }
 
     private func eventTitle(_ event: LedgerEvent) -> String {
@@ -432,23 +516,185 @@ private struct InvestmentsContent: View {
         }
     }
     private func showDetail(_ value: InvestmentDetail) {
+        discardPositionRequest()
+        endQuickReports()
         detailAccountID = model.selectedAccountID
         model.disappear(); share = nil; detail = value
     }
     private func showCalculation() {
         guard model.preparationBaseline != nil else { return }
+        discardPositionRequest()
+        endQuickReports()
         detailAccountID = model.selectedAccountID
         share = nil; shareError = nil; detail = .calculation
     }
     private func requestReload(account: String?) {
+        discardPositionRequest()
+        endQuickReports()
         model.disappear(); share = nil; shareError = nil
         requestedAccountID = account; reloadID = UUID()
+    }
+    private func beginPositionRequest(_ lot: LedgerLot, action: OptionTradeEntryAction) {
+        guard visible, detail == nil, !model.isBusy, positionPresentationID == nil,
+              let ledger = model.context?.ledger,
+              model.selectedAccountID == lot.accountID else { return }
+        do {
+            let request = try OptionPositionRequest(lot: lot, action: action, ledgerRevision: ledger.revision)
+            endQuickReports(); share = nil; shareError = nil
+            positionPresentationID = request.id; positionInputEpoch = model.inputEpoch
+            positionAccountID = request.accountID; positionRefreshAccountID = nil
+            positionRequest = request
+        } catch {
+            shareError = "这笔持仓已无法用于当前操作，请刷新后重新选择；没有自动结清或修改记录。"
+        }
+    }
+    private func finishPositionRequest() {
+        let id = positionPresentationID, epoch = positionInputEpoch
+        let account = positionRefreshAccountID ?? positionAccountID
+        discardPositionRequest(completed: true)
+        guard id != nil, visible, detail == nil, model.inputEpoch == epoch,
+              let account, model.selectedAccountID == account else { return }
+        // Also refresh after cancellation: the shared ledger may have changed
+        // while the sheet was open. No stale quick-period result is retained.
+        requestReload(account: account)
+    }
+    private func discardPositionRequest(completed: Bool = false) {
+        // Keep the presentation lock until onDismiss, even after an account or
+        // page change invalidates callbacks. An old dismissal cannot consume a
+        // newer position request because a replacement cannot start yet.
+        if completed { positionPresentationID = nil }
+        positionInputEpoch = nil
+        positionAccountID = nil; positionRefreshAccountID = nil; positionRequest = nil
+    }
+    private func showOptionSettlementLedger(_ lot: LedgerLot) {
+        guard visible, detail == nil, !model.isBusy, model.selectedAccountID == lot.accountID,
+              model.context?.ledger.state.lots.contains(lot) == true else { return }
+        showDetail(.ledger("手工录入"))
+    }
+    private func generateQuickReports() {
+        guard model.canPrepare, let account = model.selectedAccountID,
+              let baseline = model.preparationBaseline,
+              let selected = model.context?.ledger.accounts.first(where: { $0.id == account }) else { return }
+        model.cancelPeriodReports()
+        share = nil; shareError = nil
+        quickReportRequest = .init(accountID: account, accountName: selected.name, baseline: baseline, cutoff: Date())
+        showsQuickReports = true
+    }
+    private func endQuickReports() {
+        model.cancelPeriodReports()
+        quickReportRequest = nil; showsQuickReports = false
     }
     private func prepareShare() {
         guard model.origin == .frozen, let saved = model.savedReport, saved.report == model.report,
               saved.report.input.request.accountID == model.selectedAccountID else { return }
         do { share = try InvestmentShareSnapshot(saved: saved); shareError = nil }
         catch { shareError = "只有已复算且盈亏对账完整的冻结报告可以生成分享卡片。" }
+    }
+}
+
+/// All three periods are generated together. This deliberately does not use the
+/// frozen NAV report/share route: no prices or complete-flow assertion is added.
+private struct InvestmentQuickReportsSheet: View {
+    @Bindable var model: PortfolioWorkspaceModel
+    let accountName: String
+    let accent: Color
+    let lossColor: Color
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("区间收益报告").font(.title2.weight(.semibold))
+                Spacer()
+                Button("完成", action: close).keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("investmentQuickReportsClose")
+            }
+            Text(accountName + " · USD · 当前有效账本，含已入账费用")
+                .font(.callout).foregroundStyle(.secondary)
+            if model.periodReports.count == 3 {
+                reports
+            } else if model.hasError {
+                Text(model.message ?? "未完成账本核对，请刷新后重试。")
+                    .foregroundStyle(.red).padding(.vertical, 16)
+                    .accessibilityIdentifier("investmentQuickReportsError")
+            } else {
+                ProgressView("正在汇总近一年、近一季度和近一月…")
+                    .frame(maxWidth: .infinity).padding(.vertical, 40)
+            }
+        }
+        .padding(20).frame(width: 800)
+        .accessibilityIdentifier("investmentQuickReports")
+    }
+
+    private var reports: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let first = model.periodReports.first {
+                Text("截至 " + dateText(first.endDate, withTime: true) + "（美东）· 滚动 12／3／1 个自然月")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if model.periodReports.contains(where: \.containsSyntheticRecords) {
+                Text("含合成记录 · 非真实账户业绩").font(.caption).foregroundStyle(.orange)
+            }
+            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+                GridRow(alignment: .top) {
+                    Text("统计期间").font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.periodReports) { report in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(report.title).font(.headline)
+                            Text(dateText(report.startDate) + " → " + dateText(report.endDate))
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                            .help("美东时间 " + dateText(report.startDate, withTime: true) + " 至 " + dateText(report.endDate, withTime: true) + "，含起止时刻")
+                    }
+                }
+                Divider().gridCellColumns(4)
+                GridRow {
+                    Text("已入账收益").font(.headline)
+                    ForEach(model.periodReports) { report in
+                        Text(investmentCurrency(report.bookedPnL)).font(.title3.weight(.semibold)).monospacedDigit()
+                            .foregroundStyle(report.bookedPnL.amount < 0 ? lossColor : accent)
+                            .accessibilityIdentifier("investmentQuickReport-" + report.id)
+                    }
+                }
+                amountRow("交易已实现盈亏", value: \.realizedPnL)
+                amountRow("股息与利息", value: \.cashIncome)
+                amountRow("其他已入账费用／税款", value: \.cashCharges, signed: false)
+                GridRow {
+                    Text("已实现记录").font(.callout).foregroundStyle(.secondary)
+                    ForEach(model.periodReports) { report in Text("\(report.realizedEventCount) 笔").font(.callout).monospacedDigit() }
+                }
+                Divider().gridCellColumns(4)
+                amountRow("入金（不计收益）", value: \.deposits, signed: false)
+                amountRow("出金（不计亏损）", value: \.withdrawals, signed: false)
+                amountRow("期初账本现金", value: \.openingCash, signed: false)
+                amountRow("期末账本现金", value: \.closingCash, signed: false)
+            }
+            Divider()
+            Text("已入账收益＝交易已实现盈亏＋股息、利息－独立费用、税款。交易费用已计入盈亏，不重复扣除。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("不含持仓浮盈、净值或收益率；开仓权利金不直接计为利润。按当前有效记录重述历史，后补录或冲销后需重新生成。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("本次汇总仅供查看，未保存为冻结估值报告。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func amountRow(_ title: String, value: KeyPath<InvestmentPeriodReport, Money>, signed: Bool = true) -> some View {
+        GridRow {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            ForEach(model.periodReports) { report in
+                Text(investmentCurrency(report[keyPath: value], signed: signed)).font(.callout).monospacedDigit()
+            }
+        }
+    }
+
+    private func dateText(_ date: Date, withTime: Bool = false) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        formatter.dateFormat = withTime ? "yyyy-MM-dd HH:mm:ss" : "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
 
@@ -462,8 +708,8 @@ private struct InvestmentRealizedChart: View {
         let plot = chartPoints
         Group {
             if plot.isEmpty {
-                VStack(spacing: 7) {
-                    Image(systemName: "chart.xyaxis.line").font(.title2)
+                VStack(spacing: 4) {
+                    Image(systemName: "chart.xyaxis.line").font(.system(size: 18))
                     Text("平仓或到期入账后显示走势").font(.caption)
                 }.foregroundStyle(.secondary).frame(maxWidth: .infinity)
             } else {
@@ -491,7 +737,7 @@ private struct InvestmentRealizedChart: View {
                 }
                 .accessibilityLabel("全部已入账记录的累计已实现盈亏走势，不含未平仓估值")
             }
-        }.frame(height: 112).padding(.vertical, 4)
+        }.frame(height: plot.isEmpty ? 56 : 84).padding(.vertical, 2)
     }
 
     private var chartPoints: [PlotPoint] {
@@ -525,8 +771,8 @@ private struct InvestmentContributionChart: View {
         let margin = max(high - low, 1) * 0.25
         Group {
             if plot.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "chart.bar.xaxis").font(.title2)
+                VStack(spacing: 5) {
+                    Image(systemName: "chart.bar.xaxis").font(.system(size: 18))
                     Text(available ? "所选期间暂无已实现记录" : "账本待读取与校验").font(.callout)
                     Text("确认实际成交后自动汇总，不使用示例金额。").font(.caption)
                 }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -558,12 +804,12 @@ private struct InvestmentContributionChart: View {
                             }
                         }
                     }
-                    .frame(height: max(202, CGFloat(plot.count) * 36))
+                    .frame(height: max(150, CGFloat(plot.count) * 30))
                     .padding(.top, 2)
                     .accessibilityLabel("所选期间按标的汇总的已实现盈亏贡献，USD")
                 }
             }
-        }.frame(height: 220).accessibilityIdentifier("investmentContributionChart")
+        }.frame(height: plot.isEmpty ? 105 : 166).accessibilityIdentifier("investmentContributionChart")
     }
 }
 

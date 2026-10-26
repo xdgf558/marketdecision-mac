@@ -44,6 +44,33 @@ private func optionEntryPrepared(spread: Bool = false, externalID: String = "exe
     return draft
 }
 
+private func optionEntryAutomatic(spread: Bool = false) throws -> OptionTradeEntryDraft {
+    var draft = try OptionTradeEntryDraft(openingFrom: optionEntryLab(spread: spread), automaticContractTerms: true)
+    draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00.0004Z"
+    for index in draft.legs.indices {
+        draft.legs[index].form.unitPrice = index == 0 ? "2.5" : "1.0"
+        draft.legs[index].form.fee = "1.3"
+    }
+    return draft
+}
+
+private func optionEntryQuantitySource(_ strategy: OptionLabStrategy, retainedLongQuantity: String) -> OptionLabInputDraft {
+    var source = OptionLabInputDraft()
+    source.strategy = strategy; source.symbol = "XYZ"; source.underlyingPrice = "100"
+    source.expirationDate = "2026-11-20"; source.settlementAt = "2026-11-20T21:00:00Z"
+    source.shortLeg.strike = "100"; source.shortLeg.quantity = "5"; source.shortLeg.enteredPrice = "2.5"
+    source.longLeg.strike = strategy == .putCreditSpread ? "95" : "105"
+    source.longLeg.quantity = retainedLongQuantity; source.longLeg.enteredPrice = "1"
+    return source
+}
+
+private func optionEntryContract(_ event: LedgerEvent) throws -> LedgerOptionVersion {
+    guard case .trade(let trade) = event.payload, case .option(let contract) = trade.instrument else {
+        throw LedgerError.invalidContract
+    }
+    return contract
+}
+
 private func optionEntrySnapshot(_ events: [LedgerEvent] = [], accounts: [LedgerAccount]? = nil) throws -> LedgerSnapshot {
     let accounts = accounts ?? [LedgerAccount(id: "A", name: "Account A"), LedgerAccount(id: "B", name: "Account B")]
     return try .init(revision: UUID(), accounts: accounts, events: events,
@@ -89,6 +116,97 @@ struct OptionTradeEntryDraftTests {
         #expect(source.asOf.isEmpty && source.underlyingBid.isEmpty)
     }
 
+    @Test func explicitOpeningReferencePricesChangeOnlyUnitPrices() throws {
+        var source = optionEntryLab(spread: true)
+        source.shortLeg.enteredPrice = " 3.2500 "; source.longLeg.enteredPrice = "0.0000"
+        let initial = try OptionTradeEntryDraft(openingFrom: source)
+        #expect(initial.legs.allSatisfy { $0.form.unitPrice.isEmpty && $0.form.fee.isEmpty })
+        var actual = try optionEntryPrepared(spread: true)
+        var expected = actual
+        expected.legs[0].form.unitPrice = "3.25"; expected.legs[1].form.unitPrice = "0"
+        try actual.applyOpeningReferencePrices(from: source)
+        // Equality covers IDs, actual times, actual fees, fill identifiers,
+        // quantities, and confirmed contract fields as well as the copied price.
+        #expect(actual == expected)
+        #expect(actual.legs[0].form.unitPrice != "10") // Source Bid/Ask midpoint.
+        #expect(actual.legs[1].contractConfirmed)
+        #expect(actual.timestamp == "2026-10-24T14:00:00.0004Z")
+    }
+
+    @Test func referencePricesRejectMissingInvalidNegativeAndQuoteOnlyInputsAtomically() throws {
+        var source = optionEntryLab(spread: true)
+        source.shortLeg.enteredPrice = "3.25"
+        for invalid in ["", " ", "not-a-price", "NaN", "-0.01", "1e2"] {
+            source.longLeg.enteredPrice = invalid
+            var actual = try optionEntryPrepared(spread: true)
+            let original = actual
+            #expect(throws: OptionTradeEntryError.missingExecution) {
+                try actual.applyOpeningReferencePrices(from: source)
+            }
+            #expect(actual == original) // The valid first leg was not copied.
+        }
+        source.longLeg.enteredPrice = "1.25"; source.usesEnteredPrices = false
+        var quoteMode = try optionEntryPrepared(spread: true)
+        let original = quoteMode
+        #expect(throws: OptionTradeEntryError.missingExecution) {
+            try quoteMode.applyOpeningReferencePrices(from: source)
+        }
+        #expect(quoteMode == original) // Retained manual prices cannot impersonate the active Bid/Ask mode.
+    }
+
+    @Test func referencePricesRejectSyntheticAndDifferentContractLayouts() throws {
+        var base = optionEntryLab(spread: true)
+        base.shortLeg.enteredPrice = "3.25"; base.longLeg.enteredPrice = "1.25"
+        for mismatch in ["symbol", "asset", "expiry", "short-strike", "long-strike", "right", "leg-order", "leg-count"] {
+            var source = base
+            switch mismatch {
+            case "symbol": source.symbol = "ABC"
+            case "asset": source.asset = .etf
+            case "expiry": source.expirationDate = "2026-12-18"
+            case "short-strike": source.shortLeg.strike = "105"
+            case "long-strike": source.longLeg.strike = "90"
+            case "right": source.strategy = .callCreditSpread
+            case "leg-order":
+                let oldShort = source.shortLeg; source.shortLeg = source.longLeg; source.longLeg = oldShort
+            default: source.strategy = .cashSecuredPut
+            }
+            var actual = try optionEntryPrepared(spread: true)
+            let original = actual
+            #expect(throws: (any Error).self) { try actual.applyOpeningReferencePrices(from: source) }
+            #expect(actual == original)
+        }
+        var marked = base; marked.sourceReference = "SYNTHETIC quote observation"
+        for source in [OptionLabInputDraft.synthetic(strategy: .putCreditSpread), marked] {
+            var actual = try optionEntryPrepared(spread: true)
+            let original = actual
+            #expect(throws: OptionTradeEntryError.syntheticEvidence) {
+                try actual.applyOpeningReferencePrices(from: source)
+            }
+            #expect(actual == original)
+        }
+    }
+
+    @Test func referencePricesRejectChangedLegOrderAndNonOpeningActions() throws {
+        var source = optionEntryLab(spread: true)
+        source.shortLeg.enteredPrice = "3.25"; source.longLeg.enteredPrice = "1.25"
+        var reordered = try optionEntryPrepared(spread: true)
+        reordered.legs.reverse()
+        let reorderedOriginal = reordered
+        #expect(throws: OptionTradeEntryError.changedLegs) {
+            try reordered.applyOpeningReferencePrices(from: source)
+        }
+        #expect(reordered == reorderedOriginal)
+        let ledger = try optionEntryTwoLots(), lot = try #require(ledger.state.lots.first)
+        for action in [OptionTradeEntryAction.closing, .expiration] {
+            var actual = try OptionTradeEntryDraft(lot: lot, action: action)
+            let original = actual
+            #expect(throws: OptionTradeEntryError.changedLegs) {
+                try actual.applyOpeningReferencePrices(from: source)
+            }
+            #expect(actual == original)
+        }
+    }
+
     @Test func syntheticProvenanceAndNonrepresentableOCCProposalsAreRejected() throws {
         #expect(throws: OptionTradeEntryError.syntheticEvidence) {
             try OptionTradeEntryDraft(openingFrom: OptionLabInputDraft.synthetic(strategy: .cashSecuredPut))
@@ -123,6 +241,313 @@ struct OptionTradeEntryDraftTests {
         #expect(throws: (any Error).self) { try draft.events(in: snapshot) }
     }
 
+    @Test func automaticOpeningBuildsLocalStandardTermsWithoutManualContractDetails() throws {
+        let snapshot = try optionEntrySnapshot()
+        for spread in [false, true] {
+            let draft = try optionEntryAutomatic(spread: spread), original = draft
+            #expect(draft.legs.allSatisfy {
+                !$0.contractConfirmed && $0.form.existingOption == nil && $0.form.contractVersionID.isEmpty
+                    && $0.form.effectiveFrom.isEmpty && $0.form.tradingEndsAt.isEmpty
+                    && $0.form.exerciseDeadline.isEmpty && $0.form.settlementAt.isEmpty && $0.form.memoReference.isEmpty
+            })
+            let events = try draft.events(in: snapshot)
+            #expect(events.count == (spread ? 2 : 1) && draft == original)
+            for (index, event) in events.enumerated() {
+                let contract = try optionEntryContract(event)
+                #expect(contract.termsBasis == .localManualStandard)
+                #expect(contract.effectiveFrom == nil && contract.effectiveTo == nil && contract.tradingEndsAt == nil)
+                #expect(contract.exerciseDeadline == nil && contract.settlementAt == nil)
+                #expect(contract.quoteMultiplier == (try Money("100")) && contract.deliverableCash == (try Money("0")))
+                #expect(contract.exerciseConsideration == (try Money(index == 0 ? "10000" : "9500")))
+                #expect(contract.occSymbol == (index == 0 ? "XYZ   261120P00100000" : "XYZ   261120P00095000"))
+                let delivery = try #require(contract.deliverables.first)
+                #expect(contract.deliverables.count == 1 && delivery.security.symbol == "XYZ" && delivery.security.kind == .stock)
+                #expect(delivery.quantity == (try Money("100")) && delivery.basisWeight == (try Money("1")))
+                #expect(contract.settlementType == .physicalEquity && contract.exerciseStyle == .american)
+                #expect(!contract.memoReferences.isEmpty && !contract.memoReferences.contains("Unverified research expiry assumption"))
+            }
+        }
+    }
+
+    @Test func contractParameterSpreadQuantityMatchesCalculationOpeningAndCommittedLots() async throws {
+        let recordedAt = try LedgerCSV.timestamp("2026-10-24T14:00:00Z")
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            for retainedLongQuantity in ["1", "old-invalid-quantity"] {
+                let source = optionEntryQuantitySource(strategy, retainedLongQuantity: retainedLongQuantity), original = source
+                #expect(source.usesContractParametersOnly && source.usesEnteredPrices)
+                let calculation = try source.buildForCalculation(createdAt: recordedAt)
+                #expect(calculation.shortLeg.quantity == 5 && calculation.longLeg?.quantity == 5)
+                let report = try OptionLabEngine.calculate(calculation)
+                #expect(report.selectedOutcome.grossCredit == (try Money("750")))
+                #expect(report.selectedOutcome.totalFees == (try Money("6.5")))
+                var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+                #expect(draft.legs.map { $0.form.quantity } == ["5", "5"])
+                draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+                for index in draft.legs.indices {
+                    draft.legs[index].form.unitPrice = index == 0 ? "2.5" : "1"
+                    draft.legs[index].form.fee = "1.3"
+                }
+                let prepared = draft, store = try LedgerStore(path: ":memory:")
+                let initial = try await store.snapshot()
+                let account = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+                let events = try draft.events(in: account)
+                let preview = try await store.previewManual(events: events, expectedRevision: account.revision)
+                #expect(preview.canCommit && preview.rows.count == 2 && preview.rows.allSatisfy { $0.disposition == .new })
+                let projected = try #require(preview.projectedState)
+                #expect(projected.lots.count == 2)
+                for side in [LedgerPositionSide.short, .long] {
+                    let lot = try #require(projected.lots.first { $0.side == side })
+                    #expect(lot.quantityOpened == (try Money("5")) && lot.quantityRemaining == (try Money("5")))
+                }
+                let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
+                #expect(committed.state == projected && committed.events.count == 2)
+                let duplicate = try await store.previewManual(events: draft.events(in: committed), expectedRevision: committed.revision)
+                #expect(duplicate.canCommit && duplicate.rows.count == 2 && duplicate.rows.allSatisfy { $0.disposition == .duplicate })
+                #expect(try await store.commit(planID: duplicate.id, expectedRevision: committed.revision) == committed)
+                #expect(draft == prepared && source == original && source.longLeg.quantity == retainedLongQuantity)
+            }
+        }
+    }
+
+    @Test func actualSpreadQuantityEditsAfterInitializationRemainIndependentThroughCommit() async throws {
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            let source = optionEntryQuantitySource(strategy, retainedLongQuantity: "old-invalid-quantity"), original = source
+            var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+            #expect(draft.legs.map { $0.form.quantity } == ["5", "5"])
+            draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+            draft.legs[0].form.quantity = "3"; draft.legs[1].form.quantity = "2"
+            draft.legs[0].form.fee = "1.95"; draft.legs[1].form.fee = "1.3"
+            try draft.applyOpeningReferencePrices(from: source)
+            #expect(draft.legs.map { $0.form.quantity } == ["3", "2"])
+            let prepared = draft, store = try LedgerStore(path: ":memory:")
+            let initial = try await store.snapshot()
+            let account = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+            let events = try draft.events(in: account)
+            try #require(events.count == 2)
+            guard case .trade(let short) = events[0].payload, case .trade(let long) = events[1].payload else {
+                Issue.record("Expected the two independently edited actual fills"); return
+            }
+            #expect(short.side == .sell && short.quantity == (try Money("3")))
+            #expect(long.side == .buy && long.quantity == (try Money("2")))
+            let preview = try await store.previewManual(events: events, expectedRevision: account.revision)
+            #expect(preview.canCommit && preview.rows.count == 2)
+            let projected = try #require(preview.projectedState)
+            let projectedShort = try #require(projected.lots.first { $0.side == .short })
+            let projectedLong = try #require(projected.lots.first { $0.side == .long })
+            #expect(projectedShort.quantityRemaining == (try Money("3")) && projectedLong.quantityRemaining == (try Money("2")))
+            let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
+            #expect(committed.state == projected && committed.state.lots.count == 2)
+            #expect(try draft.events(in: committed) == events)
+            #expect(draft == prepared && source == original && source.shortLeg.quantity == "5")
+        }
+    }
+
+    @Test func fullModeOpeningPreservesEachLegQuantityAndRejectsInvalidProtectionQuantity() throws {
+        let snapshot = try optionEntrySnapshot()
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            var source = optionEntryQuantitySource(strategy, retainedLongQuantity: "1")
+            source.usesContractParametersOnly = false
+            let original = source
+            var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+            #expect(draft.legs.map { $0.form.quantity } == ["5", "1"])
+            draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+            for index in draft.legs.indices {
+                draft.legs[index].form.unitPrice = index == 0 ? "2.5" : "1"
+                draft.legs[index].form.fee = "0"
+            }
+            let events = try draft.events(in: snapshot), state = try optionEntrySnapshot(events).state
+            #expect(state.lots.count == 2)
+            #expect(state.lots.first { $0.side == .short }?.quantityRemaining == (try Money("5")))
+            #expect(state.lots.first { $0.side == .long }?.quantityRemaining == (try Money("1")))
+            #expect(source == original)
+            source.longLeg.quantity = "old-invalid-quantity"
+            #expect(throws: (any Error).self) {
+                try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+            }
+        }
+    }
+
+    @Test func automaticOpeningContractsStayStableAcrossDraftsTimesAndDuplicatePreviews() async throws {
+        let store = try LedgerStore(path: ":memory:")
+        let initial = try await store.snapshot()
+        let created = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+        let first = try optionEntryAutomatic(spread: true)
+        var later = try optionEntryAutomatic(spread: true)
+        later.timestamp = "2026-10-25T15:00:00Z"
+        let events = try first.events(in: created), laterEvents = try later.events(in: created)
+        #expect(try events.map(optionEntryContract) == laterEvents.map(optionEntryContract))
+        #expect(events.map(\.id) != laterEvents.map(\.id))
+        let firstPreview = try await store.previewManual(events: events, expectedRevision: created.revision)
+        let secondPreview = try await store.previewManual(events: first.events(in: created), expectedRevision: created.revision)
+        #expect(firstPreview.canCommit && firstPreview.rows == secondPreview.rows && firstPreview.projectedState == secondPreview.projectedState)
+        await store.cancel(planID: secondPreview.id)
+        let committed = try await store.commit(planID: firstPreview.id, expectedRevision: created.revision)
+        #expect(try first.events(in: committed) == events)
+        let duplicate = try await store.previewManual(events: first.events(in: committed), expectedRevision: committed.revision)
+        #expect(duplicate.canCommit && duplicate.rows.allSatisfy { $0.disposition == .duplicate })
+        #expect(try await store.commit(planID: duplicate.id, expectedRevision: committed.revision) == committed)
+    }
+
+    @Test func automaticOpeningReusesUniqueCompleteVersionOnlyFromSelectedAccount() throws {
+        let existing = try optionEntryTwoLots(), original = try optionEntryContract(existing.events[0])
+        let automatic = try optionEntryAutomatic()
+        let reused = try optionEntryContract(automatic.events(in: existing)[0])
+        #expect(reused == original)
+        #expect(reused.effectiveFrom != nil && reused.tradingEndsAt != nil && reused.exerciseDeadline != nil && reused.settlementAt != nil)
+        #expect(!automatic.legs[0].contractConfirmed && automatic.legs[0].form.existingOption == nil)
+        let empty = try optionEntrySnapshot()
+        var other = try optionEntryPrepared(externalID: "other-account-version")
+        other.accountID = "B"; other.legs[0].form.contractVersionID = "account-b-only-version"
+        let otherSnapshot = try optionEntrySnapshot(other.events(in: empty))
+        let local = try optionEntryContract(automatic.events(in: otherSnapshot)[0])
+        #expect(local.termsBasis == .localManualStandard && local != (try optionEntryContract(otherSnapshot.events[0])))
+        #expect(local.exerciseDeadline == nil && local.settlementAt == nil)
+        var explicit = automatic
+        try explicit.legs[0].reuseContract(optionEntryContract(otherSnapshot.events[0]))
+        #expect(throws: OptionTradeEntryError.invalidContract) { try explicit.events(in: otherSnapshot) }
+        #expect(throws: OptionTradeEntryError.invalidContract) { try explicit.events(in: existing) }
+        explicit = automatic
+        try explicit.legs[0].reuseContract(original)
+        #expect(try optionEntryContract(explicit.events(in: existing)[0]) == original)
+    }
+
+    @Test func automaticOpeningRejectsAmbiguousAndNonstandardExistingVersions() throws {
+        let empty = try optionEntrySnapshot()
+        let first = try optionEntryPrepared(externalID: "version-one")
+        var second = try optionEntryPrepared(externalID: "version-two")
+        second.legs[0].form.contractVersionID = "other-complete-version"
+        second.timestamp = "2026-10-25T14:00:00Z"
+        let ambiguous = try optionEntrySnapshot(first.events(in: empty) + second.events(in: empty))
+        let automatic = try optionEntryAutomatic()
+        #expect(throws: (any Error).self) { try automatic.events(in: ambiguous) }
+        for mismatch in ["multiplier", "deliverable", "cash", "consideration", "symbol", "kind"] {
+            var form = try optionEntryPrepared().legs[0].form
+            form.id = "nonstandard-" + mismatch; form.openingLotID = form.id + "-lot"
+            form.timestamp = "2026-10-23T14:00:00Z"; form.sourceSystem = "broker-record"
+            form.externalID = form.id; form.evidence = "User retained adjusted contract record"
+            form.strategyEnabled = true; form.strategyID = "retained-strategy-" + mismatch
+            form.successDefinition = "Retained manual contract fixture"
+            switch mismatch {
+            case "multiplier": form.quoteMultiplier = "50"
+            case "deliverable": form.deliverableQuantity = "50"
+            case "cash": form.deliverableCash = "10"
+            case "consideration": form.exerciseConsideration = "9500"
+            case "symbol": form.symbol = "ABC"
+            default: form.securityKind = .etf
+            }
+            let retained = try optionEntrySnapshot([form.event(accountID: "A")])
+            #expect(throws: (any Error).self) { try automatic.events(in: retained) }
+        }
+    }
+
+    @Test func automaticOpeningIgnoresHiddenContractFieldsButRejectsUnverifiedObjectReplacement() throws {
+        let snapshot = try optionEntrySnapshot()
+        var draft = try optionEntryAutomatic(spread: true)
+        let original = try draft.events(in: snapshot)
+        for index in draft.legs.indices {
+            draft.legs[index].form.occSymbol = "ABC   261218C00050000"
+            draft.legs[index].form.symbol = "ABC"; draft.legs[index].form.securityID = "unrelated-equity"
+            draft.legs[index].form.securityKind = .etf; draft.legs[index].form.contractVersionID = "unconfirmed-version"
+            draft.legs[index].form.quoteMultiplier = "10"; draft.legs[index].form.exerciseConsideration = "500"
+            draft.legs[index].form.deliverableQuantity = "10"; draft.legs[index].form.deliverableCash = "20"
+            draft.legs[index].form.effectiveFrom = "2027-01-01T00:00:00Z"
+            draft.legs[index].form.tradingEndsAt = "2027-12-01T00:00:00Z"
+            draft.legs[index].form.exerciseDeadline = "2027-12-02T00:00:00Z"
+            draft.legs[index].form.settlementAt = "2027-12-03T00:00:00Z"
+            draft.legs[index].form.memoReference = "Unverified hidden form text"
+            draft.legs[index].form.exerciseStyle = .european; draft.legs[index].contractConfirmed = false
+        }
+        #expect(try draft.events(in: snapshot) == original)
+        draft.legs[0].form.existingOption = try optionEntryContract(optionEntryPrepared().events(in: snapshot)[0])
+        #expect(throws: OptionTradeEntryError.unconfirmedContract) { try draft.events(in: snapshot) }
+    }
+
+    @Test func automaticOpeningStillRequiresActualValuesAndVerifiedAccountSnapshot() throws {
+        let snapshot = try optionEntrySnapshot()
+        for field in ["time", "price", "fee", "quantity"] {
+            var draft = try optionEntryAutomatic()
+            switch field {
+            case "time": draft.timestamp = ""
+            case "price": draft.legs[0].form.unitPrice = ""
+            case "fee": draft.legs[0].form.fee = ""
+            default: draft.legs[0].form.quantity = ""
+            }
+            #expect(throws: (any Error).self) { try draft.events(in: snapshot) }
+        }
+        var draft = try optionEntryAutomatic(); draft.accountID = "unknown-account"
+        #expect(throws: OptionTradeEntryError.invalidAccount) { try draft.events(in: snapshot) }
+        draft.accountID = "A"
+        let event = try optionEntryPrepared().events(in: snapshot)[0]
+        let inconsistent = LedgerSnapshot(revision: UUID(), accounts: snapshot.accounts, events: [event], state: snapshot.state)
+        #expect(throws: OptionTradeEntryError.inconsistentSnapshot) { try draft.events(in: inconsistent) }
+        let marked = LedgerEvent(id: event.id, accountID: event.accountID, effectiveAt: event.effectiveAt,
+            source: .init(sourceSystem: "SYNTHETIC retained source", externalTransactionID: event.source.externalTransactionID,
+                evidence: "Synthetic contract illustration"), payload: event.payload)
+        let retained = try optionEntrySnapshot([marked])
+        #expect(throws: OptionTradeEntryError.syntheticEvidence) { try draft.events(in: retained) }
+    }
+
+    @Test func automaticOpeningPreviewStillRejectsAChangedLedgerRevision() async throws {
+        let store = try LedgerStore(path: ":memory:")
+        let initial = try await store.snapshot()
+        let created = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+        let draft = try optionEntryAutomatic()
+        let preview = try await store.previewManual(events: draft.events(in: created), expectedRevision: created.revision)
+        #expect(preview.canCommit)
+        let changed = try await store.createAccount(.init(id: "B", name: "Account B"), expectedRevision: created.revision)
+        await #expect(throws: LedgerStoreError.stalePlan) {
+            try await store.commit(planID: preview.id, expectedRevision: created.revision)
+        }
+        #expect(try await store.snapshot() == changed && changed.events.isEmpty)
+    }
+
+    @Test func automaticOpeningCloseRetainsTheExactLocalContractAndLot() throws {
+        let empty = try optionEntrySnapshot(), opening = try optionEntryAutomatic().events(in: empty)
+        let opened = try optionEntrySnapshot(opening), lot = try #require(opened.state.lots.first)
+        let contract = try optionEntryContract(opening[0])
+        var draft = try optionEntryFinish(lot, action: .closing, id: "close-local-standard")
+        draft.legs[0].form.quantity = "1"
+        let closing = try draft.events(in: opened)
+        #expect(try optionEntryContract(closing[0]) == contract)
+        guard case .trade(let trade) = closing[0].payload else { Issue.record("Expected local contract close"); return }
+        #expect(trade.selections == [.init(lotID: lot.id, quantity: try Money("1"))])
+        let state = try optionEntrySnapshot(opening + closing).state
+        #expect(state.lots.count == 1 && state.lots[0].id == lot.id && state.lots[0].quantityRemaining == (try Money("1")))
+        #expect(state.lots[0].instrument == lot.instrument)
+        draft.legs[0].form.existingOption = try optionEntryContract(optionEntryPrepared().events(in: empty)[0])
+        #expect(throws: (any Error).self) { try draft.events(in: opened) }
+    }
+
+    @Test func localStandardExpirationNeedsActualEvidenceAndOCCNewYorkDateWithoutInventingSchedule() throws {
+        let empty = try optionEntrySnapshot(), opening = try optionEntryAutomatic().events(in: empty)
+        let opened = try optionEntrySnapshot(opening), lot = try #require(opened.state.lots.first)
+        let contract = try optionEntryContract(opening[0])
+        #expect(contract.exerciseDeadline == nil && contract.settlementAt == nil && contract.tradingEndsAt == nil)
+        var draft = try optionEntryFinish(lot, action: .expiration, id: "explicit-local-expiration")
+        draft.legs[0].form.unitPrice = ""; draft.legs[0].form.fee = "0"
+        // These are user-supplied event instants around New York's calendar
+        // boundary, not inferred trading, exercise, or settlement schedules.
+        draft.timestamp = "2026-11-20T04:59:59.999Z"
+        #expect(throws: (any Error).self) { try draft.events(in: opened) }
+        draft.timestamp = "2026-11-20T05:00:00Z"
+        for field in ["source", "identifier", "evidence"] {
+            var missing = draft
+            switch field {
+            case "source": missing.sourceSystem = ""
+            case "identifier": missing.externalID = ""
+            default: missing.evidence = ""
+            }
+            #expect(throws: OptionTradeEntryError.missingExecution) { try missing.events(in: opened) }
+        }
+        let events = try draft.events(in: opened)
+        guard case .optionSettlement(let settlement) = events[0].payload else { Issue.record("Expected explicit local expiration"); return }
+        #expect(settlement.contract == contract && settlement.action == .expiration)
+        #expect(settlement.evidence == draft.evidence && events[0].effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)))
+        #expect(settlement.contract.exerciseDeadline == nil && settlement.contract.settlementAt == nil)
+        #expect(opened.events == opening && !lot.isClosed)
+        #expect(try optionEntrySnapshot(opening + events).state.lots.allSatisfy(\.isClosed))
+    }
+
     @Test func spreadUsesTwoActualFillsAndOneCommonStrategyWithStableIdentities() throws {
         let snapshot = try optionEntrySnapshot()
         var first = try optionEntryPrepared(spread: true), second = try optionEntryPrepared(spread: true)
@@ -146,20 +571,169 @@ struct OptionTradeEntryDraftTests {
         #expect(state.realizations.isEmpty && state.lots.count == 2)
     }
 
-    @Test func singleLegPreservesBrokerIDAndMultiLegRequiresDifferentRealFillIDs() throws {
+    @Test func openingBlankMetadataUsesStableLocalIdentityWithoutMutatingDraft() throws {
+        let snapshot = try optionEntrySnapshot()
+        for blank in ["", " \t\n"] {
+            var draft = try optionEntryPrepared()
+            draft.sourceSystem = blank; draft.externalID = blank; draft.evidence = blank
+            let original = draft
+            let events = try draft.events(in: snapshot)
+            let event = try #require(events.first)
+            #expect(events.count == 1 && events == (try draft.events(in: snapshot)))
+            #expect(draft == original)
+            #expect(event.source.sourceSystem == "local-manual-option-opening.v1")
+            #expect(event.source.externalTransactionID == "local-option-opening.v1:" + draft.id.uuidString + ":" + draft.legs[0].id)
+            #expect(event.source.evidence.hasPrefix("用户手工录入开仓；未提供附加记录依据。"))
+            #expect(event.source.evidence.hasSuffix("内部记录编号由软件生成，非券商成交编号。"))
+            #expect(event.source.fileHash == nil && event.source.rowIndex == nil)
+            #expect(event.effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)) && event.notes == draft.notes)
+            guard case .trade(let trade) = event.payload else { Issue.record("Expected opening trade"); return }
+            #expect(trade.effect == .open && trade.unitPrice == (try Money("2.5")) && trade.fee == (try Money("1.3")))
+        }
+    }
+
+    @Test func openingPartialMetadataPreservesEveryProvidedValue() throws {
+        let snapshot = try optionEntrySnapshot()
+        // Cover every partially supplied combination; surrounding whitespace in
+        // nonblank source identities is retained rather than silently normalized.
+        for supplied in 1..<7 {
+            var draft = try optionEntryPrepared()
+            let source = " broker-record ", executionID = " execution-42 ", evidence = " User supplied receipt reference "
+            draft.sourceSystem = supplied & 1 != 0 ? source : " \t"
+            draft.externalID = supplied & 2 != 0 ? executionID : " \n"
+            draft.evidence = supplied & 4 != 0 ? evidence : " \t"
+            let original = draft
+            let event = try #require(draft.events(in: snapshot).first)
+            #expect(draft == original)
+            #expect(event.source.sourceSystem == (supplied & 1 != 0 ? source : "local-manual-option-opening.v1"))
+            #expect(event.source.externalTransactionID == (supplied & 2 != 0 ? executionID
+                : "local-option-opening.v1:" + draft.id.uuidString + ":" + draft.legs[0].id))
+            let recordedEvidence = supplied & 4 != 0 ? evidence : "用户手工录入开仓；未提供附加记录依据。"
+            if supplied & 2 != 0 {
+                #expect(event.source.evidence == recordedEvidence)
+            } else {
+                #expect(event.source.evidence.hasPrefix(recordedEvidence))
+                #expect(event.source.evidence.hasSuffix("内部记录编号由软件生成，非券商成交编号。"))
+            }
+        }
+    }
+
+    @Test func singleLegPreservesBrokerIDAndMultiLegKeepsExplicitAndInternalIDsDistinct() throws {
         let snapshot = try optionEntrySnapshot(), single = try optionEntryPrepared()
         #expect(try single.events(in: snapshot)[0].source.externalTransactionID == "execution-42")
         var spread = try optionEntryPrepared(spread: true)
         #expect(spread.externalID.isEmpty)
         #expect(try spread.events(in: snapshot).count == 2)
         spread.legs[1].form.externalID = ""
-        #expect(throws: OptionTradeEntryError.missingExecution) { try spread.events(in: snapshot) }
+        let mixed = try spread.events(in: snapshot)
+        #expect(mixed[0].source.externalTransactionID == "execution-42-short-fill")
+        #expect(mixed[0].source.evidence == spread.evidence)
+        #expect(mixed[1].source.externalTransactionID == "local-option-opening.v1:" + spread.id.uuidString + ":" + spread.legs[1].id)
+        #expect(mixed[1].source.evidence.hasPrefix(spread.evidence))
+        #expect(mixed[1].source.evidence.hasSuffix("内部记录编号由软件生成，非券商成交编号。"))
         spread.legs[1].form.externalID = spread.legs[0].form.externalID
         #expect(throws: OptionTradeEntryError.duplicateExecutionID) { try spread.events(in: snapshot) }
-        // A shared order number is not a replacement for missing leg fill IDs.
+        // A shared order number is not repurposed as either leg's fill identity.
         spread.externalID = "one-order-number"
-        spread.legs[0].form.externalID = ""; spread.legs[1].form.externalID = ""
-        #expect(throws: OptionTradeEntryError.missingExecution) { try spread.events(in: snapshot) }
+        spread.legs[0].form.externalID = ""; spread.legs[1].form.externalID = " \t\n"
+        let original = spread, internalEvents = try spread.events(in: snapshot)
+        #expect(spread == original && internalEvents == (try spread.events(in: snapshot)))
+        #expect(internalEvents.map { $0.source.externalTransactionID } == spread.legs.map {
+            "local-option-opening.v1:" + spread.id.uuidString + ":" + $0.id
+        })
+        #expect(Set(try internalEvents.map { try $0.idempotencyKey }).count == 2)
+        #expect(internalEvents[0].multiLegGroupID == internalEvents[1].multiLegGroupID && internalEvents[0].multiLegGroupID != nil)
+        #expect(internalEvents.allSatisfy { $0.source.evidence.hasSuffix("内部记录编号由软件生成，非券商成交编号。") })
+        // An explicitly supplied identifier also cannot collide with another
+        // leg's software-generated identity in the same draft.
+        spread.legs[0].form.externalID = "local-option-opening.v1:" + spread.id.uuidString + ":" + spread.legs[1].id
+        #expect(throws: OptionTradeEntryError.duplicateExecutionID) { try spread.events(in: snapshot) }
+    }
+
+    @Test func openingInternalIdentitiesRemainStableAcrossStorePreviewsAndPriceConflicts() async throws {
+        for spread in [false, true] {
+            let store = try LedgerStore(path: ":memory:")
+            let initial = try await store.snapshot()
+            let created = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+            var draft = try optionEntryPrepared(spread: spread)
+            draft.sourceSystem = ""; draft.externalID = ""; draft.evidence = ""
+            for index in draft.legs.indices { draft.legs[index].form.externalID = "" }
+            let events = try draft.events(in: created)
+            let first = try await store.previewManual(events: events, expectedRevision: created.revision)
+            let retry = try await store.previewManual(events: draft.events(in: created), expectedRevision: created.revision)
+            #expect(first.canCommit && first.rows == retry.rows && first.projectedState == retry.projectedState)
+            await store.cancel(planID: retry.id)
+            let committed = try await store.commit(planID: first.id, expectedRevision: created.revision)
+            let duplicate = try await store.previewManual(events: draft.events(in: committed), expectedRevision: committed.revision)
+            #expect(duplicate.canCommit && duplicate.rows.allSatisfy { $0.disposition == .duplicate })
+            let unchanged = try await store.commit(planID: duplicate.id, expectedRevision: committed.revision)
+            #expect(unchanged == committed && unchanged.events.count == draft.legs.count)
+            draft.legs[0].form.unitPrice = "2.6"
+            let changed = try draft.events(in: unchanged)
+            #expect(changed.map(\.id) == events.map(\.id) && changed.map(\.source) == events.map(\.source))
+            let conflict = try await store.previewManual(events: changed, expectedRevision: unchanged.revision)
+            #expect(!conflict.canCommit && conflict.rows.contains { $0.disposition == .conflict })
+            #expect(try await store.snapshot() == committed)
+        }
+    }
+
+    @Test func freshOpeningDraftsWithoutBrokerIDsHaveDistinctInternalIdentities() throws {
+        let snapshot = try optionEntrySnapshot()
+        for spread in [false, true] {
+            var first = try optionEntryPrepared(spread: spread), second = try optionEntryPrepared(spread: spread)
+            first.sourceSystem = ""; first.externalID = ""; first.evidence = ""
+            second.sourceSystem = ""; second.externalID = ""; second.evidence = ""
+            for index in first.legs.indices {
+                first.legs[index].form.externalID = ""; second.legs[index].form.externalID = ""
+            }
+            let firstEvents = try first.events(in: snapshot), secondEvents = try second.events(in: snapshot)
+            #expect(first.id != second.id)
+            #expect(Set(firstEvents.map(\.id)).isDisjoint(with: Set(secondEvents.map(\.id))))
+            #expect(Set(try firstEvents.map { try $0.idempotencyKey }).isDisjoint(with: Set(try secondEvents.map { try $0.idempotencyKey })))
+            // Without a shared external identity, separate manual declarations
+            // cannot establish that they describe the same real-world fill.
+        }
+    }
+
+    @Test func openingOptionalMetadataStillRejectsDeclaredSyntheticEvidence() throws {
+        let snapshot = try optionEntrySnapshot()
+        for spread in [false, true] {
+            for markedField in ["source", "identifier", "evidence", "notes"] {
+                var draft = try optionEntryPrepared(spread: spread)
+                draft.sourceSystem = ""; draft.externalID = ""; draft.evidence = ""
+                for index in draft.legs.indices { draft.legs[index].form.externalID = "" }
+                switch markedField {
+                case "source": draft.sourceSystem = "SYNTHETIC source"
+                case "identifier":
+                    if spread { draft.legs[1].form.externalID = "SYNTHETIC fill" }
+                    else { draft.externalID = "SYNTHETIC fill" }
+                case "evidence": draft.evidence = "SYNTHETIC receipt"
+                default: draft.notes = "SYNTHETIC note"
+                }
+                let original = draft
+                #expect(throws: OptionTradeEntryError.syntheticEvidence) { try draft.events(in: snapshot) }
+                #expect(draft == original)
+            }
+        }
+    }
+
+    @Test func closingAndExpirationStillRequireAllExecutionMetadata() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        for action in [OptionTradeEntryAction.closing, .expiration] {
+            for blank in ["", " \t\n"] {
+                for field in ["source", "identifier", "evidence"] {
+                    var draft = try optionEntryFinish(lot, action: action, id: "finish-42")
+                    switch field {
+                    case "source": draft.sourceSystem = blank
+                    case "identifier": draft.externalID = blank
+                    default: draft.evidence = blank
+                    }
+                    let original = draft
+                    #expect(throws: OptionTradeEntryError.missingExecution) { try draft.events(in: snapshot) }
+                    #expect(draft == original)
+                }
+            }
+        }
     }
 
     @Test func repeatedFreshDraftsDeduplicateAndChangedContentConflictsInExistingStore() async throws {

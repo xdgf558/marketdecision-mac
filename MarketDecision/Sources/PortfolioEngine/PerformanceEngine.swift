@@ -216,9 +216,13 @@ private struct PerformanceContext {
                 managementCost: lot.managementCostRemaining, marketValue: nil, unrealizedPnL: nil, price: nil, priceKind: .missing,
                 sessionClose: session?.closesAt, quoteAt: nil, sourceIDs: [], reason: reason)
         }
+        if case .option(let contract) = lot.instrument, contract.isLocalManualStandard {
+            return missing("本地手工合约未核实官方条款与时刻，不能用于持仓估值")
+        }
         guard let session = day.sessions.first(where: { $0.instrumentID == instrument }) else { return missing("缺证券官方会话时点") }
         if case .option(let contract) = lot.instrument {
-            guard session.closesAt >= contract.effectiveFrom, session.closesAt <= contract.tradingEndsAt,
+            guard let effectiveFrom = contract.effectiveFrom, let tradingEndsAt = contract.tradingEndsAt,
+                  session.closesAt >= effectiveFrom, session.closesAt <= tradingEndsAt,
                   contract.effectiveTo.map({ session.closesAt < $0 }) ?? true else {
                 return missing("估值会话超出期权交割版本或最后交易时点；需处理真实调整/结算事件", session: session)
             }

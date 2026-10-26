@@ -33,6 +33,10 @@ public enum OptionProviderComparisonEngine {
     public static func calculate(_ input: OptionProviderComparisonInput) throws -> OptionProviderComparisonReport {
         try Task.checkCancellation()
         let local = try OptionLabEngine.replay(input.localReport)
+        // The v1 comparison binds provider observations to local quote-Mid IV.
+        // A planned/recorded fill is not a same-basis market observation, even
+        // when optional quote sides happen to accompany the single-price report.
+        guard !local.usesEnteredPrices else { throw OptionProviderComparisonError.incompatibleReport }
         guard input.createdAt.timeIntervalSince1970.isFinite, input.createdAt >= local.input.createdAt,
               clean(input.localFeedID), input.observations.count <= 2 else { throw OptionProviderComparisonError.invalidInput }
         if let evidence = local.input.chainEvidence, input.localFeedID != evidence.capture.feedID {
@@ -87,7 +91,7 @@ public enum OptionProviderComparisonEngine {
         let (parameters, model) = try definitions()
         let synthetic = input.observations.contains { $0.source.origin == .synthetic }
             || legs.contains { $0.source.origin == .synthetic } || local.input.underlying.source.origin == .synthetic
-            || local.input.expiry.source.origin == .synthetic || local.input.capital.origin == .synthetic
+            || local.input.expiry.source.origin == .synthetic || local.input.capital?.origin == .synthetic
             || local.input.pricing?.source.origin == .synthetic || local.input.risk?.source.origin == .synthetic
             || local.input.chainEvidence?.capture.synthetic == true
         return .init(schemaVersion: schemaVersion, input: input, model: model, parameters: parameters,

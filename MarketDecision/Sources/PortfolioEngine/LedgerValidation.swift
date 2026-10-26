@@ -30,24 +30,39 @@ enum LedgerValidation {
             case .equity:
                 guard (trade.effect == .open && trade.side == .buy) || (trade.effect == .close && trade.side == .sell) else { throw LedgerError.unsupportedSettlement }
             case .option(let version):
-                guard at >= version.effectiveFrom, version.effectiveTo.map({ at < $0 }) ?? true, at <= version.tradingEndsAt,
-                      trade.effect != .open || trade.strategy != nil else { throw LedgerError.invalidContract }
+                guard trade.effect != .open || trade.strategy != nil else { throw LedgerError.invalidContract }
+                if version.isLocalManualStandard {
+                    guard version.allowsLocalManualTrade(at: at) else { throw LedgerError.invalidContract }
+                } else {
+                    guard let effectiveFrom = version.effectiveFrom, let tradingEndsAt = version.tradingEndsAt,
+                          at >= effectiveFrom, version.effectiveTo.map({ at < $0 }) ?? true,
+                          at <= tradingEndsAt else { throw LedgerError.invalidContract }
+                }
             }
         case .optionSettlement(let s):
             try s.contract.validate(); try ledgerPositiveQuantity(s.quantity, integral: true); try nonnegative(s.fee)
             try selections(s.optionSelections); try selections(s.equitySelections); try evidence(s.evidence)
-            guard at >= s.contract.effectiveFrom, s.contract.effectiveTo.map({ at < $0 }) ?? true,
-                  s.acquiredLotIDs.values.allSatisfy(ledgerText), Set(s.acquiredLotIDs.values).count == s.acquiredLotIDs.count else {
+            guard s.acquiredLotIDs.values.allSatisfy(ledgerText),
+                  Set(s.acquiredLotIDs.values).count == s.acquiredLotIDs.count else {
                 throw LedgerError.invalidContract
             }
-            if s.action == .expiration {
-                guard at >= s.contract.exerciseDeadline, s.equitySelections.isEmpty, s.acquiredLotIDs.isEmpty else { throw LedgerError.invalidContract }
+            if s.contract.isLocalManualStandard {
+                // A recorded zero settlement is a user-reported event. No
+                // official exercise deadline or delivery schedule is inferred.
+                guard s.action == .expiration, s.contract.allowsLocalManualExpiration(at: at),
+                      s.equitySelections.isEmpty, s.acquiredLotIDs.isEmpty else { throw LedgerError.invalidContract }
             } else {
-                guard (s.action == .assignment && s.side == .short) || (s.action == .exercise && s.side == .long),
-                      at <= s.contract.exerciseDeadline else { throw LedgerError.invalidContract }
-                if s.contract.exerciseStyle == .european {
-                    var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/New_York")!
-                    guard calendar.isDate(at, inSameDayAs: s.contract.exerciseDeadline) else { throw LedgerError.invalidContract }
+                guard let effectiveFrom = s.contract.effectiveFrom, let exerciseDeadline = s.contract.exerciseDeadline,
+                      at >= effectiveFrom, s.contract.effectiveTo.map({ at < $0 }) ?? true else { throw LedgerError.invalidContract }
+                if s.action == .expiration {
+                    guard at >= exerciseDeadline, s.equitySelections.isEmpty, s.acquiredLotIDs.isEmpty else { throw LedgerError.invalidContract }
+                } else {
+                    guard (s.action == .assignment && s.side == .short) || (s.action == .exercise && s.side == .long),
+                          at <= exerciseDeadline else { throw LedgerError.invalidContract }
+                    if s.contract.exerciseStyle == .european {
+                        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: "America/New_York")!
+                        guard calendar.isDate(at, inSameDayAs: exerciseDeadline) else { throw LedgerError.invalidContract }
+                    }
                 }
             }
         case .split(let s):
@@ -85,16 +100,20 @@ enum LedgerValidation {
             if case .equity = t.instrument, t.side != .long { throw LedgerError.unsupportedSettlement }
             if case .option(let option) = t.instrument {
                 guard t.strategy != nil else { throw LedgerError.invalidStrategy }
-                guard at >= option.effectiveFrom, option.effectiveTo.map({ at < $0 }) ?? true,
-                      at < option.exerciseDeadline else { throw LedgerError.invalidContract }
+                guard !option.isLocalManualStandard, let effectiveFrom = option.effectiveFrom,
+                      let exerciseDeadline = option.exerciseDeadline,
+                      at >= effectiveFrom, option.effectiveTo.map({ at < $0 }) ?? true,
+                      at < exerciseDeadline else { throw LedgerError.invalidContract }
             }
         case .transferOut(let t):
             try t.instrument.validate(); try quantity(t.quantity, for: t.instrument)
             try selections(t.selections); try nonnegative(t.eventMarketValue); try evidence(t.evidence)
         case .contractAdjustment(let a):
             try a.previous.validate(); try a.replacement.validate(); try evidence(a.evidence, a.confirmedBy)
-            guard a.previous.identity != a.replacement.identity, a.contractQuantityRatio.amount > 0,
-                  at >= a.replacement.effectiveFrom, a.replacement.effectiveTo.map({ at < $0 }) ?? true else { throw LedgerError.invalidCorporateAction }
+            guard !a.previous.isLocalManualStandard, !a.replacement.isLocalManualStandard,
+                  let effectiveFrom = a.replacement.effectiveFrom,
+                  a.previous.identity != a.replacement.identity, a.contractQuantityRatio.amount > 0,
+                  at >= effectiveFrom, a.replacement.effectiveTo.map({ at < $0 }) ?? true else { throw LedgerError.invalidCorporateAction }
         case .reversal(let reversal):
             guard ledgerText(reversal.originalEventID), ledgerText(reversal.reason) else { throw LedgerError.invalidReversal }
         }

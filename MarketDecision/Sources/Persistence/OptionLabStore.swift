@@ -147,7 +147,7 @@ public actor OptionLabStore: OptionLabStorage {
         let primarySynthetic: Bool = input.underlying.source.origin == .synthetic
             || input.shortLeg.source.origin == .synthetic
         let contractSynthetic: Bool = input.longLeg?.source.origin == .synthetic
-            || input.expiry.source.origin == .synthetic || input.capital.origin == .synthetic
+            || input.expiry.source.origin == .synthetic || input.capital?.origin == .synthetic
         let pricingSynthetic: Bool = input.pricing?.source.origin == .synthetic
         let riskSynthetic: Bool = input.risk?.containsSyntheticInput == true
         let scenarioSynthetic: Bool = input.scenario?.source.origin == .synthetic
@@ -211,7 +211,7 @@ public actor OptionLabStore: OptionLabStorage {
         return value
     }
     private static func validateBasis(_ basis: OptionLabLedgerBasis?, input: OptionLabInput) throws {
-        if input.capital.origin == .ledger {
+        if input.capital?.origin == .ledger {
             guard let basis, basis.underlying.symbol == input.underlying.symbol,
                   basis.underlying.kind.rawValue == input.underlying.asset.rawValue,
                   try OptionLabLedgerBridge.replay(basis).capital == input.capital else {

@@ -85,7 +85,7 @@ struct OptionLabWorkspaceTests {
         let first = try draft.build(), second = try draft.build()
         #expect(first.id != second.id)
         #expect(first.underlying.source.origin == .synthetic && first.shortLeg.source.origin == .synthetic)
-        #expect(first.capital.origin == .synthetic && first.expiry.source.origin == .synthetic)
+        #expect(first.capital?.origin == .synthetic && first.expiry.source.origin == .synthetic)
         #expect(try OptionLabEngine.calculate(first).researchOnly)
         #expect(OptionLabInputDraft().origin == .manual)
     }

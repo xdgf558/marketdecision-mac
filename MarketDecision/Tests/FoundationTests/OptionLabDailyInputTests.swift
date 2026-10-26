@@ -12,6 +12,7 @@ struct OptionLabDailyInputTests {
 
     private func numericDraft() -> OptionLabInputDraft {
         var value = OptionLabInputDraft()
+        value.usesEnteredPrices = false // Existing two-sided quotation regression fixture.
         value.symbol = "DEMO"; value.underlyingBid = "100"; value.underlyingAsk = "100.02"
         value.shortLeg.strike = "100"; value.shortLeg.bid = "2"; value.shortLeg.ask = "2.2"
         value.shortLeg.bidSize = "10"; value.shortLeg.askSize = "12"; value.shortLeg.tick = "0.01"
@@ -77,7 +78,8 @@ struct OptionLabDailyInputTests {
         #expect(value.shortLeg.tick.isEmpty && value.shortLeg.bidSize.isEmpty && value.shortLeg.askSize.isEmpty)
         #expect(value.cashBeforeTrade.isEmpty && value.committedCash.isEmpty && value.availableShares.isEmpty && value.committedShares.isEmpty)
         #expect(value.underlyingBid.isEmpty && value.shortLeg.bid.isEmpty && value.scenarioPrices.isEmpty)
-        #expect(value.dailyInputIssues.contains { $0.contains("tick") })
+        #expect(!value.dailyInputIssues.contains { $0.contains("tick") })
+        #expect(value.dailyInputIssues.contains { $0.contains("成交价") })
         #expect(value.dailyInputIssues.contains { $0.contains("资金") })
     }
 
@@ -123,7 +125,8 @@ struct OptionLabDailyInputTests {
         let before = value
         let checklist = try value.prepareDaily()
         #expect(value == before && !checklist.isEmpty)
-        #expect(checklist.groups.contains { $0.section == .shortLeg && $0.issues.contains { $0.id == "shortLeg.tick" } })
+        #expect(checklist.groups.contains { $0.section == .shortLeg && $0.issues.contains { $0.id == "shortLeg.trade" } })
+        #expect(!checklist.groups.flatMap(\.issues).contains { $0.id == "shortLeg.tick" || $0.id == "shortLeg.sizes" })
         #expect(checklist.groups.contains { $0.section == .capital })
         #expect(!checklist.groups.contains { [.longLeg, .pricing, .risk, .scenario].contains($0.section) })
 
@@ -249,5 +252,108 @@ struct OptionLabDailyInputTests {
         #expect(ids.contains("pricing.assumptions") && ids.contains("risk.earnings") && ids.contains("risk.dividend") && ids.contains("scenario.axes"))
         #expect(value.dailyInputIssues == checklist.groups.flatMap { $0.issues.map(\.message) })
         #expect(value.pricing.rate.isEmpty && value.pricing.dividendYield.isEmpty && value.scenario.spotShocks.isEmpty)
+    }
+
+    private func enteredPriceDraft() throws -> OptionLabInputDraft {
+        var value = OptionLabInputDraft()
+        value.symbol = "DEMO"; value.underlyingPrice = "100"; value.shortLeg.strike = "100"
+        value.shortLeg.enteredPrice = "2.1"
+        value.cashBeforeTrade = "100000"; value.committedCash = "0"
+        value.availableShares = "0"; value.committedShares = "0"; value.capitalReference = "explicit manual balance"
+        try apply(&value); try value.useChartPricesFromEnteredInputs()
+        return value
+    }
+
+    @Test func dailySinglePricesCalculateAndReplayWithoutInventingBidAskDepthOrTick() throws {
+        let draft = try enteredPriceDraft()
+        #expect(draft.usesEnteredPrices && draft.dailyInputChecklist().isEmpty)
+        let input = try draft.build(createdAt: quote.addingTimeInterval(1))
+        #expect(input.usesEnteredPrices && input.chainEvidence == nil)
+        #expect(input.underlying.enteredPrice == (try Money("100")))
+        #expect(input.shortLeg.enteredPrice == (try Money("2.1")))
+        #expect(input.underlying.bid == nil && input.underlying.ask == nil)
+        #expect(input.shortLeg.bid == nil && input.shortLeg.ask == nil)
+        #expect(input.shortLeg.bidSize == nil && input.shortLeg.askSize == nil && input.shortLeg.tick == nil)
+        let report = try OptionLabEngine.calculate(input)
+        #expect(report.usesEnteredPrices && report.selectedOutcome.pricing == .entered)
+        #expect(report.selectedOutcome.grossCredit == (try Money("210")))
+        #expect(report.selectedOutcome.netCreditTotal == (try Money("209.35")))
+        #expect(report.selectedOutcome.maxLoss == (try Money("9790.65")))
+        let decoded = try JSONDecoder().decode(OptionLabReport.self, from: JSONEncoder().encode(report))
+        #expect(try OptionLabEngine.replay(decoded) == report)
+        let copy = OptionLabInputDraft(input: decoded.input)
+        #expect(copy.usesEnteredPrices && copy.underlyingPrice == "100" && copy.shortLeg.enteredPrice == "2.1")
+        #expect(copy.shortLeg.bid.isEmpty && copy.shortLeg.askSize.isEmpty && copy.shortLeg.tick.isEmpty)
+    }
+
+    @Test(arguments: ["underlying", "premium"])
+    func singlePriceModeNeverFallsBackToAdvancedQuotesForMissingEnteredPrice(_ field: String) throws {
+        var draft = try enteredPriceDraft()
+        draft.underlyingBid = "99"; draft.underlyingAsk = "101"
+        draft.shortLeg.bid = "2"; draft.shortLeg.ask = "2.2"
+        if field == "underlying" { draft.underlyingPrice = "" }
+        else { draft.shortLeg.enteredPrice = "" }
+        #expect(!draft.dailyInputChecklist().isEmpty)
+        #expect(throws: (any Error).self) { try draft.build(createdAt: quote.addingTimeInterval(1)) }
+    }
+
+    @Test(arguments: ["underlyingBid", "legAsk", "bidSize", "invalidTick"])
+    func partialOrMalformedAdvancedQuotesAreNotSilentlyDropped(_ field: String) throws {
+        var draft = try enteredPriceDraft()
+        switch field {
+        case "underlyingBid": draft.underlyingBid = "99"
+        case "legAsk": draft.shortLeg.ask = "2.2"
+        case "bidSize": draft.shortLeg.bidSize = "5"
+        default: draft.shortLeg.tick = "not-a-number"
+        }
+        #expect(!draft.dailyInputChecklist().isEmpty)
+        #expect(throws: (any Error).self) { try draft.build(createdAt: quote.addingTimeInterval(1)) }
+    }
+
+    @Test func optionalAdvancedQuotesDoNotReplaceEnteredCalculationPrices() throws {
+        var draft = try enteredPriceDraft()
+        let original = try OptionLabEngine.calculate(draft.build(createdAt: quote.addingTimeInterval(1)))
+        draft.underlyingBid = "98"; draft.underlyingAsk = "102"
+        draft.shortLeg.bid = "1"; draft.shortLeg.ask = "4"
+        // Paired quotes are enough for a spread comparison; unknown depth/tick remain absent.
+        #expect(draft.dailyInputChecklist().isEmpty)
+        let supplemented = try draft.build(createdAt: quote.addingTimeInterval(1))
+        let report = try OptionLabEngine.calculate(supplemented)
+        #expect(report.selectedOutcome == original.selectedOutcome)
+        #expect(report.underlyingMid == original.underlyingMid)
+        #expect(supplemented.shortLeg.bid == (try Money("1")) && supplemented.shortLeg.ask == (try Money("4")))
+        #expect(supplemented.shortLeg.bidSize == nil && supplemented.shortLeg.tick == nil)
+        #expect(try OptionLabEngine.replay(report) == report)
+    }
+
+    @Test func olderCopiedQuoteModeRetainsComparisonAndRequiresItsOriginalEvidence() throws {
+        var original = numericDraft()
+        try apply(&original); try original.useChartPricesFromEnteredInputs()
+        let input = try original.build(createdAt: quote.addingTimeInterval(1))
+        var copy = OptionLabInputDraft(input: input)
+        #expect(!copy.usesEnteredPrices && copy.underlyingPrice.isEmpty && copy.shortLeg.enteredPrice.isEmpty)
+        let report = try OptionLabEngine.calculate(input)
+        #expect(!report.usesEnteredPrices && report.schemaVersion == "option-lab-report.v1")
+        #expect(report.mid.pricing == .mid && report.conservative.pricing == .conservative)
+        #expect(try OptionLabEngine.replay(report) == report)
+        copy.shortLeg.askSize = ""
+        #expect(throws: OptionLabDraftError.missingField) { try copy.build(createdAt: quote.addingTimeInterval(1)) }
+    }
+
+    @Test func singlePriceSpreadRequiresItsOwnProtectionPremiumAndNeverChangesChainMode() throws {
+        var draft = try enteredPriceDraft()
+        draft.strategy = .putCreditSpread; draft.longLeg.strike = "95"
+        try apply(&draft); try draft.useChartPricesFromEnteredInputs()
+        #expect(throws: (any Error).self) { try draft.build(createdAt: quote.addingTimeInterval(1)) }
+        draft.longLeg.enteredPrice = "0.8"
+        let report = try OptionLabEngine.calculate(draft.build(createdAt: quote.addingTimeInterval(1)))
+        #expect(report.selectedOutcome.grossCredit == (try Money("130")))
+        #expect(report.selectedOutcome.fills.count == 2)
+        #expect(report.input.longLeg?.bid == nil && report.input.longLeg?.ask == nil)
+        var chain = try OptionChainLabBridge.draft(OptionChainDemo.capture(), strategy: .cashSecuredPut,
+            shortID: "DEMO261113P00100000", longID: nil, quantity: 1)
+        #expect(!chain.usesEnteredPrices && chain.chainEvidence != nil)
+        chain.usesEnteredPrices = true
+        #expect(throws: OptionLabDraftError.missingField) { try chain.build() }
     }
 }

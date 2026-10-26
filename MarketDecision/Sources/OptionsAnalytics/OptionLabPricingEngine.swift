@@ -4,37 +4,38 @@ import CoreDomain
 /// An additive model; deterministic v1 definitions and their stored fingerprints
 /// remain unchanged. No external model, solver settings or provider IV are accepted.
 public enum OptionLabPricingEngine {
-    public static func definitions() throws -> (ParameterSet, ModelDefinition) {
-        let p = ParameterSet(id: "options.bsm-risk-neutral.parameters", version: "PARAMETERS_V1.pricing.v1",
-            revisionID: UUID(uuidString: "C035AA00-2026-4016-8000-000000000003")!,
+    public static func definitions(enteredPrices: Bool = false) throws -> (ParameterSet, ModelDefinition) {
+        let p = ParameterSet(id: "options.bsm-risk-neutral.parameters", version: enteredPrices ? "PARAMETERS_V1.pricing.entered.v1" : "PARAMETERS_V1.pricing.v1",
+            revisionID: UUID(uuidString: enteredPrices ? "C035AA00-2026-4025-8000-000000000003" : "C035AA00-2026-4016-8000-000000000003")!,
             values: ["ivLower": .decimal(try Money("0.000001")), "ivInitialUpper": .decimal(try Money("5")),
                 "ivExpandedUpper1": .decimal(try Money("10")), "ivExpandedUpper2": .decimal(try Money("20")),
                 "ivMaximumIterations": .integer(200), "ivAbsoluteTolerance": .decimal(try Money("0.00000001")),
                 "ivRelativeTolerance": .decimal(try Money("0.000000000001")),
                 "ivPriceAbsoluteTolerance": .decimal(try Money("0.00000001")), "ivPriceRelativeTolerance": .decimal(try Money("0.00000001")),
                 "ivMinimumSeconds": .integer(60), "greeksThetaDayBasis": .integer(365), "vegaRhoPoint": .decimal(try Money("0.01")),
-                "distributionVersion": .text("option-risk-neutral.CVAR_DRAFT_2.v1"), "confidence95": .decimal(try Money("0.95")),
+                "distributionVersion": .text(enteredPrices ? "option-risk-neutral.CVAR_DRAFT_2.entered.v1" : "option-risk-neutral.CVAR_DRAFT_2.v1"), "confidence95": .decimal(try Money("0.95")),
                 "alpha": .decimal(try Money("0.05")), "absoluteUSD": .decimal(try Money("0.00000001")),
                 "relative": .decimal(try Money("0.00000001")), "maximumSubintervals": .integer(10000),
                 "expectedPnL": .text("undiscounted analytic truncated lognormal moments"),
                 "tailIntegration": .text("adaptive GK15 over adverse quantile mass, constant atoms exact partial mass"),
-                "probability": .text("strict P(PnL>0)"), "sigmaSource": .text("local IV of sourceContractID; canonical short, long sensitivity separate"),
+                "probability": .text("strict P(PnL>0)"), "sigmaSource": .text(enteredPrices ? "local IV of explicitly entered premium; canonical short, long sensitivity separate; not a market Mid" : "local IV of sourceContractID; canonical short, long sensitivity separate"),
                 "PV": .text("not requested/nil"), "manualSigma": .text("independent theoretical price only; never an IV fallback"),
                 "nearExpiryDTE": .integer(7), "deepITMFactor": .decimal(try Money("1.10")),
                 "longDTE": .integer(60), "highRate": .decimal(try Money("0.05"))],
             state: .approved, dispositionReference: "PARAMETERS_V1:CALC-023,024,025,028;SPEC-6.5.4")
-        let m = ModelDefinition(id: "options.bsm-risk-neutral", version: OptionLabPricingInput.currentMethodVersion,
-            revisionID: UUID(uuidString: "C035AA00-2026-4016-8000-000000000004")!,
+        let method = enteredPrices ? "options.bsm-risk-neutral.entered.v1" : OptionLabPricingInput.currentMethodVersion
+        let m = ModelDefinition(id: "options.bsm-risk-neutral", version: method,
+            revisionID: UUID(uuidString: enteredPrices ? "C035AA00-2026-4025-8000-000000000004" : "C035AA00-2026-4016-8000-000000000004")!,
             owner: "OptionsAnalytics", purpose: "European continuous-dividend reference; offline risk-neutral research only",
             inputs: [.init(name: "frozenScenarioAndPricingAssumptions", unit: "USD+ratio", role: .required)],
             outputs: [.init(name: "theoreticalUnitPrice", unit: "USD"), .init(name: "localIVAndGreeks", unit: "explicit-unit-greeks"),
                       .init(name: "riskNeutralTerminalDistribution", unit: "USD+probability")],
-            formula: "BSM erfc CDF; Brent-Dekker Mid inversion; per-share local-IV Greeks; signed units aggregation plus covered stock Delta; strict positive terminal PnL lognormal integration; signed lower-tail mean",
-            formulaVersion: OptionLabPricingInput.currentMethodVersion,
+            formula: enteredPrices ? "BSM erfc CDF; Brent-Dekker explicitly entered premium inversion; entered underlying price; per-share local-IV Greeks; signed units aggregation plus covered stock Delta; strict positive terminal PnL lognormal integration; signed lower-tail mean" : "BSM erfc CDF; Brent-Dekker Mid inversion; per-share local-IV Greeks; signed units aggregation plus covered stock Delta; strict positive terminal PnL lognormal integration; signed lower-tail mean",
+            formulaVersion: method,
             implementationReference: "OptionsAnalytics/OptionBSM+OptionLabDistribution.v1", defaultParameters: p.reference,
             numericPolicyVersion: OptionBSM.numericPolicyVersion, state: .approved,
-            dispositionReference: "PARAMETERS_V1", knownLimitations: warnings,
-            testFixtures: ["OptionPricingTests", "OptionRiskNeutralTests"], introducedAt: try MillisecondInstant(iso8601: "2026-10-16T00:00:00.000Z"))
+            dispositionReference: "PARAMETERS_V1", knownLimitations: notices(enteredPrices: enteredPrices),
+            testFixtures: ["OptionPricingTests", "OptionRiskNeutralTests"], introducedAt: try MillisecondInstant(iso8601: enteredPrices ? "2026-10-25T00:00:00.000Z" : "2026-10-16T00:00:00.000Z"))
         try p.validate(); try m.validate(); return (p,m)
     }
 
@@ -58,7 +59,9 @@ public enum OptionLabPricingEngine {
         var legs: [OptionLabLegPricing] = []
         for (leg, direction) in sources {
             try Task.checkCancellation()
-            let k = try number(leg.strike), quoteMid = try leg.bid.adding(leg.ask).multiplied(by: "0.5")
+            // quoteMid is the legacy storage field. The parent/model version and
+            // enteredPrice freeze its explicit single-price basis for new reports.
+            let k = try number(leg.strike), quoteMid = try leg.valuationPrice()
             let market = OptionBSMMarket(right: leg.right, spot: s, strike: k, rate: r, dividendYield: q, timeYears: t)
             let intrinsic = max(0, leg.right == .call ? s - k : k - s)
             let theory = seconds < 60 ? OptionBSMResult(state: .tooNearExpiry, price: nil, greeks: nil, itmProbability: nil) : OptionBSM.evaluate(market, volatility: manualSigma)
@@ -108,11 +111,11 @@ public enum OptionLabPricingEngine {
             catch { return (nil, .numericFailure) }
         }
         let primary = try distribution(legs.first), sensitivity = try distribution(legs.count > 1 ? legs[1] : nil)
-        let (parameters, model) = try definitions()
+        let (parameters, model) = try definitions(enteredPrices: input.usesEnteredPrices)
         return .init(input: assumptions, model: model, parameters: parameters, numericPolicyVersion: OptionBSM.numericPolicyVersion,
             timeYears: t, legs: legs, aggregateGreeks: aggregate, aggregateState: aggregateState,
             distribution: primary.0, distributionState: primary.1, longLegSensitivity: sensitivity.0, longLegSensitivityState: sensitivity.1,
-            warnings: warnings)
+            warnings: notices(enteredPrices: input.usesEnteredPrices))
     }
     private static func number(_ value: Money) throws -> Double {
         guard let result = Double(value.decimalString), result.isFinite else { throw OptionLabError.invalidPricingInput }
@@ -128,4 +131,11 @@ public enum OptionLabPricingEngine {
         "Greeks 聚合仅限本次策略，按方向×乘数×张数；备兑股票仅加入持股 Delta，不代表全账户风险。",
         "没有真实世界 Bootstrap、供应商准入、历史校准或下单能力。"
     ]
+    private static func notices(enteredPrices: Bool) -> [String] {
+        guard enteredPrices else { return warnings }
+        var result = warnings
+        result[1] = "理论价仅使用明确的手工 σ；本地 IV／Greeks 按所填标的价格与权利金反解，属于手动价格假设，不是市场 Mid；失败不回退手工或供应商值。"
+        result.append("所填成交价不证明实际成交；补充 Bid／Ask 不替换单价计算口径，也不生成保守成交比较。")
+        return result
+    }
 }

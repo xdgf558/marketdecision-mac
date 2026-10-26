@@ -11,7 +11,7 @@ public enum OptionLabRiskDemo {
             enteredAt: input.createdAt)
         let legs = [input.shortLeg] + (input.longLeg.map { [$0] } ?? [])
         let evidence = try legs.map { leg -> OptionLabLiquidityInput in
-            let mid = try leg.bid.adding(leg.ask).multiplied(by: "0.5")
+            let mid = try leg.valuationPrice()
             let lowValue = try mid.multiplied(by: "0.5"), highValue = try mid.multiplied(by: "1.5")
             func neighbor(_ suffix: String, factor: String, price: Money) throws -> OptionLabLeg {
                 .init(contractID: "SYNTHETIC-NEIGHBOR-" + leg.contractID + suffix,

@@ -27,6 +27,8 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
     public private(set) var displayedRequest: PerformanceRequest?
     public private(set) var savedReport: SavedPerformanceReport?
     public private(set) var saved: [PerformanceSummary] = []
+    /// Read-only booked results, distinct from a frozen NAV/return report.
+    public private(set) var periodReports: [InvestmentPeriodReport] = []
     public private(set) var origin: PortfolioDisplayOrigin = .none
     public private(set) var isBusy = false
     public private(set) var message: String?
@@ -40,6 +42,7 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
     private var transferRefreshedGeneration: UUID?
     private var generation = UUID()
     private var operation: UUID?
+    private var periodReportOperation: UUID?
     private var committing: UUID?
     private var visible = true
 
@@ -101,6 +104,64 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
         if let previous { await storage.cancel(planID: previous.id) }
         guard owns(token) else { return }
         await reloadReports(token)
+    }
+
+    /// One explicit action captures the account, both revisions and the same
+    /// cutoff for all three rolling periods. No market evidence is fabricated,
+    /// and no preview, approval or persistent performance record is created.
+    public func generatePeriodReports(accountID: String, baseline: PortfolioPreparationBaseline,
+                                      at cutoff: Date) async {
+        guard canPrepare, selectedAccountID == accountID,
+              baseline == preparationBaseline, !Task.isCancelled else { return }
+        let token = begin()
+        periodReportOperation = token; periodReports = []
+        defer {
+            if periodReportOperation == token { periodReportOperation = nil }
+            finish(token)
+        }
+        do {
+            let initial = try await storage.context()
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard initial.ledger.revision == baseline.ledgerRevision,
+                  initial.revision == baseline.performanceRevision else { throw PerformanceStoreError.stalePlan }
+            let worker = Task.detached(priority: .userInitiated) {
+                try InvestmentPeriodReport.generate(ledger: initial.ledger, accountID: accountID, at: cutoff)
+            }
+            let values = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: { worker.cancel() }
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            let current = try await storage.context()
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard current.ledger.revision == initial.ledger.revision,
+                  current.revision == initial.revision else { throw PerformanceStoreError.stalePlan }
+            context = current; periodReports = values
+            message = "已按当前账户生成近一年、近一季度和近一月的已入账收益；不含持仓浮盈或收益率。"
+        } catch is CancellationError {
+            // Cancellation and leaving the page have no late UI result.
+        } catch {
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            periodReports = []; hasError = true
+            if (error as? PerformanceStoreError) == .stalePlan {
+                context = nil
+                message = "生成期间账本或报告版本已变化，未发布旧结果。请刷新后重新生成。"
+            } else {
+                message = "区间报告未能完成账本核对，未用零或示例金额替代。请刷新后重试。"
+            }
+        }
+    }
+
+    public func cancelPeriodReports() {
+        periodReports = []
+        guard let token = periodReportOperation else { return }
+        periodReportOperation = nil
+        guard operation == token else { return }
+        generation = UUID(); operation = nil
+        isBusy = committing != nil || transferOperation != nil
+    }
+
+    private func ownsPeriodReport(_ token: UUID, accountID: String, epoch: UUID) -> Bool {
+        owns(token) && periodReportOperation == token && selectedAccountID == accountID && inputEpoch == epoch && !Task.isCancelled
     }
 
     public func prepare(_ request: PerformanceRequest, rawRequest: Data? = nil) async {
@@ -262,7 +323,10 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
         else { isBusy = false; if visible { await load() } }
     }
     private func takePreview() -> PerformancePreview? { let old = preview; preview = nil; return old }
-    private func clearReport() { report = nil; displayedRequest = nil; savedReport = nil; origin = .none }
+    private func clearReport() {
+        report = nil; displayedRequest = nil; savedReport = nil; origin = .none
+        periodReports = []; periodReportOperation = nil
+    }
     /// Refresh only the known ledger-status label. The original input and
     /// validated report remain immutable; failed or absent reads supply no guess.
     private func updateCurrentLedgerLabel(_ isCurrent: Bool) {
@@ -275,6 +339,7 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
         do {
             let value = try await storage.context()
             guard owns(token), !Task.isCancelled else { return }
+            if let previous = periodReports.first, previous.ledgerRevision != value.ledger.revision { periodReports = [] }
             context = value
             if let frozen = savedReport { updateCurrentLedgerLabel(frozen.ledgerRevision == value.ledger.revision) }
             if !value.ledger.accounts.contains(where: { $0.id == selectedAccountID }) { selectedAccountID = value.ledger.accounts.first?.id }

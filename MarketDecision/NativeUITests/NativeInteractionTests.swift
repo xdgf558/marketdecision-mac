@@ -132,9 +132,19 @@ import XCTest
             button.click()
         }
     }
-    /// The reference layout puts navigation and save actions below the editor.
-    /// Keep targets inside the option page's viewport, including expanded inputs.
+    /// Input-page actions stay in a fixed footer; other controls remain inside
+    /// the scroll viewport, including expanded inputs and page navigation.
     private func revealOptionControl(_ element: XCUIElement) {
+        let fixedActionIDs: Set<String> = [
+            "optionTradeRecord", "optionLabSave", "optionLabNew", "optionLabCalculate"
+        ]
+        if element.exists, fixedActionIDs.contains(element.identifier) {
+            let viewport = mainWindow.frame.insetBy(dx: 0, dy: 8)
+            XCTAssertTrue(!element.frame.isEmpty && !viewport.isEmpty
+                && viewport.contains(element.frame) && element.isHittable,
+                "Fixed option action must be visible without scrolling: \(element.debugDescription)")
+            return
+        }
         let scroll = mainWindow.scrollViews.firstMatch
         XCTAssertTrue(scroll.waitForExistence(timeout: 5))
         func fullyVisible() -> Bool {
@@ -157,6 +167,8 @@ import XCTest
         waitText("未保存", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
         XCTAssertFalse(mainWindow.staticTexts["optionLabReportStatus"].exists)
         waitEnabled(mainWindow.buttons["optionLabSave"])
+        XCTAssertTrue(mainWindow.buttons["optionLabSave"].label.contains("不入账"))
+        XCTAssertTrue(mainWindow.buttons["optionTradeRecord"].label.contains("确认开仓"))
     }
     private func saveOptionDraftFromInput() {
         researchTab("输入")
@@ -164,6 +176,7 @@ import XCTest
         XCTAssertTrue(button.waitForExistence(timeout: 5)); waitEnabled(button)
         revealOptionControl(button); button.click(); waitEnabled(button, false)
         waitText("已保存", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
+        waitText("未入账", in: mainWindow.descendants(matching: .any)["optionReferenceSaveStatus"].firstMatch)
     }
     private func waitText(_ text: String, in element: XCUIElement) {
         // AppKit static text may expose its contents as AXValue, not AXTitle.
@@ -550,6 +563,21 @@ import XCTest
         XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
         // Preview only: no clipboard mutation, browser launch, file panel or post.
         sharing.buttons["完成"].click(); waitAbsent(sharing)
+        // The daily button now creates all rolling periods directly, without
+        // replacing the independently frozen valuation/share report above.
+        let quick = mainWindow.buttons["investmentGenerateReport"]
+        XCTAssertTrue(quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
+        let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
+        XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
+        for period in ["year", "quarter", "month"] {
+            waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
+        }
+        XCTAssertFalse(quickSheet.textViews["investmentCalendarDays"].exists)
+        XCTAssertFalse(quickSheet.textFields["investmentStartDay"].exists)
+        XCTAssertFalse(quickSheet.buttons["investmentConfirmSave"].exists)
+        quickSheet.buttons["investmentQuickReportsClose"].click(); waitAbsent(quickSheet)
+        waitEnabled(share)
+        waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
         openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]
         XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
@@ -841,13 +869,71 @@ import XCTest
         waitText("日摘要 1", in: mainWindow.staticTexts["optionArchiveCounts"])
         // No exporter/importer or actual file panel is invoked by this test.
     }
+    private func checkCompactSinglePriceInputs() {
+        let spot = mainWindow.textFields["optionReferenceUnderlyingPrice"]
+        let premium = mainWindow.textFields["optionReferencePremiumPrice"]
+        XCTAssertTrue(spot.waitForExistence(timeout: 10)); waitEnabled(spot)
+        XCTAssertTrue(premium.waitForExistence(timeout: 5)); waitEnabled(premium)
+        let quoteIDs = ["optionReferenceUnderlyingBid", "optionReferenceUnderlyingAsk",
+                        "optionReferencePremiumBid", "optionReferencePremiumAsk"]
+        for id in quoteIDs { XCTAssertFalse(mainWindow.textFields[id].exists) }
+        revealOptionControl(spot); spot.click(); spot.typeText("45")
+        revealOptionControl(premium); premium.click(); premium.typeText("0.7")
+        let detailedResearch = mainWindow.buttons["optionUseDetailedResearch"]
+        expandDisclosure("optionLabQuoteDetails", revealing: detailedResearch)
+        XCTAssertTrue(detailedResearch.waitForExistence(timeout: 5)); waitEnabled(detailedResearch)
+        // Default contract-only entry requires neither Bid/Ask nor account evidence.
+        for id in quoteIDs { XCTAssertFalse(mainWindow.textFields[id].exists) }
+        revealOptionControl(detailedResearch); detailedResearch.click()
+        for id in quoteIDs {
+            let field = mainWindow.textFields[id]
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            // AppKit may expose an empty text field's prompt as its value.
+            let value = field.value as? String ?? ""
+            let prompt = id.hasSuffix("Bid") ? "Bid" : "Ask"
+            XCTAssertTrue(value.isEmpty || value == prompt) // No manufactured Bid=Ask.
+        }
+        let details = mainWindow.buttons["optionLabQuoteDetails"]
+        revealOptionControl(details); details.click()
+        for id in quoteIDs { waitAbsent(mainWindow.textFields[id]) }
+        XCTAssertEqual(spot.value as? String, "45")
+        XCTAssertEqual(premium.value as? String, "0.7")
+    }
+
+    private func checkCompactExpiryFirstPresentation() {
+        // Regression for the first popup capturing nil baseline/session state.
+        // Exercise the blank manual form before loading any synthetic template.
+        let expiry = mainWindow.buttons["optionReferenceExpiry"]
+        XCTAssertTrue(expiry.waitForExistence(timeout: 10)); waitEnabled(expiry)
+        revealOptionControl(expiry); expiry.click()
+        let apply = app.buttons["optionReferenceExpiryApply"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 5)); waitEnabled(apply)
+        apply.click(); waitAbsent(apply)
+        let appliedLabel = expiry.label
+        XCTAssertFalse(appliedLabel.contains("选择到期时间"))
+        XCTAssertFalse(appliedLabel.contains("时间格式待修正"))
+        XCTAssertTrue(appliedLabel.contains("到期时间，美东时间，"))
+
+        // Reopening must initialize from the applied value; cancel cannot clear it.
+        expiry.click(); XCTAssertTrue(apply.waitForExistence(timeout: 5)); waitEnabled(apply)
+        let cancel = app.buttons["optionReferenceExpiryCancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5)); cancel.click(); waitAbsent(apply)
+        XCTAssertEqual(expiry.label, appliedLabel)
+        expiry.click(); XCTAssertTrue(apply.waitForExistence(timeout: 5)); waitEnabled(apply)
+        apply.click(); waitAbsent(apply)
+        XCTAssertEqual(expiry.label, appliedLabel)
+    }
+
     func testOptionsLabExplicitCalculationFrozenReplayAndDraftInvalidation() {
         configure(); launchMainWindow()
         let navigation = app.buttons["pageOptions"]
         XCTAssertTrue(navigation.waitForExistence(timeout: 15))
         app.typeKey("2", modifierFlags: .command)
         let template = mainWindow.buttons["optionLabTemplate"]
-        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template); template.click()
+        XCTAssertTrue(template.waitForExistence(timeout: 15)); waitEnabled(template)
+        checkCompactSinglePriceInputs()
+        checkCompactExpiryFirstPresentation()
+        revealOptionControl(template); template.click()
         let saveSnapshot = mainWindow.buttons["optionLabSave"]
         XCTAssertFalse(saveSnapshot.isEnabled)
         let calculate = mainWindow.buttons["optionLabCalculate"]

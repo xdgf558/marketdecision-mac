@@ -166,6 +166,70 @@ import CoreDomain
         #expect(output.modelReference != old.1.reference && output.modelReference != prior.1.reference)
     }
 
+    @Test func enteredPricesReplayAllAnalyticsWithoutInventingQuoteLiquidity() throws {
+        let base = try OptionLabDemo.input(strategy: .cashSecuredPut)
+        let source = base.shortLeg.source
+        func input(withQuotes: Bool) throws -> OptionLabInput {
+            let leg = try OptionLabLeg(contractID: base.shortLeg.contractID, symbol: base.shortLeg.symbol,
+                right: base.shortLeg.right, strike: base.shortLeg.strike, quantity: base.shortLeg.quantity,
+                expirationDate: base.shortLeg.expirationDate,
+                bid: withQuotes ? Money("2") : nil, ask: withQuotes ? Money("2.4") : nil,
+                bidSize: withQuotes ? 10 : nil, askSize: withQuotes ? 10 : nil,
+                tick: withQuotes ? Money("0.01") : nil, quotedAt: base.asOf, receivedAt: base.asOf,
+                source: source, enteredPrice: Money("3.25"))
+            // Deliberately different quote mids must not replace the two entered prices.
+            let underlying = try OptionLabUnderlying(symbol: base.underlying.symbol,
+                bid: withQuotes ? Money("109") : nil, ask: withQuotes ? Money("111") : nil,
+                quotedAt: base.asOf, receivedAt: base.asOf, source: source, enteredPrice: Money("100"))
+            return try .init(id: base.id, createdAt: base.createdAt, asOf: base.asOf, strategy: base.strategy,
+                shortLeg: leg, longLeg: nil, underlying: underlying, capital: base.capital,
+                policy: base.policy, expiry: base.expiry, scenarioPrices: base.scenarioPrices,
+                pricing: .init(rate: Money("0.03"), dividendYield: Money("0"), volatility: Money("0.25"), source: source),
+                risk: .init(source: source),
+                scenario: .init(source: source, spotShocks: [Money("0")], volatilityPointShocks: [Money("0")]))
+        }
+        let report = try OptionLabEngine.calculate(input(withQuotes: false))
+        #expect(report.usesEnteredPrices && report.selectedOutcome.pricing == .entered)
+        #expect(report.mid == report.conservative)
+        #expect(report.underlyingMid == (try Money("100")))
+        #expect(report.selectedOutcome.fills.first?.unitPrice == (try Money("3.25")))
+        let pricing = try #require(report.pricing), leg = try #require(pricing.legs.first)
+        #expect(leg.quoteMid == (try Money("3.25")))
+        #expect(leg.impliedVolatility.state == .available && leg.canonicalGreeks != nil)
+        let expectedIV = try OptionIVSolver.solve(.init(right: .put, spot: 100, strike: 100,
+            rate: 0.03, dividendYield: 0,
+            timeYears: base.expiry.settlementAt.timeIntervalSince(base.asOf) / 31_536_000), price: 3.25)
+        #expect(leg.impliedVolatility == expectedIV)
+        #expect(pricing.distributionState == .available)
+        let liquidity = try #require(report.risk?.liquidity)
+        #expect(liquidity.score == nil && liquidity.grade == .dataInsufficient)
+        let assessed = try #require(liquidity.legs.first)
+        for factor in [OptionLabLiquidityFactor.relativeSpread, .quoteAge, .size] {
+            let component = try #require(assessed.components.first { $0.factor == factor })
+            #expect(component.value == nil && component.score == nil && component.grade == .dataInsufficient)
+        }
+        let scenario = try #require(report.scenario?.cells.first)
+        #expect(scenario.state == .available && scenario.mid?.pricing == .entered)
+        #expect(scenario.mid == scenario.conservative)
+
+        let quoted = try OptionLabEngine.calculate(input(withQuotes: true))
+        #expect(quoted.selectedOutcome == report.selectedOutcome)
+        #expect(quoted.pricing == pricing && quoted.scenario == report.scenario)
+        let quotedLeg = try #require(quoted.risk?.liquidity.legs.first)
+        #expect(quotedLeg.components.first(where: { $0.factor == .relativeSpread })?.score == 30)
+        #expect(quotedLeg.components.first(where: { $0.factor == .size })?.score == 100)
+        #expect(quotedLeg.components.first(where: { $0.factor == .quoteAge })?.score == 100)
+        #expect(quoted.risk?.liquidity.score == nil) // OI/volume/neighbors remain missing.
+        for original in [report, quoted] {
+            let bytes = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(OptionLabReport.self, from: bytes)
+            #expect(try OptionLabEngine.replay(decoded) == original)
+        }
+        #expect(pricing.modelReference != (try OptionLabPricingEngine.definitions().1.reference))
+        #expect(report.risk?.modelReference != (try OptionLabRiskEngine.definitions().1.reference))
+        #expect(report.scenario?.modelReference != (try OptionLabScenarioEngine.definitions().1.reference))
+    }
+
     @Test func cancelledMatrixDoesNotPublishPartialGrid() async throws {
         let parent = try context(.cashSecuredPut)
         let task = Task {
