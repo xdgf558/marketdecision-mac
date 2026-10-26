@@ -2184,6 +2184,20 @@
     {"selector": "FoundationTests.InvestmentCalculationDraftTests/everyRangeOrCalendarEditRevokesFlowConfirmationInTheDraft()", "source": "Tests/FoundationTests/InvestmentCalculationDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.InvestmentDailyFlowTests/recordReuseSupplementFreezeReopenAndSharePreserveBothReportVersions()", "source": "Tests/FoundationTests/InvestmentDailyFlowTests.swift", "execution": "required"},
     {"selector": "FoundationTests.InvestmentDailyFlowTests/savedMissingPriceAndUnconfirmedFlowReportsCannotBypassShareGate()", "source": "Tests/FoundationTests/InvestmentDailyFlowTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.InvestmentDailyFlowTests/syntheticExampleCannotSeedAnOrdinaryDraftOrModifyItsSavedHistory()", "source": "Tests/FoundationTests/InvestmentDailyFlowTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.InvestmentDailyFlowTests/syntheticExampleCannotSeedAnOrdinaryDraftOrModifyItsSavedHistory()", "source": "Tests/FoundationTests/InvestmentDailyFlowTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/dailySinglePricesCalculateAndReplayWithoutInventingBidAskDepthOrTick()", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/singlePriceModeNeverFallsBackToAdvancedQuotesForMissingEnteredPrice(_:)", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/partialOrMalformedAdvancedQuotesAreNotSilentlyDropped(_:)", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/optionalAdvancedQuotesDoNotReplaceEnteredCalculationPrices()", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/olderCopiedQuoteModeRetainsComparisonAndRequiresItsOriginalEvidence()", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabDailyInputTests/singlePriceSpreadRequiresItsOwnProtectionPremiumAndNeverChangesChainMode()", "source": "Tests/FoundationTests/OptionLabDailyInputTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionLabStorageTests/enteredPricesSurviveDatabaseReopenAndArchiveRestoreWithoutInventedQuotes()", "source": "Tests/FoundationTests/OptionLabStorageTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionScenarioTests/enteredPricesReplayAllAnalyticsWithoutInventingQuoteLiquidity()", "source": "Tests/FoundationTests/OptionScenarioTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/enteredPricesComputeAndReplayWithoutManufacturingQuoteEvidence(_:)", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/optionalQuoteEvidenceDoesNotReplaceEnteredFillOrApplyTickRounding()", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/enteredPriceModeRejectsMixedBasisAndMalformedAdvancedEvidence(_:)", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/existingFrozenQuoteReportsRetainOriginalModelsAndExactReplay()", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/enteredPriceReportsCannotMasqueradeAsQuoteBasedPortfolioOrProviderEvidence()", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionsAnalyticsTests/enteredPriceAttributionKeepsEconomicRoundsButDoesNotBackfillHistoricalMidDelta()", "source": "Tests/FoundationTests/OptionsAnalyticsTests.swift", "execution": "required"}
   ]
 }
