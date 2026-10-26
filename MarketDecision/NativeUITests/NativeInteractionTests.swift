@@ -187,7 +187,7 @@ import XCTest
     }
     /// Input-page actions stay in a fixed footer; other controls remain inside
     /// their scroll viewport, including expanded inputs and page navigation.
-    private func revealOptionControl(_ element: XCUIElement) {
+    private func revealOptionControl(_ element: XCUIElement, viewportInset: CGFloat = 8) {
         let window = mainWindow.frame
         let fixedActionIDs: Set<String> = [
             "optionTradeRecord", "optionLabSave", "optionLabNew", "optionLabCalculate"
@@ -203,7 +203,7 @@ import XCTest
         // Resolving containment walks the AX tree. Do it once per action, not
         // repeatedly for each frame/visibility comparison in the scroll loop.
         let scroll = controlScrollView(element)
-        let viewport = (scroll?.frame.intersection(window) ?? window).insetBy(dx: 0, dy: 8)
+        let viewport = (scroll?.frame.intersection(window) ?? window).insetBy(dx: 0, dy: viewportInset)
         guard !viewport.isEmpty else { XCTFail("Control has no visible viewport"); return }
         var previousFrame: CGRect?
         var unchangedFrames = 0
@@ -399,6 +399,7 @@ import XCTest
         waitAbsent(back)
     }
     private func waitAbsent(_ element: XCUIElement) {
+        if !element.exists { return }
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 10), .completed)
     }
@@ -490,7 +491,10 @@ import XCTest
             // CSV also contains a TextEditor scroll view. Scroll the action's
             // own container and require its whole frame inside the viewport;
             // AXHittable alone can accept a button clipped at the bottom edge.
-            revealOptionControl(element)
+            // Ledger content has 4 pt vertical padding: on the CI viewport the
+            // last button ends at y=678 inside the scroll view's y=682 bottom.
+            // An extra 8 pt test inset falsely excludes that fully visible row.
+            revealOptionControl(element, viewportInset: 0)
         }
         researchTab("CSV 导入")
         let template = mainWindow.buttons["填入合成模板"]
@@ -556,16 +560,16 @@ import XCTest
     func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
         configure(); launchMainWindow(); selectPage("pageInvestments")
         let share = mainWindow.buttons["investmentShare"]
-        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share, false)
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share, false)
         let record = mainWindow.buttons["investmentRecord"]
         waitEnabled(record); record.click()
         let accountName = mainWindow.textFields["ledgerAccountName"]
-        XCTAssertTrue(accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
+        XCTAssertTrue(accountName.exists || accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
         accountName.click(); accountName.typeText("Daily workflow test")
         let create = mainWindow.buttons["ledgerCreateAccount"]
         waitEnabled(create); create.click()
         let next = mainWindow.buttons["ledgerContinueCalculation"]
-        XCTAssertTrue(next.waitForExistence(timeout: 5)); waitEnabled(next); next.click()
+        XCTAssertTrue(next.exists || next.waitForExistence(timeout: 5)); waitEnabled(next); next.click()
 
         // An explicitly empty local account avoids market observations entirely.
         // The input is test-only user-confirmed material, never a relabelled demo.
@@ -583,7 +587,7 @@ import XCTest
             XCTAssertTrue(visible(), "Investment input must be wholly visible before native interaction: \(element.debugDescription)")
         }
         func fill(_ element: XCUIElement, _ value: String) {
-            XCTAssertTrue(element.waitForExistence(timeout: 5)); reach(element)
+            XCTAssertTrue(element.exists || element.waitForExistence(timeout: 5)); reach(element)
             if element.elementType == .textView {
                 // The date field and editors share the same production blocked
                 // gate. Check that gate, then prove native TextEditor editing by
@@ -595,6 +599,7 @@ import XCTest
             }
             element.click(); element.typeKey("a", modifierFlags: .command); element.typeText(value)
             let updated = NSPredicate { _, _ in (element.value as? String) == value }
+            if updated.evaluate(with: element) { return }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: updated, object: element)], timeout: 5),
                            .completed, "Investment input did not accept the entered value: \(element.debugDescription)")
         }
@@ -607,19 +612,19 @@ import XCTest
             fill(mainWindow.textViews[prefix + "Text"], "Explicit test-only " + reference)
         }
         let calendar = mainWindow.textViews["investmentCalendarDays"]
-        XCTAssertTrue(calendar.waitForExistence(timeout: 10))
+        XCTAssertTrue(calendar.exists || calendar.waitForExistence(timeout: 10))
         fill(calendar, "2026-01-05\n2026-01-06")
         evidence("investmentCalendar", reference: "calendar-v1")
         let inspect = mainWindow.buttons["investmentInspectMissing"]
         reach(inspect); inspect.click()
         for day in ["2026-01-05", "2026-01-06"] {
             let instant = mainWindow.textFields["investmentValuation-" + day]
-            XCTAssertTrue(instant.waitForExistence(timeout: 5))
+            XCTAssertTrue(instant.exists || instant.waitForExistence(timeout: 5))
             XCTAssertEqual(instant.value as? String, "") // No current date or close time is invented.
             fill(instant, day + "T21:00:00Z")
         }
         let flows = mainWindow.checkBoxes["investmentConfirmFlows"]
-        XCTAssertTrue(flows.waitForExistence(timeout: 5)); XCTAssertEqual(flows.value as? String, "0")
+        XCTAssertTrue(flows.exists || flows.waitForExistence(timeout: 5)); XCTAssertEqual(flows.value as? String, "0")
         evidence("investmentFlow", reference: "empty-account-flows-v1")
         reach(flows); flows.click()
         let calculate = mainWindow.buttons["investmentCalculate"]
@@ -628,7 +633,7 @@ import XCTest
         let review = mainWindow.buttons["investmentSaveCalculation"]
         reach(review); waitEnabled(review); review.click()
         let confirmation = mainWindow.sheets.containing(.button, identifier: "investmentConfirmSave").firstMatch
-        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.exists || confirmation.waitForExistence(timeout: 5))
         let commit = confirmation.buttons["investmentConfirmSave"]
         XCTAssertFalse(commit.isEnabled)
         app.typeKey(.return, modifierFlags: [])
@@ -636,14 +641,14 @@ import XCTest
         let text = confirmation.textFields["investmentSaveConfirmation"]
         text.click(); text.typeText("保存"); waitEnabled(commit); commit.click()
         waitAbsent(confirmation)
-        XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share)
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share)
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
         // Full valuation cards retain their own saved/replayed-report gate.
         let frozenShare = mainWindow.buttons["investmentShareFrozen"]
         expandDisclosure("investmentPeriodReport", revealing: frozenShare)
         reach(frozenShare); waitEnabled(frozenShare); frozenShare.click()
         let sharing = mainWindow.sheets.containing(.button, identifier: "investmentShareCopy").firstMatch
-        XCTAssertTrue(sharing.waitForExistence(timeout: 5))
+        XCTAssertTrue(sharing.exists || sharing.waitForExistence(timeout: 5))
         XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
         XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
         XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
@@ -656,12 +661,13 @@ import XCTest
         let quick = mainWindow.buttons["investmentGenerateReport"]
         func waitReportAction(_ element: XCUIElement) {
             let ready = NSPredicate { _, _ in element.exists && element.isEnabled && element.isHittable }
+            if ready.evaluate(with: element) { return }
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: element)], timeout: 10),
                            .completed, element.debugDescription)
         }
-        XCTAssertTrue(quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
+        XCTAssertTrue(quick.exists || quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
         let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
-        XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
+        XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5))
         for period in ["year", "quarter", "month"] {
             waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
             XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
@@ -675,7 +681,7 @@ import XCTest
         // Use unique controls and the card itself, not an ancestor's sheet match.
         let quickPreview = mainWindow.descendants(matching: .any)["investmentSharePreview"].firstMatch
         let shareClose = mainWindow.buttons["investmentShareClose"]
-        XCTAssertTrue(quickPreview.waitForExistence(timeout: 5))
+        XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 5))
         XCTAssertTrue(quickPreview.staticTexts["已入账收益"].exists)
         waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareReturn"].exists)
@@ -710,7 +716,7 @@ import XCTest
         // finding three values does not prove the sheet can still be dismissed.
         for _ in 0..<3 {
             waitReportAction(quick); quick.click()
-            XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
+            XCTAssertTrue(quickSheet.exists || quickSheet.waitForExistence(timeout: 5))
             for period in ["year", "quarter", "month"] {
                 waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
                 XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
@@ -726,7 +732,7 @@ import XCTest
         // transient busy edge. Reopening starts a fresh presentation each time.
         for _ in 0..<3 {
             waitReportAction(share); share.click()
-            XCTAssertTrue(quickPreview.waitForExistence(timeout: 10))
+            XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 10))
             waitAbsent(mainWindow.descendants(matching: .any)["investmentQuickReportsLoading"].firstMatch)
             XCTAssertFalse(mainWindow.staticTexts["investmentQuickReportsError"].exists)
             waitText("近1个月", in: quickPreview.staticTexts["investmentShareCardPeriod"])
@@ -737,7 +743,7 @@ import XCTest
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
         openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]
-        XCTAssertTrue(reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
+        XCTAssertTrue(reuse.exists || reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
         XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))
         XCTAssertEqual(mainWindow.textFields["investmentStartDay"].value as? String, "2026-01-05")
         XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
