@@ -3,8 +3,204 @@ import Testing
 import CoreDomain
 import DataContracts
 import OptionsAnalytics
+import PortfolioEngine
 
 @Suite struct OptionsAnalyticsTests {
+    @Test(arguments: OptionLabStrategy.allCases.map(\.rawValue))
+    func contractParametersCalculatePayoffWithUnknownFundingAndNoProbability(_ raw: String) throws {
+        let strategy = try #require(OptionLabStrategy(rawValue: raw))
+        let input = try contractLabInput(strategy: strategy)
+        let report = try OptionLabEngine.calculate(input), result = report.selectedOutcome
+        let spread = input.longLeg != nil
+        #expect(report.schemaVersion == OptionLabEngine.contractSchemaVersion)
+        #expect(report.modelReference == (try OptionLabEngine.contractDefinitions().1.reference))
+        #expect(report.modelReference != (try OptionLabEngine.enteredDefinitions().1.reference))
+        #expect(input.capital == nil && input.isContractOnly && report.usesEnteredPrices)
+        #expect(result.funding == .notAssessed && !result.canFund && result.availableCashAfterFees == nil)
+        #expect(report.pricing == nil && report.risk == nil && report.scenario == nil)
+        #expect(result.grossCredit == (try Money("250")))
+        #expect(result.netCreditTotal == (try Money(spread ? "248.7" : "249.35")))
+        #expect(result.maxProfit == (try Money(spread ? "248.7" : "249.35")))
+        #expect(result.maxLoss == (try Money(spread ? "751.3" : "9750.65")))
+        #expect(result.capitalRequired == (try Money(strategy == .coveredCall ? "0" : spread ? "751.3" : "9750.65")))
+        let expected: [String]
+        switch strategy {
+        case .cashSecuredPut, .coveredCall: expected = ["-9750.65", "-750.65", "249.35", "249.35", "249.35"]
+        case .putCreditSpread: expected = ["-751.3", "-751.3", "248.7", "248.7", "248.7"]
+        case .callCreditSpread: expected = ["248.7", "248.7", "248.7", "-751.3", "-751.3"]
+        }
+        for (spot, pnl) in zip(input.scenarioPrices, expected) {
+            #expect(result.points.first { $0.spot == spot }?.pnl == (try Money(pnl)))
+        }
+        let frozen = try JSONDecoder().decode(OptionLabReport.self, from: JSONEncoder().encode(report))
+        #expect(frozen.input.capital == nil && frozen.input.entryMode == .contractParameters)
+        #expect(try OptionLabEngine.replay(frozen) == report)
+    }
+
+    @Test func missingCapitalRequiresExplicitContractModeAndDoesNotRelaxLegacyChecks() throws {
+        let basic = try contractLabInput()
+        let unmarked = try labJSONInput(basic) { $0.removeValue(forKey: "entryMode") }
+        #expect(throws: OptionLabError.invalidCapital) { try OptionLabEngine.calculate(unmarked) }
+        let legacy = try OptionLabDemo.input()
+        let missing = try labJSONInput(legacy) { $0.removeValue(forKey: "capital") }
+        #expect(throws: OptionLabError.invalidCapital) { try OptionLabEngine.calculate(missing) }
+        let original = try OptionLabEngine.calculate(legacy)
+        #expect(original.input.entryMode == nil && original.schemaVersion == OptionLabEngine.schemaVersion)
+        #expect(original.modelReference == (try OptionLabEngine.definitions().1.reference))
+        #expect(original.selectedOutcome.funding == .sufficient)
+        #expect(try OptionLabEngine.replay(original) == original)
+    }
+
+    @Test(arguments: ["synthetic-source", "bid-ask", "depth", "tick", "pricing", "recorded-time"])
+    func contractModeCannotAcquireQuoteEvidenceOrImplicitPricing(_ change: String) throws {
+        let input = try contractLabInput()
+        let altered = try labJSONInput(input) { object in
+            var leg = try #require(object["shortLeg"] as? [String: Any])
+            switch change {
+            case "synthetic-source":
+                var source = try #require(leg["source"] as? [String: Any]); source["origin"] = "synthetic"; leg["source"] = source
+            case "bid-ask": leg["bid"] = "2"; leg["ask"] = "3"
+            case "depth": leg["bidSize"] = 1; leg["askSize"] = 1
+            case "tick": leg["tick"] = "0.01"
+            case "pricing":
+                let assumptions = try OptionLabPricingInput(rate: Money("0"), dividendYield: Money("0"), volatility: Money("0.2"), source: input.shortLeg.source)
+                object["pricing"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(assumptions))
+            default: leg["quotedAt"] = input.asOf.addingTimeInterval(-1).timeIntervalSinceReferenceDate
+            }
+            object["shortLeg"] = leg
+        }
+        let expected: OptionLabError = change == "recorded-time" ? .invalidTime : .incompatibleReport
+        #expect(throws: expected) { try OptionLabEngine.calculate(altered) }
+    }
+
+    @Test(arguments: OptionLabStrategy.allCases.map(\.rawValue))
+    func enteredPricesComputeAndReplayWithoutManufacturingQuoteEvidence(_ raw: String) throws {
+        let strategy = try #require(OptionLabStrategy(rawValue: raw))
+        let base = try OptionLabDemo.input(strategy: strategy)
+        let spread = base.longLeg != nil
+        let short = try enteredLabLeg(base.shortLeg, price: spread ? "3.5" : "2.5")
+        let long = try base.longLeg.map { try enteredLabLeg($0, price: "1", strike: strategy == .putCreditSpread ? "90" : "110") }
+        let underlying = try OptionLabUnderlying(symbol: base.underlying.symbol, quotedAt: base.asOf,
+            receivedAt: base.asOf, source: base.underlying.source, enteredPrice: Money("100"))
+        let policy = try OptionLabPolicy(lambda: Money("0.25"), openingFeePerContract: Money(spread ? "0.75" : "1.5"),
+            ticketFee: Money("0"), terminalFeeTotal: Money("0"))
+        let input = labInput(base, short: short, long: .some(long), underlying: underlying, policy: policy,
+            scenarios: try ["0", "90", "100", "110", "130"].map(Money.init))
+        let report = try OptionLabEngine.calculate(input)
+        #expect(report.schemaVersion == OptionLabEngine.enteredSchemaVersion && report.usesEnteredPrices)
+        #expect(report.mid == report.conservative && report.selectedOutcome.pricing == .entered)
+        #expect(report.selectedOutcome.grossCredit == (try Money("250")))
+        #expect(report.selectedOutcome.totalFees == (try Money("1.5")))
+        #expect(report.selectedOutcome.netCreditTotal == (try Money("248.5")))
+        let expected: [String]
+        switch strategy {
+        case .cashSecuredPut, .coveredCall: expected = ["-9751.5", "-751.5", "248.5", "248.5", "248.5"]
+        case .putCreditSpread: expected = ["-751.5", "-751.5", "248.5", "248.5", "248.5"]
+        case .callCreditSpread: expected = ["248.5", "248.5", "248.5", "-751.5", "-751.5"]
+        }
+        for (spot, pnl) in zip(input.scenarioPrices, expected) {
+            #expect(report.selectedOutcome.points.first { $0.spot == spot }?.pnl == (try Money(pnl)))
+        }
+        let decoded = try JSONDecoder().decode(OptionLabReport.self, from: JSONEncoder().encode(report))
+        #expect(decoded.input.underlying.bid == nil && decoded.input.underlying.ask == nil)
+        #expect(decoded.input.shortLeg.bid == nil && decoded.input.shortLeg.ask == nil)
+        #expect(decoded.input.shortLeg.bidSize == nil && decoded.input.shortLeg.askSize == nil && decoded.input.shortLeg.tick == nil)
+        #expect(try OptionLabEngine.replay(decoded) == report)
+        #expect(try report.modelReference != OptionLabEngine.definitions().1.reference)
+    }
+
+    @Test func optionalQuoteEvidenceDoesNotReplaceEnteredFillOrApplyTickRounding() throws {
+        let base = try OptionLabDemo.input()
+        let short = try enteredLabLeg(base.shortLeg, price: "2.123456")
+        let underlying = try OptionLabUnderlying(symbol: base.underlying.symbol, quotedAt: base.asOf,
+            receivedAt: base.asOf, source: base.underlying.source, enteredPrice: Money("100"))
+        let plain = labInput(base, short: short, underlying: underlying)
+        let quoted = try labJSONInput(plain) { object in
+            var leg = try #require(object["shortLeg"] as? [String: Any])
+            leg["bid"] = "1"; leg["ask"] = "3"; leg["bidSize"] = 0; leg["askSize"] = 0; leg["tick"] = "1"
+            object["shortLeg"] = leg
+            var spot = try #require(object["underlying"] as? [String: Any])
+            spot["bid"] = "98"; spot["ask"] = "101"; object["underlying"] = spot
+        }
+        let original = try OptionLabEngine.calculate(plain), withEvidence = try OptionLabEngine.calculate(quoted)
+        #expect(original.selectedOutcome == withEvidence.selectedOutcome)
+        #expect(withEvidence.selectedOutcome.fills.first?.unitPrice == (try Money("2.123456")))
+        #expect(withEvidence.underlyingMid == (try Money("100")))
+        #expect(withEvidence.mid == withEvidence.conservative)
+    }
+
+    @Test(arguments: ["legacy-underlying", "legacy-leg", "half-quote", "crossed-quote", "half-depth", "negative-price", "zero-tick"])
+    func enteredPriceModeRejectsMixedBasisAndMalformedAdvancedEvidence(_ change: String) throws {
+        let base = try OptionLabDemo.input()
+        let underlying = try OptionLabUnderlying(symbol: base.underlying.symbol, quotedAt: base.asOf,
+            receivedAt: base.asOf, source: base.underlying.source, enteredPrice: Money("100"))
+        let plain = labInput(base, short: try enteredLabLeg(base.shortLeg, price: "2.5"), underlying: underlying)
+        let altered = try labJSONInput(plain) { object in
+            var leg = try #require(object["shortLeg"] as? [String: Any])
+            switch change {
+            case "legacy-underlying":
+                var spot = try #require(object["underlying"] as? [String: Any]); spot.removeValue(forKey: "enteredPrice")
+                spot["bid"] = "99"; spot["ask"] = "101"; object["underlying"] = spot
+            case "legacy-leg": leg.removeValue(forKey: "enteredPrice"); leg["bid"] = "2"; leg["ask"] = "3"
+            case "half-quote": leg["bid"] = "2"
+            case "crossed-quote": leg["bid"] = "3"; leg["ask"] = "2"
+            case "half-depth": leg["bidSize"] = 1
+            case "negative-price": leg["enteredPrice"] = "-1"
+            default: leg["tick"] = "0"
+            }
+            object["shortLeg"] = leg
+        }
+        let expected: OptionLabError = ["legacy-underlying", "legacy-leg"].contains(change) ? .incompatibleReport
+            : change == "half-depth" ? .insufficientSize : change == "zero-tick" ? .missingTick : .invalidQuote
+        #expect(throws: expected) { try OptionLabEngine.calculate(altered) }
+    }
+
+    @Test func existingFrozenQuoteReportsRetainOriginalModelsAndExactReplay() throws {
+        for name in ["options-legacy-v1", "options-legacy-v2"] {
+            let url = try #require(Bundle.module.url(forResource: name, withExtension: "json"))
+            let report = try JSONDecoder().decode(OptionLabReport.self, from: Data(contentsOf: url))
+            #expect(!report.usesEnteredPrices && report.input.shortLeg.enteredPrice == nil)
+            #expect(report.mid.pricing == .mid && report.conservative.pricing == .conservative)
+            #expect(try report.modelReference == OptionLabEngine.definitions().1.reference)
+            #expect(try OptionLabEngine.replay(report) == report)
+        }
+    }
+
+    @Test func enteredPriceReportsCannotMasqueradeAsQuoteBasedPortfolioOrProviderEvidence() throws {
+        let portfolio = try PortfolioGreeksDemo.input(includeMissing: false)
+        let entered = try OptionLabEngine.calculate(enteredLabInput(portfolio.reports[0].input))
+        let alteredPortfolio = PortfolioGreeksInput(id: portfolio.id, createdAt: portfolio.createdAt, asOf: portfolio.asOf,
+            mode: portfolio.mode, accountID: portfolio.accountID, ledgerRevision: portfolio.ledgerRevision,
+            accounts: portfolio.accounts, events: portfolio.events, reports: [entered] + Array(portfolio.reports.dropFirst()), bindings: portfolio.bindings)
+        #expect(throws: PortfolioGreeksError.incompatibleReport) { try PortfolioGreeksEngine.calculate(alteredPortfolio) }
+
+        let comparison = try OptionProviderComparisonDemo.input()
+        let local = try OptionLabEngine.calculate(enteredLabInput(comparison.localReport.input))
+        let alteredComparison = OptionProviderComparisonInput(id: comparison.id, createdAt: comparison.createdAt,
+            localReport: local, localFeedID: comparison.localFeedID, observations: comparison.observations)
+        #expect(throws: OptionProviderComparisonError.incompatibleReport) { try OptionProviderComparisonEngine.calculate(alteredComparison) }
+    }
+
+    @Test func enteredPriceAttributionKeepsEconomicRoundsButDoesNotBackfillHistoricalMidDelta() throws {
+        let source = try TradeOptionAttributionDemo.input()
+        let old = try TradeOptionAttributionEngine.calculate(source)
+        let observations = try source.observations.map { item in
+            TradeOptionObservation(id: item.id, accountID: item.accountID, openingEventID: item.openingEventID,
+                lotID: item.lotID, instrumentIdentity: item.instrumentIdentity, contractID: item.contractID,
+                feedID: item.feedID, session: item.session, observedAt: item.observedAt, knownAt: item.knownAt,
+                source: item.source, report: try OptionLabEngine.calculate(enteredLabInput(item.report.input)), ivRank: item.ivRank)
+        }
+        let input = TradeOptionAttributionInput(id: source.id, createdAt: source.createdAt, mode: source.mode,
+            performance: source.performance, observations: observations)
+        let current = try TradeOptionAttributionEngine.calculate(input)
+        #expect(current.rows.map(\.round) == old.rows.map(\.round))
+        #expect(current.rows.map(\.ivRank) == old.rows.map(\.ivRank))
+        #expect(current.rows.allSatisfy { $0.delta == nil && $0.impliedVolatility == nil })
+        #expect(current.rows.filter { $0.observationID != nil }.allSatisfy { $0.deltaGap == .missingCanonicalIV })
+        #expect(current.groupedStatistics.filter { $0.axis == .absoluteDelta }.flatMap(\.roundIDs).count == old.rows.count)
+        #expect(try TradeOptionAttributionEngine.replay(current) == current)
+    }
+
     @Test(arguments: OptionLabStrategy.allCases.map(\.rawValue))
     func fourIndependentTerminalPayoffVectors(_ raw: String) throws {
         let strategy = try #require(OptionLabStrategy(rawValue: raw))
@@ -85,7 +281,7 @@ import OptionsAnalytics
         let base = try OptionLabDemo.input()
         let calculated = try OptionLabEngine.calculate(base)
         let exact = calculated.conservative.capitalRequired
-        let capital = labCapital(base.capital, cash: exact)
+        let capital = labCapital(try #require(base.capital), cash: exact)
         let funded = try OptionLabEngine.calculate(labInput(base, capital: capital)).conservative
         #expect(funded.funding == .sufficient)
         #expect(funded.capitalRequired == (try Money("9790.65")))
@@ -95,10 +291,10 @@ import OptionsAnalytics
 
     @Test func existingReservationsCannotBeSpentOrCoveredTwice() throws {
         let base = try OptionLabDemo.input(strategy: .coveredCall)
-        let reserved = labCapital(base.capital, committedShares: try Money("1"))
+        let reserved = labCapital(try #require(base.capital), committedShares: try Money("1"))
         #expect(try OptionLabEngine.calculate(labInput(base, capital: reserved)).conservative.funding == .insufficientShares)
         let put = try OptionLabDemo.input()
-        let reservedCash = labCapital(put.capital, cash: try Money("10000"), committedCash: try Money("300"))
+        let reservedCash = labCapital(try #require(put.capital), cash: try Money("10000"), committedCash: try Money("300"))
         #expect(try OptionLabEngine.calculate(labInput(put, capital: reservedCash)).conservative.funding == .insufficientCash)
     }
 
@@ -227,7 +423,7 @@ import OptionsAnalytics
         }
         let missingLedger = OptionLabCapital(origin: .ledger, reference: "reference", asOf: base.asOf, cashBeforeTrade: try Money("20000"), committedCash: try Money("0"), availableShares: try Money("100"), committedShares: try Money("0"))
         #expect(throws: OptionLabError.invalidCapital) { try OptionLabEngine.calculate(labInput(base, capital: missingLedger)) }
-        let asynchronous = labCapital(base.capital, asOf: base.asOf.addingTimeInterval(-1))
+        let asynchronous = labCapital(try #require(base.capital), asOf: base.asOf.addingTimeInterval(-1))
         #expect(throws: OptionLabError.invalidTime) { try OptionLabEngine.calculate(labInput(base, capital: asynchronous)) }
     }
 
@@ -283,6 +479,43 @@ import OptionsAnalytics
 }
 
 private func labDate(_ text: String) -> Date { ISO8601DateFormatter().date(from: text)! }
+private func contractLabInput(strategy: OptionLabStrategy = .cashSecuredPut) throws -> OptionLabInput {
+    let base = try OptionLabDemo.input(strategy: strategy)
+    let source = OptionLabSource(origin: .manual, reference: "Manual parameter entry; recording instant is not a quote timestamp", enteredAt: base.asOf)
+    func leg(_ original: OptionLabLeg, price: String, strike: String) throws -> OptionLabLeg {
+        try .init(contractID: "LOCAL-" + original.contractID, symbol: "BASIC", right: original.right,
+            strike: Money(strike), quantity: original.quantity, expirationDate: original.expirationDate,
+            quotedAt: base.asOf, receivedAt: base.asOf, source: source, enteredPrice: Money(price))
+    }
+    return try .init(id: base.id, createdAt: base.createdAt, asOf: base.asOf, strategy: strategy,
+        shortLeg: leg(base.shortLeg, price: base.longLeg == nil ? "2.5" : "3.5", strike: "100"),
+        longLeg: base.longLeg.map { try leg($0, price: "1", strike: strategy == .putCreditSpread ? "90" : "110") },
+        underlying: .init(symbol: "BASIC", quotedAt: base.asOf, receivedAt: base.asOf, source: source, enteredPrice: Money("100")),
+        capital: nil, policy: base.policy,
+        expiry: .init(date: base.expiry.date, settlementAt: base.expiry.settlementAt, source: source),
+        scenarioPrices: ["0", "90", "100", "110", "130"].map(Money.init), entryMode: .contractParameters)
+}
+private func enteredLabLeg(_ leg: OptionLabLeg, price: String, strike: String? = nil) throws -> OptionLabLeg {
+    .init(contractID: leg.contractID, symbol: leg.symbol, right: leg.right, strike: try strike.map(Money.init) ?? leg.strike,
+        multiplier: leg.multiplier, exerciseStyle: leg.exerciseStyle, delivery: leg.delivery,
+        specificationVersion: leg.specificationVersion, quantity: leg.quantity, expirationDate: leg.expirationDate,
+        quotedAt: leg.quotedAt, receivedAt: leg.receivedAt, source: leg.source, enteredPrice: try Money(price))
+}
+private func enteredLabInput(_ source: OptionLabInput) throws -> OptionLabInput {
+    let underlying = OptionLabUnderlying(symbol: source.underlying.symbol, asset: source.underlying.asset,
+        quotedAt: source.underlying.quotedAt, receivedAt: source.underlying.receivedAt, source: source.underlying.source,
+        enteredPrice: try source.underlying.valuationPrice())
+    return .init(id: source.id, createdAt: source.createdAt, asOf: source.asOf, strategy: source.strategy,
+        shortLeg: try enteredLabLeg(source.shortLeg, price: source.shortLeg.valuationPrice().decimalString),
+        longLeg: try source.longLeg.map { try enteredLabLeg($0, price: $0.valuationPrice().decimalString) },
+        underlying: underlying, capital: source.capital, policy: source.policy, expiry: source.expiry,
+        scenarioPrices: source.scenarioPrices, pricing: source.pricing, risk: source.risk, scenario: source.scenario)
+}
+private func labJSONInput(_ input: OptionLabInput, change: (inout [String: Any]) throws -> Void) throws -> OptionLabInput {
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(input)) as? [String: Any])
+    try change(&object)
+    return try JSONDecoder().decode(OptionLabInput.self, from: JSONSerialization.data(withJSONObject: object))
+}
 private func labInput(_ b: OptionLabInput, strategy: OptionLabStrategy? = nil, short: OptionLabLeg? = nil, long: OptionLabLeg?? = nil,
                       underlying: OptionLabUnderlying? = nil, capital: OptionLabCapital? = nil, policy: OptionLabPolicy? = nil,
                       expiry: OptionLabExpiry? = nil, scenarios: [Money]? = nil, createdAt: Date? = nil) -> OptionLabInput {

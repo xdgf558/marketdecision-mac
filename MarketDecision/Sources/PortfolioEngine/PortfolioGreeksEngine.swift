@@ -47,6 +47,9 @@ public enum PortfolioGreeksEngine {
         var reports: [UUID: OptionLabReport] = [:]
         for report in input.reports {
             try Task.checkCancellation()
+            // CALC-034 v1 is bound to quote-Mid IV. An entered execution price
+            // is a distinct assumption and cannot silently enter this frozen model.
+            guard !report.usesEnteredPrices else { throw PortfolioGreeksError.incompatibleReport }
             if input.mode == .ledger, try containsSynthetic(report) { throw PortfolioGreeksError.syntheticEvidence }
             do { reports[report.input.id] = try OptionLabEngine.replay(report) }
             catch is CancellationError { throw CancellationError() }
@@ -100,6 +103,7 @@ public enum PortfolioGreeksEngine {
                 expirationDate: expiry, signedQuantity: signed, multiplier: multiplier, reportID: binding?.reportID,
                 contractID: binding?.contractID, underlyingMid: spot, values: values, gap: gap)
         }
+        if case .option(let option) = lot.instrument, option.isLocalManualStandard { return result(.mismatchedContract) }
         guard let binding else { return result(.missingBinding) }
         guard let report = reports[binding.reportID] else { return result(.missingReport) }
         guard report.input.asOf == input.asOf else { return result(.mismatchedAsOf) }
@@ -122,14 +126,16 @@ public enum PortfolioGreeksEngine {
                   let leg = ([report.input.shortLeg] + (report.input.longLeg.map { [$0] } ?? [])).first(where: { $0.contractID == contractID }) else { return result(.missingContract) }
             let occ = leg.contractID.replacingOccurrences(of: " ", with: "")
             let expectedOCC = option.occSymbol.replacingOccurrences(of: " ", with: "")
-            guard occ == expectedOCC, leg.symbol == symbol, leg.expirationDate == expiry,
+            guard let effectiveFrom = option.effectiveFrom, let tradingEndsAt = option.tradingEndsAt,
+                  let settlementAt = option.settlementAt,
+                  occ == expectedOCC, leg.symbol == symbol, leg.expirationDate == expiry,
                   leg.strike == (try occStrike(option.occSymbol)), leg.multiplier == 100,
                   (leg.right == .call ? LedgerOptionRight.call : .put) == option.right,
                   (leg.exerciseStyle == .american ? LedgerExerciseStyle.american : .european) == option.exerciseStyle,
                   leg.delivery == .standardPhysical100Shares, leg.specificationVersion == option.versionID,
-                  report.input.expiry.settlementAt == option.settlementAt,
-                  option.effectiveFrom <= input.asOf, option.effectiveTo.map({ input.asOf < $0 }) ?? true,
-                  option.tradingEndsAt > input.asOf, option.exerciseConsideration == (try leg.strike.multiplied(by: option.quoteMultiplier.decimalString)),
+                  report.input.expiry.settlementAt == settlementAt,
+                  effectiveFrom <= input.asOf, option.effectiveTo.map({ input.asOf < $0 }) ?? true,
+                  tradingEndsAt > input.asOf, option.exerciseConsideration == (try leg.strike.multiplied(by: option.quoteMultiplier.decimalString)),
                   (option.deliverables[0].security.kind == .stock ? OptionLabAsset.stock : .etf) == underlying.asset else { return result(.mismatchedContract) }
             guard validClock(leg.quotedAt, received: leg.receivedAt, asOf: input.asOf), abs(leg.quotedAt.timeIntervalSince(underlying.quotedAt)) <= 5 else { return result(.staleQuote) }
             guard let pricing = report.pricing else { return result(.missingPricing) }

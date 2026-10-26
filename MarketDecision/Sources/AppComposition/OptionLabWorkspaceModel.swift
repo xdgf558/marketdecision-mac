@@ -83,8 +83,8 @@ import Persistence
         let token = begin(); clearReport()
         defer { finish(token) }
         do {
-            guard (input.capital.origin == .ledger && ledgerBasis?.capital == input.capital)
-                    || (input.capital.origin != .ledger && ledgerBasis == nil) else { throw OptionLabError.invalidCapital }
+            guard (input.capital?.origin == .ledger && ledgerBasis?.capital == input.capital)
+                    || (input.capital?.origin != .ledger && ledgerBasis == nil) else { throw OptionLabError.invalidCapital }
             if let ledgerBasis {
                 let verified = try await Task.detached { try OptionLabLedgerBridge.replay(ledgerBasis) }.value
                 guard owns(token), !Task.isCancelled else { return }
@@ -94,7 +94,9 @@ import Persistence
             guard owns(token), !Task.isCancelled else { return }
             guard result.input == input else { throw OptionLabStoreError.corruptedStorage }
             report = result; reportLedgerBasis = ledgerBasis
-            message = "已按这一份完整输入计算，尚未保存。研究损益不代表成交、适当性或可下单额度。"
+            message = input.isContractOnly
+                ? "已按合约参数计算，尚未保存。账户资金与持股未核对，测算不代表已记账或下单额度。"
+                : "已按这一份完整输入计算，尚未保存。研究损益不代表成交、适当性或可下单额度。"
         } catch {
             guard owns(token), !Task.isCancelled else { return }
             hasError = true

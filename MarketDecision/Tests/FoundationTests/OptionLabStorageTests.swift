@@ -96,6 +96,52 @@ struct OptionLabStorageTests {
         #expect(summaries[0].underlyingSymbol == "SYN")
     }
 
+    @Test func enteredPricesSurviveDatabaseReopenAndArchiveRestoreWithoutInventedQuotes() async throws {
+        let path = olPath(), restoredPath = olPath()
+        defer {
+            try? FileManager.default.removeItem(at: path)
+            try? FileManager.default.removeItem(at: restoredPath)
+        }
+        let database = try DatabaseStore(path: path.path, purpose: .optionsLab)
+        let store = try OptionLabStore(database: database), base = try olInput()
+        let input = try OptionLabInput(id: base.id, createdAt: base.createdAt, asOf: base.asOf,
+            strategy: base.strategy,
+            shortLeg: .init(contractID: base.shortLeg.contractID, symbol: base.shortLeg.symbol,
+                right: base.shortLeg.right, strike: base.shortLeg.strike, quantity: base.shortLeg.quantity,
+                expirationDate: base.shortLeg.expirationDate, bid: nil, ask: nil, bidSize: nil, askSize: nil,
+                tick: nil, quotedAt: base.asOf, receivedAt: base.asOf, source: base.shortLeg.source,
+                enteredPrice: Money("3.25")), longLeg: nil,
+            underlying: .init(symbol: base.underlying.symbol, bid: nil, ask: nil,
+                quotedAt: base.asOf, receivedAt: base.asOf, source: base.underlying.source,
+                enteredPrice: Money("101.25")), capital: base.capital, policy: base.policy,
+            expiry: base.expiry, scenarioPrices: base.scenarioPrices)
+        let saved = try await store.save(id: input.id, input: input, expectedRevision: store.revision())
+        let reopened = try OptionLabStore(path: path.path)
+        #expect(try await reopened.open(id: input.id) == saved)
+        #expect(saved.report.schemaVersion == OptionLabEngine.enteredSchemaVersion)
+        #expect(saved.report.modelReference == (try OptionLabEngine.enteredDefinitions().1.reference))
+
+        let original = try database.read(OptionLabArchiveState.capture)
+        let archive = try await store.makeArchiveStore().exportArchive()
+        let target = try DatabaseStore(path: restoredPath.path, purpose: .optionsLab)
+        let transfer = try OptionLabArchiveStore(database: target)
+        let plan = try await transfer.prepareRestore(archive, mode: .replace, expectedRevision: transfer.status().revision)
+        #expect(try await transfer.commit(.init(plan: plan)).counts.experiments == 1)
+        #expect(try target.read(OptionLabArchiveState.capture).tables == original.tables)
+        let restored = try OptionLabStore(path: restoredPath.path)
+        let opened = try await restored.open(id: input.id)
+        #expect(opened == saved && opened.replayMatched)
+        #expect(opened.report.input == input)
+        #expect(opened.report.input.shortLeg.enteredPrice == (try Money("3.25")))
+        #expect(opened.report.input.underlying.enteredPrice == (try Money("101.25")))
+        #expect(opened.report.input.shortLeg.bid == nil && opened.report.input.shortLeg.ask == nil)
+        #expect(opened.report.input.shortLeg.bidSize == nil && opened.report.input.shortLeg.askSize == nil)
+        #expect(opened.report.input.shortLeg.tick == nil)
+        #expect(opened.report.input.underlying.bid == nil && opened.report.input.underlying.ask == nil)
+        #expect(opened.report.selectedOutcome.pricing == .entered)
+        #expect(try OptionLabEngine.replay(opened.report) == saved.report)
+    }
+
     @Test func identicalFreezeIsIdempotentButDifferentInputCannotOverwriteAnID() async throws {
         let database = try olDatabase(), store = try OptionLabStore(database: database), input = try olInput()
         let first = try await store.save(id: input.id, input: input, expectedRevision: store.revision())
@@ -106,6 +152,48 @@ struct OptionLabStorageTests {
         await #expect(throws: OptionLabStoreError.conflictingSnapshot) { try await store.save(id: input.id, input: changed, expectedRevision: current) }
         await #expect(throws: OptionLabStoreError.conflictingSnapshot) { try await store.save(id: UUID(), input: input, expectedRevision: current) }
         #expect(try olRows(database) == rows)
+    }
+
+    @Test func contractOnlySnapshotPreservesUnknownCapitalAcrossReopenAndArchiveRestore() async throws {
+        let path = olPath(), restoredPath = olPath()
+        defer {
+            try? FileManager.default.removeItem(at: path)
+            try? FileManager.default.removeItem(at: restoredPath)
+        }
+        let database = try DatabaseStore(path: path.path, purpose: .optionsLab)
+        let store = try OptionLabStore(database: database), base = try olInput()
+        let source = OptionLabSource(origin: .manual, reference: "MANUAL parameter recording; no market quote timestamps", enteredAt: base.asOf)
+        let input = try OptionLabInput(id: base.id, createdAt: base.createdAt, asOf: base.asOf,
+            strategy: base.strategy,
+            shortLeg: .init(contractID: "LOCAL-SHORT", symbol: "BASIC", right: .put, strike: Money("100"),
+                quantity: 1, expirationDate: base.expiry.date, quotedAt: base.asOf, receivedAt: base.asOf,
+                source: source, enteredPrice: Money("3.25")), longLeg: nil,
+            underlying: .init(symbol: "BASIC", quotedAt: base.asOf, receivedAt: base.asOf,
+                source: source, enteredPrice: Money("101.25")), capital: nil, policy: base.policy,
+            expiry: .init(date: base.expiry.date, settlementAt: base.expiry.settlementAt, source: source),
+            scenarioPrices: [Money("100"), Money("101.25")], entryMode: .contractParameters)
+        let saved = try await store.save(id: input.id, input: input, expectedRevision: store.revision())
+        let reopened = try OptionLabStore(path: path.path), opened = try await reopened.open(id: input.id)
+        #expect(opened == saved && opened.replayMatched)
+        #expect(opened.report.input.capital == nil && opened.ledgerBasis == nil)
+        #expect(opened.report.input.entryMode == .contractParameters)
+        #expect(opened.report.selectedOutcome.funding == .notAssessed)
+        #expect(opened.report.selectedOutcome.availableCashAfterFees == nil)
+        #expect(opened.report.pricing == nil && opened.report.risk == nil && opened.report.scenario == nil)
+        #expect(opened.report.modelReference == (try OptionLabEngine.contractDefinitions().1.reference))
+        #expect(try await reopened.summaries().first?.origin == .manual)
+
+        let original = try database.read(OptionLabArchiveState.capture)
+        let archive = try await store.makeArchiveStore().exportArchive()
+        let target = try DatabaseStore(path: restoredPath.path, purpose: .optionsLab)
+        let transfer = try OptionLabArchiveStore(database: target)
+        let plan = try await transfer.prepareRestore(archive, mode: .replace, expectedRevision: transfer.status().revision)
+        #expect(try await transfer.commit(.init(plan: plan)).counts.experiments == 1)
+        #expect(try target.read(OptionLabArchiveState.capture).tables == original.tables)
+        let restored = try OptionLabStore(path: restoredPath.path), restoredValue = try await restored.open(id: input.id)
+        #expect(restoredValue == saved && restoredValue.report.input.capital == nil)
+        #expect(restoredValue.report.selectedOutcome.funding == .notAssessed)
+        #expect(try OptionLabEngine.replay(restoredValue.report) == saved.report)
     }
 
     @Test func failedTransactionRollsBackAndSameFrozenInputCanRetry() async throws {
@@ -233,7 +321,7 @@ struct OptionLabStorageTests {
         let opened = try await laboratory.open(id: saved.id)
         #expect(opened == saved); #expect(opened.ledgerBasis?.ledgerRevision == original.revision)
         #expect(changed.revision != original.revision)
-        #expect(opened.report.input.capital.cashBeforeTrade == (try Money("30000")))
+        #expect(opened.report.input.capital?.cashBeforeTrade == (try Money("30000")))
         #expect(changed.state.cashByAccount["A"] == (try Money("30001")))
     }
 }

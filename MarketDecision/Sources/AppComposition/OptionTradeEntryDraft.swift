@@ -10,16 +10,17 @@ public enum OptionTradeEntryAction: String, Equatable, Sendable {
 }
 
 public enum OptionTradeEntryError: Error, Equatable, LocalizedError {
-    case syntheticEvidence, invalidContract, unconfirmedContract, missingExecution, duplicateExecutionID
+    case syntheticEvidence, invalidContract, unconfirmedContract, ambiguousContract, missingExecution, duplicateExecutionID
     case invalidAccount, invalidLot, changedLot, invalidQuantity, changedLegs, inconsistentSnapshot
 
     public var errorDescription: String? {
         switch self {
         case .syntheticEvidence: "合成示例或带示例来源的记录不能作为实际成交入账。"
-        case .invalidContract: "请核对同一标的、到期日、行权价和实际合约版本；标准合约需明确 100 股交割及有效时刻。"
+        case .invalidContract: "合约与当前记录不一致，或成交日期超出合约日期范围。日常开仓仅支持每张 100 股的标准股票／ETF 期权。"
         case .unconfirmedContract: "请先明确核对实际合约条款与依据，试算的到期假设不会自动成为成交证据。"
-        case .missingExecution: "请填写实际成交或到期时刻、来源系统、唯一成交编号、记录依据，以及实际价格和费用。"
-        case .duplicateExecutionID: "多腿成交须分别填写各腿不同的真实成交编号，不能用同一个订单编号代替。"
+        case .ambiguousContract: "账户中有同一合约的不同版本，暂时不能自动选用；请在高级账本核对原记录。"
+        case .missingExecution: "请补齐本次成交或到期结清的必填信息；开仓的来源、编号和记录依据可留空。"
+        case .duplicateExecutionID: "已填写的各腿成交编号不能重复；开仓可留空由软件编号，不要用同一个订单编号代替。"
         case .invalidAccount: "请使用当前账本中的同一账户。"
         case .invalidLot: "请选择仍未结束的期权持仓批次。"
         case .changedLot: "持仓批次已变化，请重新选择；原草稿不会自动改用新的数量或合约。"
@@ -83,8 +84,10 @@ public struct OptionTradeEntryLegDraft: Identifiable, Equatable, Sendable {
     }
 }
 
-/// A user-confirmed execution is separate from an option research snapshot. No
-/// quote, estimated fill, fee assumption, capital value or payoff is imported.
+/// A user-confirmed execution is separate from an option research snapshot.
+/// Initialization imports no quote, estimated fill, fee, capital value or payoff.
+/// A separate explicit action may copy manually entered reference unit prices;
+/// actual execution confirmation and ledger preview/commit remain mandatory.
 /// This draft only prepares events; LedgerStorage retains preview/commit, CAS,
 /// deduplication, transactional replay and corrections as the sole write path.
 public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
@@ -108,8 +111,9 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
     public var closingAllocations: [String: String]
     private let originalLegIDs: [String]
     private let originalLot: LedgerLot?
+    private let automaticContractTerms: Bool
 
-    public init(openingFrom draft: OptionLabInputDraft) throws {
+    public init(openingFrom draft: OptionLabInputDraft, automaticContractTerms: Bool = false) throws {
         guard draft.origin == .manual, draft.chainEvidence?.capture.synthetic != true else {
             throw OptionTradeEntryError.syntheticEvidence
         }
@@ -150,8 +154,42 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
         if draft.hasLongLeg { prepared.append(try leg(draft.longLeg, side: .buy)) }
         guard Set(prepared.map(\.expectedOCC)).count == prepared.count else { throw OptionTradeEntryError.invalidContract }
         id = UUID(); action = .opening; accountID = ""; legs = prepared
+        self.automaticContractTerms = automaticContractTerms
         closingCandidates = []; closingAllocations = [:]
         originalLegIDs = prepared.map(\.id); originalLot = nil
+    }
+
+    /// Called only by the user's explicit "use reference price" action. Rebuild
+    /// the source proposal to validate its origin and immutable contract identity;
+    /// new proposal UUIDs are not used as identity comparisons. Quote-mode data,
+    /// Bid/Ask, midpoints, fees and execution/source fields are never substituted.
+    public mutating func applyOpeningReferencePrices(from source: OptionLabInputDraft) throws {
+        guard action == .opening, legs.map(\.id) == originalLegIDs else {
+            throw OptionTradeEntryError.changedLegs
+        }
+        let reference = try OptionTradeEntryDraft(openingFrom: source)
+        guard source.usesEnteredPrices else { throw OptionTradeEntryError.missingExecution }
+        guard reference.legs.count == legs.count else { throw OptionTradeEntryError.changedLegs }
+        for (original, proposed) in zip(legs, reference.legs) {
+            guard original.side == proposed.side,
+                  original.expectedOCC == proposed.expectedOCC,
+                  original.expectedSymbol == proposed.expectedSymbol,
+                  original.expectedKind == proposed.expectedKind,
+                  original.expectedConsideration == proposed.expectedConsideration else {
+                throw OptionTradeEntryError.invalidContract
+            }
+        }
+        let texts = [source.shortLeg.enteredPrice] + (source.hasLongLeg ? [source.longLeg.enteredPrice] : [])
+        let prices = try texts.map { text -> String in
+            guard let price = try? Money(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  price.amount >= 0 else { throw OptionTradeEntryError.missingExecution }
+            return price.decimalString
+        }
+        // Validate every leg before touching the existing draft. Its IDs,
+        // contract confirmation, quantities and actual evidence remain intact.
+        var updated = legs
+        for index in updated.indices { updated[index].form.unitPrice = prices[index] }
+        legs = updated
     }
 
     public init(lot: LedgerLot, action: OptionTradeEntryAction, otherClosingLots: [LedgerLot] = []) throws {
@@ -175,6 +213,7 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             expectedKind: delivery.security.kind, expectedConsideration: contract.exerciseConsideration)
         leg.contractConfirmed = true
         id = UUID(); self.action = action; accountID = lot.accountID; legs = [leg]
+        automaticContractTerms = false
         closingCandidates = action == .closing ? candidates.sorted {
             $0.acquiredAt == $1.acquiredAt ? $0.id < $1.id : $0.acquiredAt < $1.acquiredAt
         } : []
@@ -184,8 +223,10 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
 
     /// The sole public event-building path requires the verified account ledger.
     /// Original broker execution IDs are preserved, including across CSV/manual
-    /// entry paths. Each leg of a multi-leg fill supplies its own real execution
-    /// ID; no synthetic suffix is appended to a broker's transaction identity.
+    /// entry paths. Opening metadata is optional: absent identifiers are local
+    /// record identities, stable for this draft and leg, never broker evidence.
+    /// A new draft without broker identifiers cannot identify the same real fill.
+    /// Closing/expiration metadata and the ledger's source contract stay strict.
     public func events(in snapshot: LedgerSnapshot) throws -> [LedgerEvent] {
         guard legs.map(\.id) == originalLegIDs else { throw OptionTradeEntryError.changedLegs }
         guard let account = snapshot.accounts.first(where: { $0.id == accountID }) else { throw OptionTradeEntryError.invalidAccount }
@@ -193,11 +234,19 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             throw OptionTradeEntryError.inconsistentSnapshot
         }
         try optionTradeRejectSynthetic(account)
-        let executionIDs = legs.count == 1 ? [externalID] : legs.map { $0.form.externalID }
-        guard !optionTradeBlank(timestamp), !optionTradeBlank(sourceSystem), executionIDs.allSatisfy({ !optionTradeBlank($0) }),
-              !optionTradeBlank(evidence) else { throw OptionTradeEntryError.missingExecution }
+        let suppliedIDs = legs.count == 1 ? [externalID] : legs.map { $0.form.externalID }
+        let recordedSource = action == .opening && optionTradeBlank(sourceSystem)
+            ? "local-manual-option-opening.v1" : sourceSystem
+        let recordedEvidence = action == .opening && optionTradeBlank(evidence)
+            ? "用户手工录入开仓；未提供附加记录依据。" : evidence
+        let executionIDs = suppliedIDs.enumerated().map { index, supplied in
+            action == .opening && optionTradeBlank(supplied)
+                ? "local-option-opening.v1:" + id.uuidString + ":" + legs[index].id : supplied
+        }
+        guard !optionTradeBlank(timestamp), !optionTradeBlank(recordedSource), executionIDs.allSatisfy({ !optionTradeBlank($0) }),
+              !optionTradeBlank(recordedEvidence) else { throw OptionTradeEntryError.missingExecution }
         guard Set(executionIDs).count == executionIDs.count else { throw OptionTradeEntryError.duplicateExecutionID }
-        try optionTradeRejectSynthetic([sourceSystem, evidence, notes] + executionIDs)
+        try optionTradeRejectSynthetic([recordedSource, recordedEvidence, notes] + executionIDs)
         let instant = try LedgerCSV.timestamp(timestamp)
         if let originalLot {
             guard originalLot.accountID == accountID else { throw OptionTradeEntryError.invalidAccount }
@@ -206,7 +255,7 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
                 try validateLotProvenance(originalLot, in: snapshot)
             }
         }
-        let groupID = "option-entry-group.v1:" + optionTradeIdentity([accountID, sourceSystem] + executionIDs)
+        let groupID = "option-entry-group.v1:" + optionTradeIdentity([accountID, recordedSource] + executionIDs)
         var result: [LedgerEvent] = []
         for (index, leg) in legs.enumerated() {
             let quantity = try optionTradeQuantity(leg.form.quantity)
@@ -214,19 +263,26 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
                 throw OptionTradeEntryError.missingExecution
             }
             let externalLegID = executionIDs[index]
-            let eventID = "option-entry-event.v1:" + optionTradeIdentity([accountID, sourceSystem, externalLegID])
+            let eventID = "option-entry-event.v1:" + optionTradeIdentity([accountID, recordedSource, externalLegID])
             var form = leg.form
-            form.id = eventID; form.timestamp = timestamp; form.sourceSystem = sourceSystem
-            form.externalID = externalLegID; form.evidence = evidence; form.notes = notes
+            form.id = eventID; form.timestamp = timestamp; form.sourceSystem = recordedSource
+            form.externalID = externalLegID; form.evidence = recordedEvidence; form.notes = notes
+            if action == .opening, optionTradeBlank(suppliedIDs[index]) {
+                form.evidence += "内部记录编号由软件生成，非券商成交编号。"
+            }
             form.rollGroupID = ""; form.multiLegGroupID = legs.count > 1 ? groupID : ""
             let event: LedgerEvent
             if action == .opening {
-                guard leg.contractConfirmed else { throw OptionTradeEntryError.unconfirmedContract }
-                if let reused = try leg.verifiedReuse() {
-                    guard let matching = snapshot.state.lots.first(where: {
-                        $0.accountID == accountID && $0.instrument == .option(reused)
-                    }) else { throw OptionTradeEntryError.invalidContract }
-                    try validateLotProvenance(matching, in: snapshot)
+                if automaticContractTerms {
+                    form.existingOption = try automaticContract(for: leg, in: snapshot)
+                } else {
+                    guard leg.contractConfirmed else { throw OptionTradeEntryError.unconfirmedContract }
+                    if let reused = try leg.verifiedReuse() {
+                        guard let matching = snapshot.state.lots.first(where: {
+                            $0.accountID == accountID && $0.instrument == .option(reused)
+                        }) else { throw OptionTradeEntryError.invalidContract }
+                        try validateLotProvenance(matching, in: snapshot)
+                    }
                 }
                 form.kind = .optionTrade; form.side = leg.side; form.effect = .open
                 form.openingLotID = eventID + ":lot"; form.lots = [:]
@@ -277,6 +333,34 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             guard strategies.count == result.count, strategies.allSatisfy({ $0 == strategies.first }) else { throw LedgerError.invalidStrategy }
         }
         return result
+    }
+
+    /// Resolve against the same validated account/revision used for the preview.
+    /// A first manual record declares only the standard shape already selected
+    /// in the calculator. It does not turn a research timestamp into an exchange
+    /// deadline, listing date, settlement instruction or verified market evidence.
+    private func automaticContract(for leg: OptionTradeEntryLegDraft, in snapshot: LedgerSnapshot) throws -> LedgerOptionVersion {
+        let explicitReuse = try leg.verifiedReuse()
+        var candidates: [LedgerOptionVersion] = []
+        for lot in snapshot.state.lots where lot.accountID == accountID {
+            guard case .option(let contract) = lot.instrument, contract.occSymbol == leg.expectedOCC else { continue }
+            try validateLotProvenance(lot, in: snapshot)
+            try leg.validateOpeningContract(contract)
+            if !candidates.contains(contract) { candidates.append(contract) }
+        }
+        guard candidates.count <= 1 else { throw OptionTradeEntryError.ambiguousContract }
+        if let explicitReuse, candidates.first != explicitReuse { throw OptionTradeEntryError.invalidContract }
+        if let existing = candidates.first { return existing }
+        let security = LedgerSecurity(id: "local-standard-equity.v1:" + leg.expectedKind.rawValue + ":" + leg.expectedSymbol,
+            symbol: leg.expectedSymbol, kind: leg.expectedKind)
+        let contract = LedgerOptionVersion(occSymbol: leg.expectedOCC, versionID: "local-manual-standard.v1", effectiveFrom: nil,
+            quoteMultiplier: try Money("100"), exerciseConsideration: leg.expectedConsideration,
+            deliverables: [.init(security: security, quantity: try Money("100"), basisWeight: try Money("1"))],
+            deliverableCash: try Money("0"), tradingEndsAt: nil, exerciseDeadline: nil, settlementAt: nil,
+            memoReferences: ["按用户填写的股票／ETF 标准合约参数记录，每张 100 股；未核实交易所截止时间、交割安排或调整条款。"],
+            termsBasis: .localManualStandard)
+        try contract.validate()
+        return contract
     }
 
     private func closingSelections(quantity: Money, in snapshot: LedgerSnapshot) throws -> [String: String] {

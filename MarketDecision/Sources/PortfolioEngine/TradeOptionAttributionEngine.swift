@@ -68,7 +68,11 @@ public enum TradeOptionAttributionEngine {
             guard let lot = lots[round.roundLotID] else { throw TradeOptionAttributionError.invalidInput }
             guard case .option = lot.instrument else { excluded.append(round.roundLotID); continue }
             let observation = observations[round.roundLotID]
-            let pricing = observation?.report.pricing?.legs.first { $0.contractID == observation?.contractID }
+            // Attribution v1 admits historical quote-Mid IV, not IV implied by
+            // a planned/actual fill. Preserve the economic round and independent
+            // IV Rank evidence; only the unsupported Delta/IV basis stays unknown.
+            let pricing = observation?.report.usesEnteredPrices == true ? nil
+                : observation?.report.pricing?.legs.first { $0.contractID == observation?.contractID }
             let delta = pricing?.impliedVolatility.state == .available ? pricing?.canonicalGreeks?.delta : nil
             let iv = delta == nil ? nil : pricing?.impliedVolatility.volatility
             let missing: TradeOptionAttributionGap = events[lot.openEventID].map {
@@ -91,6 +95,10 @@ public enum TradeOptionAttributionEngine {
     }
     private static func validate(_ value: TradeOptionObservation, option: LedgerOptionVersion,
                                  event: LedgerEvent, mode: TradeOptionAttributionMode) throws {
+        guard !option.isLocalManualStandard, let effectiveFrom = option.effectiveFrom,
+              let tradingEndsAt = option.tradingEndsAt, let settlementAt = option.settlementAt else {
+            throw TradeOptionAttributionError.mismatchedContract
+        }
         guard [value.id, value.accountID, value.openingEventID, value.lotID, value.instrumentIdentity, value.contractID, value.feedID].allSatisfy(ledgerText)
         else { throw TradeOptionAttributionError.invalidEvidence }
         try evidence(value.source, observedAt: value.observedAt, knownAt: value.knownAt, tradeAt: event.effectiveAt)
@@ -110,10 +118,10 @@ public enum TradeOptionAttributionEngine {
               (option.deliverables[0].security.kind == .stock ? OptionLabAsset.stock : .etf) == report.input.underlying.asset,
               (leg.right == .call ? LedgerOptionRight.call : .put) == option.right,
               (leg.exerciseStyle == .american ? LedgerExerciseStyle.american : .european) == option.exerciseStyle,
-              report.input.expiry.settlementAt == option.settlementAt,
+              report.input.expiry.settlementAt == settlementAt,
               option.exerciseConsideration == (try leg.strike.multiplied(by: "100")),
-              option.effectiveFrom <= event.effectiveAt, option.effectiveTo.map({ event.effectiveAt < $0 }) ?? true,
-              event.effectiveAt < option.tradingEndsAt else { throw TradeOptionAttributionError.mismatchedContract }
+              effectiveFrom <= event.effectiveAt, option.effectiveTo.map({ event.effectiveAt < $0 }) ?? true,
+              event.effectiveAt < tradingEndsAt else { throw TradeOptionAttributionError.mismatchedContract }
         if let capture = report.input.chainEvidence?.capture, capture.feedID != value.feedID { throw TradeOptionAttributionError.mismatchedContract }
         let sources = legs.map(\.source) + [report.input.underlying.source, report.input.expiry.source] + (report.input.pricing.map { [$0.source] } ?? [])
         guard sources.allSatisfy({ $0.enteredAt <= value.knownAt }),

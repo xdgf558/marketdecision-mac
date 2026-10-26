@@ -96,6 +96,7 @@ struct OptionLabPricingDraftTests {
     }
     @Test func syntheticPricingAloneMakesCopiedDraftSynthetic() throws {
         let base = try OptionLabDemo.input()
+        let capital = try #require(base.capital)
         let manual = OptionLabSource(origin: .manual, reference: "explicit manual assumption", enteredAt: base.asOf)
         let leg = base.shortLeg
         let input = OptionLabInput(createdAt: base.createdAt, asOf: base.asOf, strategy: base.strategy,
@@ -106,8 +107,8 @@ struct OptionLabPricingDraftTests {
             underlying: .init(symbol: base.underlying.symbol, bid: base.underlying.bid, ask: base.underlying.ask,
                 quotedAt: base.asOf, receivedAt: base.asOf, source: manual),
             capital: .init(origin: .manual, reference: "manual capital", asOf: base.asOf,
-                cashBeforeTrade: base.capital.cashBeforeTrade, committedCash: base.capital.committedCash,
-                availableShares: base.capital.availableShares, committedShares: base.capital.committedShares),
+                cashBeforeTrade: capital.cashBeforeTrade, committedCash: capital.committedCash,
+                availableShares: capital.availableShares, committedShares: capital.committedShares),
             policy: base.policy, expiry: .init(date: base.expiry.date, settlementAt: base.expiry.settlementAt, source: manual),
             scenarioPrices: base.scenarioPrices,
             pricing: .init(rate: try Money("0.05"), dividendYield: try Money("0.01"), volatility: try Money("0.25"),

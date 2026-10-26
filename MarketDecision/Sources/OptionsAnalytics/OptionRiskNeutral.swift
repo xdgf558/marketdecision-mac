@@ -64,7 +64,9 @@ public enum OptionLabDistribution {
         try Task.checkCancellation()
         let seconds = input.expiry.settlementAt.timeIntervalSince(input.asOf)
         guard seconds.isFinite, seconds > 0, volatility.isFinite, volatility >= 0, volatility <= 20,
-              mid.pricing == .mid, conservative.pricing == .conservative,
+              mid.pricing == (input.usesEnteredPrices ? .entered : .mid),
+              conservative.pricing == (input.usesEnteredPrices ? .entered : .conservative),
+              !input.usesEnteredPrices || mid == conservative,
               volatilitySourceContractID == input.shortLeg.contractID || volatilitySourceContractID == input.longLeg?.contractID,
               (1...maximumSubintervals).contains(intervalBudget) else { throw OptionLabDistributionError.invalidInput }
         let spot = try finite(underlyingMid), rate = try finite(assumptions.rate), dividend = try finite(assumptions.dividendYield)
@@ -73,13 +75,13 @@ public enum OptionLabDistribution {
         let distribution = try Lognormal(spot: spot, carry: carry, time: time, sigma: volatility)
         let a = try evaluate(Payoff(input: input, outcome: mid, basis: underlyingMid), distribution: distribution, intervalBudget: intervalBudget)
         let b = try evaluate(Payoff(input: input, outcome: conservative, basis: underlyingMid), distribution: distribution, intervalBudget: intervalBudget)
-        return .init(modelVersion: version, confidence: confidence, tailMass: alpha,
+        return .init(modelVersion: input.usesEnteredPrices ? "option-risk-neutral.CVAR_DRAFT_2.entered.v1" : version, confidence: confidence, tailMass: alpha,
             absoluteUSDTolerance: absoluteTolerance, relativeTolerance: relativeTolerance,
             maximumSubintervals: maximumSubintervals, volatility: volatility,
             volatilitySourceContractID: volatilitySourceContractID, rate: rate, dividendYield: dividend, timeYears: time,
             riskNeutralOnly: true, mid: a, conservative: b, limitations: [
                 "风险中性到期分布，只反映同一局部 IV、连续股息率与对数正态假设；不是真实世界盈利概率。",
-                "EV 为未折现到期损益；本次未选择现值口径。费用沿用对应 Mid／保守损益且只计一次。",
+                input.usesEnteredPrices ? "EV 为未折现到期损益；本次未选择现值口径。费用沿用所填成交价损益且只计一次；没有 Mid／保守成交比较。" : "EV 为未折现到期损益；本次未选择现值口径。费用沿用对应 Mid／保守损益且只计一次。",
                 "最差 5% 按精确质量计入封顶／封底原子，零损益平台不算盈利；保留带符号尾均值。",
                 "欧式分布不模拟提前行权、指派、跳跃或离散股息；未启用历史 Bootstrap 或概率校准。"
             ])

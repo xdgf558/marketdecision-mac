@@ -6,29 +6,30 @@ import CoreDomain
 public enum OptionLabScenarioEngine {
     public static let maximumAxisCount = 21 // Engineering work bound, not a market parameter.
 
-    public static func definitions() throws -> (ParameterSet, ModelDefinition) {
-        let p = ParameterSet(id: "options.scenario-matrix.parameters", version: "PARAMETERS_V1.scenario.v1",
-            revisionID: UUID(uuidString: "C035AA00-2026-4018-8000-000000000007")!,
+    public static func definitions(enteredPrices: Bool = false) throws -> (ParameterSet, ModelDefinition) {
+        let p = ParameterSet(id: "options.scenario-matrix.parameters", version: enteredPrices ? "PARAMETERS_V1.scenario.entered.v1" : "PARAMETERS_V1.scenario.v1",
+            revisionID: UUID(uuidString: enteredPrices ? "C035AA00-2026-4025-8000-000000000007" : "C035AA00-2026-4018-8000-000000000007")!,
             values: ["spotShockUnit": .text("ratio"), "ivShockUnit": .text("absolute percentage points; divide by 100"),
                 "timeAdvance": .text("none; original exact pricing T unchanged"),
-                "sigmaSource": .text("each leg's successful local Mid IV; no fallback"),
+                "sigmaSource": .text(enteredPrices ? "each leg's successful local entered-premium IV; no fallback" : "each leg's successful local Mid IV; no fallback"),
                 "negativeSigma": .text("unavailable; no clamping"),
                 "nonpositiveSpot": .text("explicit zero-spot terminal payoff boundary"),
                 "fees": .text("original total fee allowance once; no invented incremental exit charge"),
                 "axisValues": .text("explicit frozen user assumptions; no calibrated defaults"),
                 "maximumAxisCountEngineeringLimit": .integer(maximumAxisCount)],
             state: .approved, dispositionReference: "PARAMETERS_V1:CALC-035;SPEC-6.5.5;explicit offline sensitivity inputs")
-        let m = ModelDefinition(id: "options.scenario-matrix", version: OptionLabScenarioInput.currentMethodVersion,
-            revisionID: UUID(uuidString: "C035AA00-2026-4018-8000-000000000008")!,
+        let method = enteredPrices ? "options.scenario-matrix.entered.v1" : OptionLabScenarioInput.currentMethodVersion
+        let m = ModelDefinition(id: "options.scenario-matrix", version: method,
+            revisionID: UUID(uuidString: enteredPrices ? "C035AA00-2026-4025-8000-000000000008" : "C035AA00-2026-4018-8000-000000000008")!,
             owner: "OptionsAnalytics", purpose: "Instantaneous offline European mark-to-model strategy sensitivity",
             inputs: [.init(name: "frozenScenarioAxesAndCanonicalPricing", unit: "USD+ratio+percentage-point", role: .required)],
             outputs: [.init(name: "instantaneousPositionValueAndPnL", unit: "USD")],
             formula: "S'=S*(1+spotShock);sigma_i'=localIV_i+pointShock/100;T,r,q unchanged;PnL=openingNetCredit+signedOptionValue+coveredStockPnL;S'<=0 uses zero-spot payoff;negative sigma unavailable",
-            formulaVersion: OptionLabScenarioInput.currentMethodVersion,
+            formulaVersion: method,
             implementationReference: "OptionsAnalytics/OptionLabScenarioEngine.v1", defaultParameters: p.reference,
             numericPolicyVersion: OptionBSM.numericPolicyVersion, state: .approved,
-            dispositionReference: "PARAMETERS_V1:CALC-035;SPEC-6.5.5", knownLimitations: warnings,
-            testFixtures: ["OptionScenarioTests"], introducedAt: try MillisecondInstant(iso8601: "2026-10-18T00:00:00.000Z"))
+            dispositionReference: "PARAMETERS_V1:CALC-035;SPEC-6.5.5", knownLimitations: notices(enteredPrices: enteredPrices),
+            testFixtures: ["OptionScenarioTests"], introducedAt: try MillisecondInstant(iso8601: enteredPrices ? "2026-10-25T00:00:00.000Z" : "2026-10-18T00:00:00.000Z"))
         try p.validate(); try m.validate(); return (p, m)
     }
 
@@ -44,11 +45,13 @@ public enum OptionLabScenarioEngine {
         guard t.isFinite, t >= 0, underlyingMid.amount > 0,
               input.shortLeg.quantity > 0, input.shortLeg.quantity <= Int.max / 100,
               input.shortLeg.multiplier == 100,
-              mid.pricing == .mid, conservative.pricing == .conservative else {
+              mid.pricing == (input.usesEnteredPrices ? .entered : .mid),
+              conservative.pricing == (input.usesEnteredPrices ? .entered : .conservative),
+              !input.usesEnteredPrices || mid == conservative else {
             throw OptionLabScenarioError.incompatibleContext
         }
         if let pricing {
-            let (p, m) = try OptionLabPricingEngine.definitions()
+            let (p, m) = try OptionLabPricingEngine.definitions(enteredPrices: input.usesEnteredPrices)
             guard pricing.input == input.pricing, pricing.model == m, pricing.parameters == p,
                   pricing.timeYears == t, pricing.legs.count == sources.count else {
                 throw OptionLabScenarioError.incompatibleContext
@@ -56,7 +59,7 @@ public enum OptionLabScenarioEngine {
             for (index, source) in sources.enumerated() {
                 let result = pricing.legs[index]
                 guard result.contractID == source.0.contractID, result.direction == source.1,
-                      result.quoteMid == (try source.0.bid.adding(source.0.ask).multiplied(by: "0.5")) else {
+                      result.quoteMid == (try source.0.valuationPrice()) else {
                     throw OptionLabScenarioError.incompatibleContext
                 }
             }
@@ -140,9 +143,9 @@ public enum OptionLabScenarioEngine {
                     legs: legs, mid: midResult, conservative: conservativeResult))
             }
         }
-        let (p, m) = try definitions()
+        let (p, m) = try definitions(enteredPrices: input.usesEnteredPrices)
         return .init(input: assumptions, model: m, parameters: p, valuationAt: input.asOf,
-            baseSpot: underlyingMid, cells: cells, warnings: warnings)
+            baseSpot: underlyingMid, cells: cells, warnings: notices(enteredPrices: input.usesEnteredPrices))
     }
 
     static func validate(_ value: OptionLabScenarioInput, createdAt: Date) throws {
@@ -169,4 +172,11 @@ public enum OptionLabScenarioEngine {
         "欧式理论持仓价值与假设平仓损益，不是可成交报价或美式行权价值；未模拟提前指派、离散股息、税或融资。",
         "Mid 与保守开仓收入分别计算；原输入的全部费用预留只扣一次，不代表真实平仓费、平仓价差或结算成本。"
     ]
+    private static func notices(enteredPrices: Bool) -> [String] {
+        guard enteredPrices else { return warnings }
+        var result = warnings
+        result[2] = "逐腿使用所填权利金反解的本地 IV；任一腿缺失或冲击后波动率为负，整策略该格不可用，不回退手工 σ。"
+        result[5] = "开仓收入沿用所填成交价；全部费用预留只扣一次，没有 Mid／保守双口径比较，也不代表真实平仓费、平仓价差或结算成本。"
+        return result
+    }
 }

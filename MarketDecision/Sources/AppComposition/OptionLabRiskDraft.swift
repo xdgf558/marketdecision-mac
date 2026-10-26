@@ -23,8 +23,8 @@ public struct OptionLabLiquidityDraft: Equatable, Sendable {
         neighbors = Self.neighborText(input.neighbors); neighborsComplete = input.neighborsComplete
     }
     private static func neighborRow(_ value: OptionLabLeg) -> String {
-        [value.contractID, value.strike.decimalString, value.bid.decimalString, value.ask.decimalString,
-         String(value.bidSize), String(value.askSize), value.tick?.decimalString ?? "", riskTimestamp(value.quotedAt), riskTimestamp(value.receivedAt)].joined(separator: "|")
+        [value.contractID, value.strike.decimalString, value.bid?.decimalString ?? "", value.ask?.decimalString ?? "",
+         value.bidSize.map(String.init) ?? "", value.askSize.map(String.init) ?? "", value.tick?.decimalString ?? "", riskTimestamp(value.quotedAt), riskTimestamp(value.receivedAt)].joined(separator: "|")
     }
     private static func neighborText(_ values: [OptionLabLeg]) -> String { values.map(neighborRow).joined(separator: "\n") }
     func build(leg: OptionLabLeg, source: OptionLabSource) throws -> OptionLabLiquidityInput {

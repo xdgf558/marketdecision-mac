@@ -5,7 +5,7 @@ import DataContracts
 /// Offline, versioned heuristic assessment. No input is promoted to a provider
 /// entitlement, executable liquidity ranking, event history or assignment probability.
 public enum OptionLabRiskEngine {
-    public static func definitions() throws -> (ParameterSet, ModelDefinition) {
+    public static func definitions(enteredPrices: Bool = false) throws -> (ParameterSet, ModelDefinition) {
         let p = ParameterSet(id: "options.offline-risk.parameters", version: "PARAMETERS_V1.risk.v1",
             revisionID: UUID(uuidString: "C035AA00-2026-4018-8000-000000000001")!,
             values: ["liquidityWeightsBP": .text("spread:3000,OI:2000,volume:1500,age:1500,size:1000,neighbors:1000"),
@@ -23,16 +23,17 @@ public enum OptionLabRiskEngine {
                 "eventHistoryMinimum": .integer(30), "history": .text("not implemented; no frequency or IV-crush estimate"),
                 "dividendPV": .text("USD/share * exp(-r * actual seconds to explicit paymentAt / 31536000)")],
             state: .approved, dispositionReference: "PARAMETERS_V1:CALC-027,028,029;LIQ_DRAFT_1")
-        let m = ModelDefinition(id: "options.offline-risk", version: OptionLabRiskInput.currentMethodVersion,
-            revisionID: UUID(uuidString: "C035AA00-2026-4018-8000-000000000002")!, owner: "OptionsAnalytics",
+        let method = enteredPrices ? "options.offline-risk.entered.v1" : OptionLabRiskInput.currentMethodVersion
+        let m = ModelDefinition(id: "options.offline-risk", version: method,
+            revisionID: UUID(uuidString: enteredPrices ? "C035AA00-2026-4025-8000-000000000012" : "C035AA00-2026-4018-8000-000000000002")!, owner: "OptionsAnalytics",
             purpose: "Offline liquidity and event/early-assignment heuristics, not executable ranking or probability",
             inputs: [.init(name: "frozenOfflineRiskEvidence", unit: "USD+contracts+versioned-calendar", role: .required)],
             outputs: [.init(name: "liquidity", unit: "score+grade+coverage"), .init(name: "eventAndAssignment", unit: "evidence+heuristic")],
             formula: "LIQ_DRAFT_1 weighted six-factor score with hard downgrade and weakest-leg aggregation; CALC027 explicit calendar windows; CALC028 signed extrinsic threshold",
-            formulaVersion: OptionLabRiskInput.currentMethodVersion, implementationReference: "OptionsAnalytics/OptionLabRiskEngine.v1",
+            formulaVersion: method, implementationReference: "OptionsAnalytics/OptionLabRiskEngine.v1",
             defaultParameters: p.reference, numericPolicyVersion: Money.numericPolicyVersion + "+Float64-exp-dividendPV.v1",
-            state: .approved, dispositionReference: "PARAMETERS_V1", knownLimitations: warnings,
-            testFixtures: ["OptionLabRiskTests"], introducedAt: try MillisecondInstant(iso8601: "2026-10-18T00:00:00.000Z"))
+            state: .approved, dispositionReference: "PARAMETERS_V1", knownLimitations: notices(enteredPrices: enteredPrices),
+            testFixtures: ["OptionLabRiskTests"], introducedAt: try MillisecondInstant(iso8601: enteredPrices ? "2026-10-25T00:00:00.000Z" : "2026-10-18T00:00:00.000Z"))
         try p.validate(); try m.validate(); return (p, m)
     }
 
@@ -50,11 +51,11 @@ public enum OptionLabRiskEngine {
         else if assessments.contains(where: { $0.grade == .dataInsufficient }) { totalGrade = .dataInsufficient }
         else { totalGrade = assessments.map(\.grade).max(by: { severity($0) < severity($1) }) ?? .dataInsufficient }
         let totalScore = assessments.allSatisfy { $0.score != nil } ? assessments.compactMap(\.score).min() : nil
-        let (parameters, model) = try definitions()
+        let (parameters, model) = try definitions(enteredPrices: input.usesEnteredPrices)
         return .init(input: assumptions, model: model, parameters: parameters,
             liquidity: .init(legs: assessments, grade: totalGrade, score: totalScore, researchOnly: true, mayRankLive: false),
             earnings: try earnings(assumptions.earnings, input: input, spot: underlyingMid),
-            assignment: try assignment(assumptions.dividend, input: input, spot: underlyingMid, dte: dte), warnings: warnings)
+            assignment: try assignment(assumptions.dividend, input: input, spot: underlyingMid, dte: dte), warnings: notices(enteredPrices: input.usesEnteredPrices))
     }
 
     public static func validate(_ assumptions: OptionLabRiskInput, input: OptionLabInput) throws {
@@ -109,18 +110,21 @@ public enum OptionLabRiskEngine {
                 grade: tier.map { [.excellent,.acceptable,.weak,.avoid][$0] } ?? .dataInsufficient,
                 score: tier.map { [100,70,30,0][$0] }, reason: reason))
         }
-        guard leg.bid.amount >= 0, leg.ask.amount > 0, leg.bidSize >= 0, leg.askSize >= 0,
+        guard leg.bid.map({ $0.amount >= 0 }) != false, leg.ask.map({ $0.amount > 0 }) != false,
+              leg.bidSize.map({ $0 >= 0 }) != false, leg.askSize.map({ $0 >= 0 }) != false,
               leg.quantity > 0, finite(leg.quotedAt), finite(asOf), leg.quotedAt <= asOf
         else { throw OptionLabRiskError.invalidInput }
-        let mid = try leg.bid.adding(leg.ask).multiplied(by: "0.5")
-        if leg.bid > leg.ask {
-            hard.append("报价倒挂")
-            component(.relativeSpread, nil, 3, "报价倒挂")
-        } else {
-            let spread = try leg.ask.subtracting(leg.bid)
-            let tier = try spread <= mid.multiplied(by: "0.05") ? 0 : spread <= mid.multiplied(by: "0.10") ? 1 : spread <= mid.multiplied(by: "0.20") ? 2 : 3
-            component(.relativeSpread, try spread.divided(by: mid.decimalString), tier)
-        }
+        if let bid = leg.bid, let ask = leg.ask {
+            let mid = try bid.adding(ask).multiplied(by: "0.5")
+            if bid > ask {
+                hard.append("报价倒挂")
+                component(.relativeSpread, nil, 3, "报价倒挂")
+            } else {
+                let spread = try ask.subtracting(bid)
+                let tier = try spread <= mid.multiplied(by: "0.05") ? 0 : spread <= mid.multiplied(by: "0.10") ? 1 : spread <= mid.multiplied(by: "0.20") ? 2 : 3
+                component(.relativeSpread, try spread.divided(by: mid.decimalString), tier)
+            }
+        } else { component(.relativeSpread, nil, nil, "未补充 Bid／Ask，单个成交价不能证明价差") }
         if let evidence, let oi = evidence.openInterest, let age = evidence.oiSessionsAgo,
            evidence.oiIsLatestPublished, age <= 2 {
             component(.openInterest, try Money(String(oi)), oi >= 1000 ? 0 : oi >= 100 ? 1 : oi >= 10 ? 2 : 3)
@@ -129,11 +133,15 @@ public enum OptionLabRiskEngine {
             component(.volume, try Money(String(volume)), volume >= 100 ? 0 : volume >= 10 ? 1 : volume >= 1 ? 2 : 3)
         } else { component(.volume, nil, nil, "缺少同会话全日或同 elapsed-time 可比成交量") }
         let age = asOf.timeIntervalSince(leg.quotedAt)
-        component(.quoteAge, try decimal(age), age <= 15 ? 0 : age <= 30 ? 1 : age <= 60 ? 2 : 3)
-        if age > 60 { hard.append("报价超过 60 秒") }
-        let size = min(leg.bidSize, leg.askSize)
-        component(.size, try Money(String(size)), size >= 10 ? 0 : size >= 5 ? 1 : size >= 1 ? 2 : 3)
-        if size < leg.quantity { hard.append("双边数量未覆盖拟研究张数") }
+        if leg.bid != nil, leg.ask != nil {
+            component(.quoteAge, try decimal(age), age <= 15 ? 0 : age <= 30 ? 1 : age <= 60 ? 2 : 3)
+            if age > 60 { hard.append("报价超过 60 秒") }
+        } else { component(.quoteAge, nil, nil, "未补充双边报价，价格输入时刻不是双边报价新鲜度") }
+        if let bidSize = leg.bidSize, let askSize = leg.askSize, leg.bid != nil, leg.ask != nil {
+            let size = min(bidSize, askSize)
+            component(.size, try Money(String(size)), size >= 10 ? 0 : size >= 5 ? 1 : size >= 1 ? 2 : 3)
+            if size < leg.quantity { hard.append("双边数量未覆盖拟研究张数") }
+        } else { component(.size, nil, nil, "未补充完整双边深度，未知张数不按零或足量处理") }
         let continuity = try continuity(leg, evidence: evidence, asOf: asOf)
         if let continuity { try component(.neighborContinuity, continuity, continuity.amount == 0 ? 0 : continuity <= Money("0.25") ? 1 : continuity <= Money("0.5") ? 2 : 3) }
         else { component(.neighborContinuity, nil, nil, "缺少已声明完整的同到期同方向左右最近有效邻点") }
@@ -155,16 +163,20 @@ public enum OptionLabRiskEngine {
                   n.expirationDate == leg.expirationDate, n.strike.amount > 0, n.strike != leg.strike,
                   n.multiplier == leg.multiplier, n.delivery == leg.delivery, n.exerciseStyle == leg.exerciseStyle,
                   n.specificationVersion == leg.specificationVersion,
-                  n.bid.amount >= 0, n.ask.amount > 0, n.bidSize >= 0, n.askSize >= 0,
+                  n.enteredPrice == nil, let bid = n.bid, let ask = n.ask,
+                  let bidSize = n.bidSize, let askSize = n.askSize,
+                  bid.amount >= 0, ask.amount > 0, bidSize >= 0, askSize >= 0,
                   finite(n.quotedAt), finite(n.receivedAt), n.receivedAt >= n.quotedAt
             else { throw OptionLabRiskError.invalidNeighbor }
         }
-        guard evidence.neighborsComplete, let currentTick = leg.tick, currentTick.amount > 0,
+        guard evidence.neighborsComplete, leg.bid != nil, leg.ask != nil,
+              let currentTick = leg.tick, currentTick.amount > 0,
               let lower = evidence.neighbors.filter({ $0.strike < leg.strike }).max(by: { $0.strike < $1.strike }),
               let upper = evidence.neighbors.filter({ $0.strike > leg.strike }).min(by: { $0.strike < $1.strike }) else { return nil }
         // Choose true adjacent strikes before testing their quality; no distant replacement.
         for n in [lower,upper] {
-            guard let tick = n.tick, tick.amount > 0, n.ask >= n.bid, min(n.bidSize,n.askSize) > 0,
+            guard let tick = n.tick, tick.amount > 0, let bid = n.bid, let ask = n.ask,
+                  let bidSize = n.bidSize, let askSize = n.askSize, ask >= bid, min(bidSize,askSize) > 0,
                   n.quotedAt <= asOf, n.receivedAt <= asOf, asOf.timeIntervalSince(n.quotedAt) <= 60,
                   abs(n.quotedAt.timeIntervalSince(leg.quotedAt)) <= 5 else { return nil }
         }
@@ -172,7 +184,10 @@ public enum OptionLabRiskEngine {
         var violations = 0
         for index in 0..<2 {
             let left = triplet[index], right = triplet[index+1]
-            let leftMid = try left.bid.adding(left.ask).multiplied(by: "0.5"), rightMid = try right.bid.adding(right.ask).multiplied(by: "0.5")
+            guard let leftBid = left.bid, let leftAsk = left.ask, let rightBid = right.bid, let rightAsk = right.ask else { return nil }
+            // Continuity always compares quote mids, including a manually priced
+            // current leg; its entered premium never masquerades as a neighbor quote.
+            let leftMid = try leftBid.adding(leftAsk).multiplied(by: "0.5"), rightMid = try rightBid.adding(rightAsk).multiplied(by: "0.5")
             guard let lt = left.tick, let rt = right.tick else { return nil }
             let tick = min(lt,rt)
             let change = try leg.right == .call ? rightMid.subtracting(leftMid) : leftMid.subtracting(rightMid)
@@ -248,7 +263,15 @@ public enum OptionLabRiskEngine {
                                    spot: Money, dte: Int) throws -> OptionLabAssignmentReport {
         let leg = input.shortLeg, zero = try Money("0")
         let intrinsic = max(zero, try leg.right == .call ? spot.subtracting(leg.strike) : leg.strike.subtracting(spot))
-        let extrinsic = try leg.bid.adding(leg.ask).multiplied(by: "0.5").subtracting(intrinsic)
+        let premium: Money
+        if leg.isEnteredPrice { premium = try leg.valuationPrice() }
+        else {
+            // The risk module also diagnoses crossed quote evidence directly;
+            // liquidity marks it Avoid. Preserve that legacy diagnostic path.
+            guard let bid = leg.bid, let ask = leg.ask else { throw OptionLabRiskError.invalidInput }
+            premium = try bid.adding(ask).multiplied(by: "0.5")
+        }
+        let extrinsic = try premium.subtracting(intrinsic)
         let deep = try leg.right == .put ? leg.strike >= spot.multiplied(by: "1.10") : spot >= leg.strike.multiplied(by: "1.10")
         let rate = try input.pricing.map { try number($0.rate) }
         let limited = deep || dte > 60 || (rate.map { $0 >= 0.05 } ?? false)
@@ -256,7 +279,7 @@ public enum OptionLabRiskEngine {
         if dte <= 7 { reasons.append("DTE≤7，处于到期周。") }
         if deep { reasons.append("达到 1.10 深价内条件。") }
         if limited { reasons.append("深价内、长期限或高利率使欧式近似受限。") }
-        if extrinsic.amount < 0 { reasons.append("Mid 低于内在价值，外在价值为负；保留异常，不截成零。") }
+        if extrinsic.amount < 0 { reasons.append(input.usesEnteredPrices ? "所填成交价低于内在价值，外在价值为负；保留异常，不截成零。" : "Mid 低于内在价值，外在价值为负；保留异常，不截成零。") }
         func report(_ level: OptionLabAssignmentLevel, threshold: Double? = nil, pv: Double? = nil,
                     prior: MarketDate? = nil, note: String) -> OptionLabAssignmentReport {
             .init(contractID: leg.contractID, level: level, intrinsicValue: intrinsic, extrinsicValue: extrinsic,
@@ -335,4 +358,8 @@ public enum OptionLabRiskEngine {
         "流动性阈值是 PARAMETERS_V1 启发式；缺项保持缺项，跨腿取最差等级与最低完整得分。",
         "没有历史财报分布、真实世界概率、Bootstrap、预测或自动交易；无事件证据不能解释为无风险。"
     ]
+    private static func notices(enteredPrices: Bool) -> [String] {
+        guard enteredPrices else { return warnings }
+        return warnings + ["单价模式的外在价值使用所填权利金；流动性只读取额外提供的双边报价及证据，缺少价差、深度或邻点时不评分，不把计划价当作实际市场报价。"]
+    }
 }

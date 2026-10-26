@@ -31,6 +31,8 @@ public enum OptionChainEvidence {
     }
     public static func validate(_ input: OptionLabInput) throws {
         guard let evidence = input.chainEvidence else { return }
+        guard !input.usesEnteredPrices, input.shortLeg.enteredPrice == nil,
+              input.longLeg?.enteredPrice == nil else { throw OptionLabError.incompatibleReport }
         let capture = evidence.capture
         try validateForLab(capture)
         guard let underlying = capture.snapshot.underlying,
