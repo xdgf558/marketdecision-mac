@@ -70,10 +70,38 @@ public enum InvestmentShareError: Error, Equatable { case unverifiedReport, miss
 /// credentials, source bytes and hashes cannot be rendered or encoded by this type.
 public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
     public let id: UUID
-    private let summary: InvestmentSummary
-    private let holdingNames: [String]
-    private let historical: Bool
+    private struct BookedFacts: Sendable, Equatable {
+        let selection: InvestmentReportPeriod
+        let period: String
+        let dateRange: String
+        let periodBoundaryLabel: String
+        let asOfLabel: String
+        let amount: Money
+        let realizedPnL: Money
+        let cashIncome: Money
+        let cashCharges: Money
+        let synthetic: Bool
+    }
+    private enum Content: Sendable, Equatable {
+        case frozen(InvestmentSummary, holdingNames: [String], historical: Bool)
+        case booked(BookedFacts)
+    }
+    private let content: Content
     public static let composeURL = URL(string: "https://x.com/compose/post")!
+
+    public var periodSelection: InvestmentReportPeriod? {
+        if case .booked(let facts) = content { return facts.selection }
+        return nil
+    }
+
+    public var supportsReturn: Bool {
+        if case .frozen = content { return true }
+        return false
+    }
+    public var supportsHoldingNames: Bool {
+        if case .frozen = content { return true }
+        return false
+    }
 
     public init(saved: SavedPerformanceReport) throws {
         guard saved.replayMatched, saved.ledgerRevision == saved.report.input.ledgerRevision else {
@@ -81,29 +109,100 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
         }
         let summary = InvestmentSummary(report: saved.report)
         guard summary.netPnL != nil else { throw InvestmentShareError.missingReconciledProfit }
-        id = UUID(); self.summary = summary
-        historical = !saved.isCurrentLedger
-        holdingNames = Array(Set(saved.report.daily.last?.positions.map(\.instrumentID) ?? [])).sorted().map { raw in
+        let names = Array(Set(saved.report.daily.last?.positions.map(\.instrumentID) ?? [])).sorted().map { raw in
             let singleLine = raw.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
             return String(singleLine.prefix(60)) + (singleLine.count > 60 ? "…" : "")
         }
+        id = UUID()
+        content = .frozen(summary, holdingNames: names, historical: !saved.isCurrentLedger)
+    }
+
+    /// The model must first recheck the selected account, page and ledger revision.
+    /// Keep only booked presentation facts; no account identifier, cash balance,
+    /// event, source text, holdings or valuation qualification crosses this boundary.
+    public init(periodReport: InvestmentPeriodReport) {
+        id = UUID()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        // Reports are generated using America/New_York. Include the actual zone
+        // and UTC offset in the card, even on a host configured in another zone.
+        formatter.timeZone = TimeZone(identifier: "America/New_York") ?? .gmt
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS XXXXX"
+        let interval = formatter.string(from: periodReport.startDate) + " → "
+            + formatter.string(from: periodReport.endDate)
+        let period = periodReport.title + " · " + interval + "（" + formatter.timeZone.identifier + "，含起止时刻）"
+        formatter.dateFormat = "yyyy.MM.dd"
+        let dateRange = formatter.string(from: periodReport.startDate) + " 至 "
+            + formatter.string(from: periodReport.endDate)
+        let asOfLabel = "截至 " + formatter.string(from: periodReport.endDate)
+        formatter.dateFormat = "HH:mm:ss.SSS XXXXX"
+        let periodBoundaryLabel = "美东 " + formatter.string(from: periodReport.startDate) + " → "
+            + formatter.string(from: periodReport.endDate) + " · 含起止时刻"
+        content = .booked(.init(selection: periodReport.period, period: period,
+            dateRange: dateRange, periodBoundaryLabel: periodBoundaryLabel, asOfLabel: asOfLabel,
+            amount: periodReport.bookedPnL, realizedPnL: periodReport.realizedPnL,
+            cashIncome: periodReport.cashIncome, cashCharges: periodReport.cashCharges,
+            synthetic: periodReport.containsSyntheticRecords))
     }
 
     public func card(options: InvestmentShareOptions) -> InvestmentShareCardContent {
-        .init(period: summary.startDay + " → " + summary.endDay,
-              amount: options.showAmounts ? InvestmentSummary.amountText(summary.netPnL) + " USD" : "金额已隐藏",
-              returnText: options.showReturn ? InvestmentSummary.percentText(summary.returnValue) : "收益率已隐藏",
-              holdings: options.showHoldingNames ? holdingNames : [],
-              evidenceLabel: summary.containsSyntheticEvidence ? "SYNTHETIC · 合成数据示例，非真实账户业绩" : "本地记录 · 已按冻结输入复算",
-              valuationLabel: summary.usesStalePrices ? "含 STALE 估值，仅作账本记录" : "原始 EOD 估值 · 非实时",
-              versionLabel: historical ? "历史账本版本" : "最近核对时与账本版本一致",
-              scope: "所选账户 · 所选区间净盈亏（已扣外部资金流）",
-              footnote: "研究用途 · 个人记录，不代表未来收益")
+        switch content {
+        case .frozen(let summary, let holdingNames, let historical):
+            return .init(period: summary.startDay + " → " + summary.endDay,
+                  periodTitle: "区间报告",
+                  dateRange: summary.startDay.replacingOccurrences(of: "-", with: ".") + " 至 "
+                    + summary.endDay.replacingOccurrences(of: "-", with: "."),
+                  periodBoundaryLabel: "冻结报告 · 日终估值",
+                  asOfLabel: "截至 " + summary.endDay.replacingOccurrences(of: "-", with: "."),
+                  breakdown: [],
+                  profitLabel: "区间净盈亏", returnLabel: "时间加权收益",
+                  amount: options.showAmounts ? InvestmentSummary.amountText(summary.netPnL) + " USD" : "金额已隐藏",
+                  returnText: options.showReturn ? InvestmentSummary.percentText(summary.returnValue) : "收益率已隐藏",
+                  holdings: options.showHoldingNames ? holdingNames : [],
+                  evidenceLabel: summary.containsSyntheticEvidence ? "SYNTHETIC · 合成数据示例，非真实账户业绩" : "本地记录 · 已按冻结输入复算",
+                  valuationLabel: summary.usesStalePrices ? "含 STALE 估值，仅作账本记录" : "原始 EOD 估值 · 非实时",
+                  versionLabel: historical ? "历史账本版本" : "最近核对时与账本版本一致",
+                  scope: "所选账户 · 所选区间净盈亏（已扣外部资金流）",
+                  footnote: "研究用途 · 个人记录，不代表未来收益")
+        case .booked(let facts):
+            let display: (Money) -> String = { value in
+                options.showAmounts ? InvestmentSummary.amountText(value) + " USD" : "金额已隐藏"
+            }
+            return .init(period: facts.period, periodTitle: facts.selection.title,
+                  dateRange: facts.dateRange, periodBoundaryLabel: facts.periodBoundaryLabel,
+                  asOfLabel: facts.asOfLabel,
+                  breakdown: [.init(title: "交易盈亏", value: display(facts.realizedPnL)),
+                              .init(title: "股息与利息", value: display(facts.cashIncome)),
+                              .init(title: "费用与税款", value: display(facts.cashCharges))],
+                  profitLabel: "已入账收益", returnLabel: nil,
+                  amount: display(facts.amount),
+                  returnText: "", holdings: [],
+                  evidenceLabel: facts.synthetic ? "SYNTHETIC · 合成数据示例，非真实账户业绩" : "本地记录 · 按当前有效入账记录汇总",
+                  valuationLabel: "不含持仓浮盈、净值或收益率",
+                  versionLabel: "生成时账本已核对 · 后续补录或冲销后需重新生成",
+                  scope: "所选账户 · 已实现交易盈亏＋股息、利息－独立费用、税款；入出金不计收益",
+                  footnote: "开仓权利金不直接计为利润 · 个人记录，不代表未来收益")
+        }
     }
+}
+
+public struct InvestmentShareBreakdownRow: Sendable, Equatable {
+    public let title: String
+    public let value: String
 }
 
 public struct InvestmentShareCardContent: Sendable, Equatable {
     public let period: String
+    public let periodTitle: String
+    public let dateRange: String
+    public let periodBoundaryLabel: String
+    public let asOfLabel: String
+    /// Transaction fees are already included in trading P&L. The charge row
+    /// contains only standalone cash fees and taxes and remains a positive cost.
+    public let breakdown: [InvestmentShareBreakdownRow]
+    public let profitLabel: String
+    public let returnLabel: String?
     public let amount: String
     public let returnText: String
     public let holdings: [String]

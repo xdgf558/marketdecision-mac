@@ -101,6 +101,13 @@ struct PortfolioWorkspaceTests {
     private func save(_ model: PortfolioWorkspaceModel, _ plan: PerformancePreview) async -> Bool {
         await model.save(id: plan.id, ledgerRevision: plan.ledgerRevision, performanceRevision: plan.performanceRevision)
     }
+    private func generateQuickReports(_ model: PortfolioWorkspaceModel,
+                                      at timestamp: String = "2026-01-07T22:00:00Z") async throws -> [InvestmentPeriodReport] {
+        let account = try #require(model.selectedAccountID), baseline = try #require(model.preparationBaseline)
+        await model.generatePeriodReports(accountID: account, baseline: baseline, at: try LedgerCSV.timestamp(timestamp))
+        #expect(model.periodReports.count == 3 && !model.hasError)
+        return model.periodReports
+    }
     @Test func initializationDoesNotReadStorageOrSynthesizeAnAccount() async {
         let storage = PortfolioWorkspaceFake()
         let injected = PortfolioWorkspaceModel(storage: storage)
@@ -512,6 +519,226 @@ struct PortfolioWorkspaceTests {
             }
             #expect(model.periodReports.isEmpty)
         }
+    }
+    @Test func directPeriodShareReturnsMonthlyVerifiedZeroWithoutObservingBusyTransitions() async throws {
+        let (model, storage) = await setup()
+        await model.chooseAccount("ordinary-b")
+        let baseline = try #require(model.preparationBaseline), reads = await storage.reads
+        let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+        // One awaited call must return the card even without a UI observer or
+        // a suspension inserted between generation and sharing.
+        let result = await model.generatePeriodShare(accountID: "ordinary-b", baseline: baseline, at: cutoff)
+        let snapshot = try #require(result)
+        var options = InvestmentShareOptions(); options.showAmounts = true
+        #expect(snapshot.periodSelection == .month && snapshot.card(options: options).amount == "0.00 USD")
+        #expect(model.periodReports.count == 3 && model.preparationBaseline == baseline)
+        #expect(!model.isBusy && !model.hasError && model.report == nil && model.savedReport == nil)
+        #expect(await storage.reads == reads + 3)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+        #expect(await storage.records.isEmpty)
+    }
+    @Test func directPeriodShareStopsWhenEitherGenerationReadFailsWithoutCheckingAnOldReport() async throws {
+        for failingRead in [1, 2] {
+            let (model, storage) = await setup()
+            _ = try await generateQuickReports(model)
+            let account = try #require(model.selectedAccountID), baseline = try #require(model.preparationBaseline)
+            let reads = await storage.reads, gate = PortfolioWorkspaceGate()
+            let key = "context:\(reads + failingRead)"
+            await storage.gate(key, gate); await storage.fail(key)
+            let cutoff = try LedgerCSV.timestamp("2026-01-08T22:00:00Z")
+            let request = Task { await model.generatePeriodShare(accountID: account, baseline: baseline, at: cutoff) }
+            await gate.wait()
+            #expect(model.isBusy && model.periodReports.isEmpty)
+            await gate.release()
+            #expect(await request.value == nil)
+            #expect(model.hasError && !model.isBusy && model.periodReports.isEmpty)
+            #expect(await storage.reads == reads + failingRead)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func directPeriodShareRecheckFailureEndsRequestAndAllowsExplicitRetry() async throws {
+        let (model, storage) = await setup()
+        await model.chooseAccount("ordinary-b")
+        let baseline = try #require(model.preparationBaseline), reads = await storage.reads
+        let gate = PortfolioWorkspaceGate(), key = "context:\(reads + 3)"
+        await storage.gate(key, gate); await storage.fail(key)
+        let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+        let request = Task { await model.generatePeriodShare(accountID: "ordinary-b", baseline: baseline, at: cutoff) }
+        await gate.wait()
+        #expect(model.isBusy && model.periodReports.count == 3)
+        await gate.release()
+        #expect(await request.value == nil)
+        #expect(model.hasError && !model.isBusy && model.periodReports.count == 3)
+        #expect(await storage.reads == reads + 3)
+        // Failure returns to the caller; only a new explicit request retries.
+        let retry = await model.generatePeriodShare(accountID: "ordinary-b", baseline: baseline, at: cutoff)
+        #expect(retry?.periodSelection == .month && !model.hasError && !model.isBusy)
+        #expect(await storage.reads == reads + 6)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+    }
+    @Test func directPeriodShareCancellationOrDepartureCannotPublishIntoANewerRequest() async throws {
+        for pausedRead in [1, 3] {
+            for departed in [false, true] {
+                let (model, storage) = await setup()
+                let account = try #require(model.selectedAccountID), baseline = try #require(model.preparationBaseline)
+                let reads = await storage.reads, oldGate = PortfolioWorkspaceGate(), newGate = PortfolioWorkspaceGate()
+                await storage.gate("context:\(reads + pausedRead)", oldGate)
+                let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+                let old = Task { await model.generatePeriodShare(accountID: account, baseline: baseline, at: cutoff) }
+                await oldGate.wait()
+                if departed { model.disappear(); await model.load() }
+                else { old.cancel(); model.cancelPeriodReports() }
+                await model.chooseAccount("ordinary-b")
+                let current = try #require(model.preparationBaseline), newRead = await storage.reads + 1
+                await storage.gate("context:\(newRead)", newGate)
+                let newer = Task { await model.generatePeriodShare(accountID: "ordinary-b", baseline: current, at: cutoff) }
+                await newGate.wait()
+                let message = model.message
+                await oldGate.release()
+                #expect(await old.value == nil)
+                #expect(model.isBusy && !model.hasError && model.message == message && model.periodReports.isEmpty)
+                #expect(model.preparationBaseline == current && model.selectedAccountID == "ordinary-b")
+                await newGate.release()
+                let result = await newer.value
+                #expect(result?.periodSelection == .month && !model.isBusy && !model.hasError)
+                #expect(model.periodReports.allSatisfy { $0.accountID == "ordinary-b" && !$0.containsSyntheticRecords })
+                #expect(await storage.prepares == 0)
+                #expect(await storage.commits == 0)
+            }
+        }
+    }
+    @Test func quickPeriodShareSupportsVerifiedZeroWithoutPreparingOrSavingAValuationReport() async throws {
+        let (model, storage) = await setup()
+        await model.chooseAccount("ordinary-b")
+        let reports = try await generateQuickReports(model), baseline = try #require(model.preparationBaseline)
+        let initialReads = await storage.reads
+        var options = InvestmentShareOptions(); options.showAmounts = true
+        for report in reports {
+            let result = await model.preparePeriodShare(report)
+            let snapshot = try #require(result), card = snapshot.card(options: options)
+            #expect(card.amount == "0.00 USD" && card.profitLabel == "已入账收益")
+            #expect(!snapshot.supportsReturn && !snapshot.supportsHoldingNames)
+        }
+        #expect(model.periodReports == reports && model.preparationBaseline == baseline)
+        #expect(model.report == nil && model.savedReport == nil && model.preview == nil && !model.canSave)
+        #expect(!model.isBusy && !model.hasError)
+        #expect(await storage.reads == initialReads + 3)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+        #expect(await storage.records.isEmpty)
+        #expect(await storage.plans.isEmpty)
+        #expect(await storage.cancelled.isEmpty)
+    }
+    @Test func quickPeriodShareRejectsOtherAccountOrReplacedReportBeforeReadingStorage() async throws {
+        for transition in ["account", "regenerated", "cancelled", "reloaded"] {
+            let (model, storage) = await setup()
+            let reports = try await generateQuickReports(model), report = try #require(reports.first)
+            switch transition {
+            case "account": await model.chooseAccount("ordinary-b")
+            case "regenerated": _ = try await generateQuickReports(model, at: "2026-01-08T22:00:00Z")
+            case "cancelled": model.cancelPeriodReports()
+            default: await model.load()
+            }
+            let expected = model.periodReports, expectedMessage = model.message, reads = await storage.reads
+            #expect(await model.preparePeriodShare(report) == nil)
+            #expect(model.periodReports == expected && model.message == expectedMessage && !model.isBusy && !model.hasError)
+            #expect(await storage.reads == reads)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func quickPeriodShareRejectsEitherRevisionChangedBeforeOrDuringItsRecheck() async throws {
+        for duringRead in [false, true] {
+            for ledgerChanged in [true, false] {
+                let (model, storage) = await setup()
+                let reports = try await generateQuickReports(model), report = try #require(reports.first)
+                let reads = await storage.reads
+                let snapshot: InvestmentShareSnapshot?
+                if duringRead {
+                    let gate = PortfolioWorkspaceGate()
+                    await storage.gate("context:\(reads + 1):before", gate)
+                    let sharing = Task { await model.preparePeriodShare(report) }
+                    await gate.wait()
+                    #expect(model.isBusy)
+                    if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+                    await gate.release(); snapshot = await sharing.value
+                } else {
+                    if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+                    snapshot = await model.preparePeriodShare(report)
+                }
+                #expect(snapshot == nil && model.periodReports.isEmpty && model.context == nil)
+                #expect(model.hasError && !model.isBusy && model.report == nil && model.savedReport == nil)
+                #expect(await storage.reads == reads + 1)
+                #expect(await storage.prepares == 0)
+                #expect(await storage.commits == 0)
+            }
+        }
+    }
+    @Test func cancelledOrDepartedPeriodShareCannotPublishIntoANewerAccountOrReleaseItsBusyState() async throws {
+        for departed in [false, true] {
+            for fails in [false, true] {
+                let (model, storage) = await setup()
+                let reports = try await generateQuickReports(model), report = try #require(reports.first)
+                let read = await storage.reads + 1, key = "context:\(read)"
+                let oldGate = PortfolioWorkspaceGate(), newGate = PortfolioWorkspaceGate()
+                await storage.gate(key, oldGate)
+                if fails { await storage.fail(key) }
+                let sharing = Task { await model.preparePeriodShare(report) }
+                await oldGate.wait()
+                if departed { model.disappear(); await model.load() }
+                else { model.cancelPeriodReports() }
+                #expect(!model.isBusy && model.periodReports.isEmpty)
+                await model.chooseAccount("ordinary-b")
+                let baseline = try #require(model.preparationBaseline), nextRead = await storage.reads + 1
+                await storage.gate("context:\(nextRead)", newGate)
+                let cutoff = try LedgerCSV.timestamp("2026-01-07T22:00:00Z")
+                let newer = Task { await model.generatePeriodReports(accountID: "ordinary-b", baseline: baseline, at: cutoff) }
+                await newGate.wait()
+                let currentMessage = model.message
+                await oldGate.release()
+                #expect(await sharing.value == nil)
+                #expect(model.isBusy && model.periodReports.isEmpty && !model.hasError && model.message == currentMessage)
+                #expect(model.selectedAccountID == "ordinary-b" && model.preparationBaseline == baseline)
+                await newGate.release(); await newer.value
+                #expect(!model.isBusy && !model.hasError && model.periodReports.count == 3)
+                #expect(model.periodReports.allSatisfy { $0.accountID == "ordinary-b" })
+                #expect(await storage.prepares == 0)
+                #expect(await storage.commits == 0)
+            }
+        }
+    }
+    @Test func taskCancelledPeriodShareSuppressesLateSuccessAndFailureAndCanBeRetried() async throws {
+        for fails in [false, true] {
+            let (model, storage) = await setup()
+            let reports = try await generateQuickReports(model), report = try #require(reports.first)
+            let read = await storage.reads + 1, key = "context:\(read)", gate = PortfolioWorkspaceGate()
+            await storage.gate(key, gate)
+            if fails { await storage.fail(key) }
+            let sharing = Task { await model.preparePeriodShare(report) }
+            await gate.wait(); sharing.cancel(); await gate.release()
+            #expect(await sharing.value == nil)
+            #expect(model.periodReports == reports && !model.isBusy && !model.hasError && model.message == nil)
+            #expect(await model.preparePeriodShare(report) != nil)
+            #expect(!model.isBusy && !model.hasError)
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func periodShareReadFailureDoesNotPublishButKeepsTheSameReportAvailableForRetry() async throws {
+        let (model, storage) = await setup()
+        let reports = try await generateQuickReports(model), report = try #require(reports.first)
+        await storage.fail("context")
+        #expect(await model.preparePeriodShare(report) == nil)
+        #expect(model.periodReports == reports && model.hasError && !model.isBusy)
+        #expect(model.report == nil && model.savedReport == nil)
+        #expect(await model.preparePeriodShare(report) != nil)
+        #expect(model.periodReports == reports && !model.hasError && !model.isBusy)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+        #expect(await storage.cancelled.isEmpty)
     }
     @Test func localFormNeverInventsCalendarEvidenceOrTimezone() throws {
         let draft = PortfolioInputDraft()

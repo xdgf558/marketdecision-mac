@@ -553,30 +553,102 @@ import XCTest
         waitAbsent(confirmation)
         XCTAssertTrue(share.waitForExistence(timeout: 10)); waitEnabled(share)
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
-        share.click()
+        // Full valuation cards retain their own saved/replayed-report gate.
+        let frozenShare = mainWindow.buttons["investmentShareFrozen"]
+        expandDisclosure("investmentPeriodReport", revealing: frozenShare)
+        reach(frozenShare); waitEnabled(frozenShare); frozenShare.click()
         let sharing = mainWindow.sheets.containing(.button, identifier: "investmentShareCopy").firstMatch
         XCTAssertTrue(sharing.waitForExistence(timeout: 5))
         XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
         XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
         XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
-        XCTAssertEqual(sharing.checkBoxes["investmentShareAmounts"].value as? String, "0")
+        XCTAssertEqual(sharing.descendants(matching: .any)["investmentShareHideAmounts"].value as? String, "1")
         XCTAssertEqual(sharing.checkBoxes["investmentShareHoldings"].value as? String, "0")
         // Preview only: no clipboard mutation, browser launch, file panel or post.
-        sharing.buttons["完成"].click(); waitAbsent(sharing)
-        // The daily button now creates all rolling periods directly, without
-        // replacing the independently frozen valuation/share report above.
+        sharing.buttons["investmentShareClose"].click(); waitAbsent(sharing)
+        // Quick cards use booked P&L only, without promoting their results to
+        // complete valuation, return-rate or frozen-report evidence.
         let quick = mainWindow.buttons["investmentGenerateReport"]
+        func waitReportAction(_ element: XCUIElement) {
+            let ready = NSPredicate { _, _ in element.exists && element.isEnabled && element.isHittable }
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: ready, object: element)], timeout: 10),
+                           .completed, element.debugDescription)
+        }
         XCTAssertTrue(quick.waitForExistence(timeout: 5)); waitEnabled(quick); quick.click()
         let quickSheet = mainWindow.sheets.containing(.button, identifier: "investmentQuickReportsClose").firstMatch
         XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
         for period in ["year", "quarter", "month"] {
             waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
+            XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
         }
         XCTAssertFalse(quickSheet.textViews["investmentCalendarDays"].exists)
         XCTAssertFalse(quickSheet.textFields["investmentStartDay"].exists)
         XCTAssertFalse(quickSheet.buttons["investmentConfirmSave"].exists)
+        let monthShare = quickSheet.buttons["investmentQuickShare-month"]
+        waitEnabled(monthShare); monthShare.click()
+        // Native nested sheets may be exposed as siblings or descendants.
+        // Use unique controls and the card itself, not an ancestor's sheet match.
+        let quickPreview = mainWindow.descendants(matching: .any)["investmentSharePreview"].firstMatch
+        let shareClose = mainWindow.buttons["investmentShareClose"]
+        XCTAssertTrue(quickPreview.waitForExistence(timeout: 5))
+        XCTAssertTrue(quickPreview.staticTexts["已入账收益"].exists)
+        waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+        XCTAssertFalse(mainWindow.checkBoxes["investmentShareReturn"].exists)
+        XCTAssertFalse(mainWindow.checkBoxes["investmentShareHoldings"].exists)
+        XCTAssertFalse(quickPreview.staticTexts["Daily workflow test"].exists)
+        let amounts = mainWindow.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch
+        XCTAssertEqual(amounts.value as? String, "1")
+        for index in 0..<3 {
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
+        }
+        amounts.click()
+        waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
+        // Native preview only: changing periods must recheck storage and retain
+        // privacy settings. Do not open the save panel or invoke clipboard/X.
+        for (period, title) in [("year", "近1年"), ("quarter", "近1季度"), ("month", "近1个月")] {
+            let select = mainWindow.buttons["investmentSharePeriod-" + period]
+            waitEnabled(select); select.click()
+            waitText(title, in: quickPreview.staticTexts["investmentShareCardPeriod"])
+            waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
+        }
+        amounts.click()
+        waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+        for index in 0..<3 {
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
+        }
+        waitEnabled(mainWindow.buttons["investmentShareSave"])
+        waitEnabled(shareClose); shareClose.click(); waitAbsent(shareClose)
+        waitAbsent(quickPreview)
         quickSheet.buttons["investmentQuickReportsClose"].click(); waitAbsent(quickSheet)
+        // The ordinary report must finish its loading-to-table transition and
+        // return control to the main window on every presentation. Merely
+        // finding three values does not prove the sheet can still be dismissed.
+        for _ in 0..<3 {
+            waitReportAction(quick); quick.click()
+            XCTAssertTrue(quickSheet.waitForExistence(timeout: 5))
+            for period in ["year", "quarter", "month"] {
+                waitText("$0.00", in: quickSheet.staticTexts["investmentQuickReport-" + period])
+                XCTAssertTrue(quickSheet.buttons["investmentQuickShare-" + period].exists)
+            }
+            waitAbsent(quickSheet.descendants(matching: .any)["investmentQuickReportsLoading"].firstMatch)
+            XCTAssertFalse(quickSheet.staticTexts["investmentQuickReportsError"].exists)
+            let closeReport = quickSheet.buttons["investmentQuickReportsClose"]
+            waitReportAction(closeReport); closeReport.click(); waitAbsent(quickSheet)
+            waitReportAction(quick)
+        }
         waitEnabled(share)
+        // Fast, read-only generation must reach the card without observing a
+        // transient busy edge. Reopening starts a fresh presentation each time.
+        for _ in 0..<3 {
+            waitReportAction(share); share.click()
+            XCTAssertTrue(quickPreview.waitForExistence(timeout: 10))
+            waitAbsent(mainWindow.descendants(matching: .any)["investmentQuickReportsLoading"].firstMatch)
+            XCTAssertFalse(mainWindow.staticTexts["investmentQuickReportsError"].exists)
+            waitText("近1个月", in: quickPreview.staticTexts["investmentShareCardPeriod"])
+            waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
+            waitReportAction(shareClose); shareClose.click(); waitAbsent(quickPreview)
+            waitReportAction(quick)
+        }
         waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
         openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
         let reuse = mainWindow.buttons["investmentReuseEvidence"]

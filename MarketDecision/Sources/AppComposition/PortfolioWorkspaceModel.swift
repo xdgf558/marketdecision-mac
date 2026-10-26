@@ -109,10 +109,11 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
     /// One explicit action captures the account, both revisions and the same
     /// cutoff for all three rolling periods. No market evidence is fabricated,
     /// and no preview, approval or persistent performance record is created.
+    @discardableResult
     public func generatePeriodReports(accountID: String, baseline: PortfolioPreparationBaseline,
-                                      at cutoff: Date) async {
+                                      at cutoff: Date) async -> Bool {
         guard canPrepare, selectedAccountID == accountID,
-              baseline == preparationBaseline, !Task.isCancelled else { return }
+              baseline == preparationBaseline, !Task.isCancelled else { return false }
         let token = begin()
         periodReportOperation = token; periodReports = []
         defer {
@@ -121,7 +122,7 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
         }
         do {
             let initial = try await storage.context()
-            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return false }
             guard initial.ledger.revision == baseline.ledgerRevision,
                   initial.revision == baseline.performanceRevision else { throw PerformanceStoreError.stalePlan }
             let worker = Task.detached(priority: .userInitiated) {
@@ -130,17 +131,18 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
             let values = try await withTaskCancellationHandler {
                 try await worker.value
             } onCancel: { worker.cancel() }
-            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return false }
             let current = try await storage.context()
-            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return false }
             guard current.ledger.revision == initial.ledger.revision,
                   current.revision == initial.revision else { throw PerformanceStoreError.stalePlan }
             context = current; periodReports = values
             message = "已按当前账户生成近一年、近一季度和近一月的已入账收益；不含持仓浮盈或收益率。"
+            return true
         } catch is CancellationError {
             // Cancellation and leaving the page have no late UI result.
         } catch {
-            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return }
+            guard ownsPeriodReport(token, accountID: accountID, epoch: baseline.inputEpoch) else { return false }
             periodReports = []; hasError = true
             if (error as? PerformanceStoreError) == .stalePlan {
                 context = nil
@@ -148,6 +150,60 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
             } else {
                 message = "区间报告未能完成账本核对，未用零或示例金额替代。请刷新后重试。"
             }
+        }
+        return false
+    }
+
+    /// Direct sharing is one awaited request, not an observation of a transient
+    /// busy-state edge. Generation must finish before the share revision check.
+    public func generatePeriodShare(accountID: String, baseline: PortfolioPreparationBaseline,
+                                    at cutoff: Date) async -> InvestmentShareSnapshot? {
+        guard await generatePeriodReports(accountID: accountID, baseline: baseline, at: cutoff),
+              !Task.isCancelled, !hasError, selectedAccountID == accountID,
+              preparationBaseline == baseline,
+              let report = periodReports.first(where: {
+                  $0.period == .month && $0.accountID == accountID &&
+                  $0.ledgerRevision == baseline.ledgerRevision && $0.generatedAt == cutoff
+              }) else { return nil }
+        return await preparePeriodShare(report)
+    }
+
+    /// Recheck the currently displayed booked report before making its share
+    /// projection. This does not create a frozen NAV report or write the ledger.
+    public func preparePeriodShare(_ report: InvestmentPeriodReport) async -> InvestmentShareSnapshot? {
+        guard canPrepare, let baseline = preparationBaseline,
+              selectedAccountID == report.accountID,
+              baseline.ledgerRevision == report.ledgerRevision,
+              periodReports.contains(report), !Task.isCancelled else { return nil }
+        let token = begin()
+        // A share request belongs to the same visible quick-report session, so
+        // closing it also invalidates this in-flight read and its busy state.
+        periodReportOperation = token
+        defer {
+            if periodReportOperation == token { periodReportOperation = nil }
+            finish(token)
+        }
+        do {
+            let current = try await storage.context()
+            guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                  periodReports.contains(report) else { return nil }
+            guard current.ledger.revision == baseline.ledgerRevision,
+                  current.revision == baseline.performanceRevision else { throw PerformanceStoreError.stalePlan }
+            context = current
+            return InvestmentShareSnapshot(periodReport: report)
+        } catch is CancellationError {
+            return nil
+        } catch {
+            guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                  periodReports.contains(report) else { return nil }
+            hasError = true
+            if (error as? PerformanceStoreError) == .stalePlan {
+                periodReports = []; context = nil
+                message = "账本或报告版本已变化，未生成旧数据的分享卡片。请刷新后重新生成区间报告。"
+            } else {
+                message = "分享前未能核对账本，未生成卡片。请重试；没有补造收益或估值。"
+            }
+            return nil
         }
     }
 
