@@ -281,6 +281,11 @@
     {"path": "Sources/AppComposition/InvestmentPresentation.swift", "kind": "tested", "suites": ["FoundationTests.InvestmentPresentationTests", "FoundationTests.InvestmentDailyFlowTests"], "reason": "Reconciled period profit, no deposit-as-profit, explicit missingness, private-by-default share projection and a fixed payload-free X URL; not external publication."}
   ],
   "tests": [
+    {"selector": "FoundationTests.OptionContractInputDraftTests/invalidStrategyQuantityRejectsCalculationOpeningAndTransitionAtomically(_:)", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionContractInputDraftTests/singleLegTransitionDoesNotRewriteUnusedProtectionFields()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionTradeEntryDraftTests/contractParameterSpreadQuantityMatchesCalculationOpeningAndCommittedLots()", "source": "Tests/FoundationTests/OptionTradeEntryDraftTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionTradeEntryDraftTests/actualSpreadQuantityEditsAfterInitializationRemainIndependentThroughCommit()", "source": "Tests/FoundationTests/OptionTradeEntryDraftTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionTradeEntryDraftTests/fullModeOpeningPreservesEachLegQuantityAndRejectsInvalidProtectionQuantity()", "source": "Tests/FoundationTests/OptionTradeEntryDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.LedgerLocalManualContractTests/localAndLegacyEncodingPreserveTheirDistinctEvidenceShapes()", "source": "Tests/FoundationTests/LedgerLocalManualContractTests.swift", "execution": "required"},
     {"selector": "FoundationTests.LedgerLocalManualContractTests/missingLegacyDatesCannotDecodeIntoLocalPermission()", "source": "Tests/FoundationTests/LedgerLocalManualContractTests.swift", "execution": "required"},
     {"selector": "FoundationTests.LedgerLocalManualContractTests/localTermsRejectNonstandardDeliveryAndInventedOfficialTimes()", "source": "Tests/FoundationTests/LedgerLocalManualContractTests.swift", "execution": "required"},
@@ -448,7 +453,7 @@
     {"selector": "FoundationTests.OptionContractInputDraftTests/simpleChecklistNeverRequiresAccountIDsQuoteAssistanceOrPlotSamples()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OptionContractInputDraftTests/missingOrInvalidPrimaryInputsAreRejected(_:)", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OptionContractInputDraftTests/explicitExpiryInstantDeterminesNewYorkDateWithoutInventedTime()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.OptionContractInputDraftTests/strategyQuantityIsSharedWhileOriginalProtectionQuantityRemainsEditableInFullMode()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.OptionContractInputDraftTests/enteringAdvancedResearchCarriesSharedStrategyQuantity(_:)", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OptionContractInputDraftTests/explicitFeesAndChartSamplesAreRetainedAndInvalidSamplesAreNeverReplaced()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OptionContractInputDraftTests/advancedInputsRequireExplicitFullEvidenceModeWithoutLoss(_:)", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},
     {"selector": "FoundationTests.OptionContractInputDraftTests/frozenInputReplayAndCopiedSimpleDraftRetainModeSourcesAndExactTimes()", "source": "Tests/FoundationTests/OptionContractInputDraftTests.swift", "execution": "required"},

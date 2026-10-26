@@ -644,7 +644,7 @@ struct OptionLabContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("进入进阶研究") { draft.usesContractParametersOnly = false }
+                Button("进入进阶研究") { _ = enterAdvancedResearch() }
                     .accessibilityIdentifier("optionUseDetailedResearch")
             }
         }.disabled(blocked)
@@ -1246,8 +1246,7 @@ struct OptionLabContent: View {
                 } else {
                     Button("补充模型假设") {
                         copyToDraft(report)
-                        draft.usesContractParametersOnly = false
-                        focusInput(.pricing)
+                        if enterAdvancedResearch() { focusInput(.pricing) }
                     }
                         .accessibilityIdentifier("optionLabConfigurePricing")
                 }
@@ -1751,6 +1750,16 @@ struct OptionLabContent: View {
             }
             Text("快照只保存在独立期权实验室库；当前研究／账本归档不含它。本页没有导出、恢复或文件面板操作。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+    private func enterAdvancedResearch() -> Bool {
+        do {
+            try draft.enterAdvancedResearch()
+            inputError = nil
+            return true
+        } catch {
+            inputError = "请先填写有效的策略张数，再进入进阶研究；保护腿将使用相同张数。"
+            return false
         }
     }
     private func copyToDraft(_ report: OptionLabReport) {

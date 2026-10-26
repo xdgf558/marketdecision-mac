@@ -54,6 +54,16 @@ private func optionEntryAutomatic(spread: Bool = false) throws -> OptionTradeEnt
     return draft
 }
 
+private func optionEntryQuantitySource(_ strategy: OptionLabStrategy, retainedLongQuantity: String) -> OptionLabInputDraft {
+    var source = OptionLabInputDraft()
+    source.strategy = strategy; source.symbol = "XYZ"; source.underlyingPrice = "100"
+    source.expirationDate = "2026-11-20"; source.settlementAt = "2026-11-20T21:00:00Z"
+    source.shortLeg.strike = "100"; source.shortLeg.quantity = "5"; source.shortLeg.enteredPrice = "2.5"
+    source.longLeg.strike = strategy == .putCreditSpread ? "95" : "105"
+    source.longLeg.quantity = retainedLongQuantity; source.longLeg.enteredPrice = "1"
+    return source
+}
+
 private func optionEntryContract(_ event: LedgerEvent) throws -> LedgerOptionVersion {
     guard case .trade(let trade) = event.payload, case .option(let contract) = trade.instrument else {
         throw LedgerError.invalidContract
@@ -255,6 +265,104 @@ struct OptionTradeEntryDraftTests {
                 #expect(delivery.quantity == (try Money("100")) && delivery.basisWeight == (try Money("1")))
                 #expect(contract.settlementType == .physicalEquity && contract.exerciseStyle == .american)
                 #expect(!contract.memoReferences.isEmpty && !contract.memoReferences.contains("Unverified research expiry assumption"))
+            }
+        }
+    }
+
+    @Test func contractParameterSpreadQuantityMatchesCalculationOpeningAndCommittedLots() async throws {
+        let recordedAt = try LedgerCSV.timestamp("2026-10-24T14:00:00Z")
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            for retainedLongQuantity in ["1", "old-invalid-quantity"] {
+                let source = optionEntryQuantitySource(strategy, retainedLongQuantity: retainedLongQuantity), original = source
+                #expect(source.usesContractParametersOnly && source.usesEnteredPrices)
+                let calculation = try source.buildForCalculation(createdAt: recordedAt)
+                #expect(calculation.shortLeg.quantity == 5 && calculation.longLeg?.quantity == 5)
+                let report = try OptionLabEngine.calculate(calculation)
+                #expect(report.selectedOutcome.grossCredit == (try Money("750")))
+                #expect(report.selectedOutcome.totalFees == (try Money("6.5")))
+                var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+                #expect(draft.legs.map { $0.form.quantity } == ["5", "5"])
+                draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+                for index in draft.legs.indices {
+                    draft.legs[index].form.unitPrice = index == 0 ? "2.5" : "1"
+                    draft.legs[index].form.fee = "1.3"
+                }
+                let prepared = draft, store = try LedgerStore(path: ":memory:")
+                let initial = try await store.snapshot()
+                let account = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+                let events = try draft.events(in: account)
+                let preview = try await store.previewManual(events: events, expectedRevision: account.revision)
+                #expect(preview.canCommit && preview.rows.count == 2 && preview.rows.allSatisfy { $0.disposition == .new })
+                let projected = try #require(preview.projectedState)
+                #expect(projected.lots.count == 2)
+                for side in [LedgerPositionSide.short, .long] {
+                    let lot = try #require(projected.lots.first { $0.side == side })
+                    #expect(lot.quantityOpened == (try Money("5")) && lot.quantityRemaining == (try Money("5")))
+                }
+                let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
+                #expect(committed.state == projected && committed.events.count == 2)
+                let duplicate = try await store.previewManual(events: draft.events(in: committed), expectedRevision: committed.revision)
+                #expect(duplicate.canCommit && duplicate.rows.count == 2 && duplicate.rows.allSatisfy { $0.disposition == .duplicate })
+                #expect(try await store.commit(planID: duplicate.id, expectedRevision: committed.revision) == committed)
+                #expect(draft == prepared && source == original && source.longLeg.quantity == retainedLongQuantity)
+            }
+        }
+    }
+
+    @Test func actualSpreadQuantityEditsAfterInitializationRemainIndependentThroughCommit() async throws {
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            let source = optionEntryQuantitySource(strategy, retainedLongQuantity: "old-invalid-quantity"), original = source
+            var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+            #expect(draft.legs.map { $0.form.quantity } == ["5", "5"])
+            draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+            draft.legs[0].form.quantity = "3"; draft.legs[1].form.quantity = "2"
+            draft.legs[0].form.fee = "1.95"; draft.legs[1].form.fee = "1.3"
+            try draft.applyOpeningReferencePrices(from: source)
+            #expect(draft.legs.map { $0.form.quantity } == ["3", "2"])
+            let prepared = draft, store = try LedgerStore(path: ":memory:")
+            let initial = try await store.snapshot()
+            let account = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
+            let events = try draft.events(in: account)
+            try #require(events.count == 2)
+            guard case .trade(let short) = events[0].payload, case .trade(let long) = events[1].payload else {
+                Issue.record("Expected the two independently edited actual fills"); return
+            }
+            #expect(short.side == .sell && short.quantity == (try Money("3")))
+            #expect(long.side == .buy && long.quantity == (try Money("2")))
+            let preview = try await store.previewManual(events: events, expectedRevision: account.revision)
+            #expect(preview.canCommit && preview.rows.count == 2)
+            let projected = try #require(preview.projectedState)
+            let projectedShort = try #require(projected.lots.first { $0.side == .short })
+            let projectedLong = try #require(projected.lots.first { $0.side == .long })
+            #expect(projectedShort.quantityRemaining == (try Money("3")) && projectedLong.quantityRemaining == (try Money("2")))
+            let committed = try await store.commit(planID: preview.id, expectedRevision: account.revision)
+            #expect(committed.state == projected && committed.state.lots.count == 2)
+            #expect(try draft.events(in: committed) == events)
+            #expect(draft == prepared && source == original && source.shortLeg.quantity == "5")
+        }
+    }
+
+    @Test func fullModeOpeningPreservesEachLegQuantityAndRejectsInvalidProtectionQuantity() throws {
+        let snapshot = try optionEntrySnapshot()
+        for strategy in [OptionLabStrategy.putCreditSpread, .callCreditSpread] {
+            var source = optionEntryQuantitySource(strategy, retainedLongQuantity: "1")
+            source.usesContractParametersOnly = false
+            let original = source
+            var draft = try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
+            #expect(draft.legs.map { $0.form.quantity } == ["5", "1"])
+            draft.accountID = "A"; draft.timestamp = "2026-10-24T14:00:00Z"
+            for index in draft.legs.indices {
+                draft.legs[index].form.unitPrice = index == 0 ? "2.5" : "1"
+                draft.legs[index].form.fee = "0"
+            }
+            let events = try draft.events(in: snapshot), state = try optionEntrySnapshot(events).state
+            #expect(state.lots.count == 2)
+            #expect(state.lots.first { $0.side == .short }?.quantityRemaining == (try Money("5")))
+            #expect(state.lots.first { $0.side == .long }?.quantityRemaining == (try Money("1")))
+            #expect(source == original)
+            source.longLeg.quantity = "old-invalid-quantity"
+            #expect(throws: (any Error).self) {
+                try OptionTradeEntryDraft(openingFrom: source, automaticContractTerms: true)
             }
         }
     }

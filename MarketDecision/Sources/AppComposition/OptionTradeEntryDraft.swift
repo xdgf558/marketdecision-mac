@@ -126,10 +126,14 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
         let expiry = try MarketDate(iso8601: draft.expirationDate)
         guard (2000...2099).contains(expiry.year) else { throw OptionTradeEntryError.invalidContract }
         let kind: LedgerSecurityKind = draft.asset == .stock ? .stock : .etf
+        // Capture the same effective quantity as the simple payoff builder.
+        // This applies only to initialization; actual fills remain editable per leg.
+        let strategyQuantity: Money? = draft.usesContractParametersOnly
+            ? try Money(String(draft.contractParameterQuantity())) : nil
         func leg(_ source: OptionLabLegDraft, side: LedgerSide) throws -> OptionTradeEntryLegDraft {
             guard source.multiplier == "100" else { throw OptionTradeEntryError.invalidContract }
             let strike = try Money(source.strike.trimmingCharacters(in: .whitespacesAndNewlines))
-            let quantity = try optionTradeQuantity(source.quantity)
+            let quantity = try strategyQuantity ?? optionTradeQuantity(source.quantity)
             let scaledStrike = try strike.multiplied(by: "1000")
             let digits = scaledStrike.decimalString
             guard strike.amount > 0, !digits.contains("."), digits.count <= 8 else { throw OptionTradeEntryError.invalidContract }

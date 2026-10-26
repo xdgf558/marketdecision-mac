@@ -162,6 +162,26 @@ public struct OptionLabInputDraft: Equatable, Sendable {
     public var hasLongLeg: Bool { strategy == .putCreditSpread || strategy == .callCreditSpread }
     public var right: OptionLabRight { strategy == .coveredCall || strategy == .callCreditSpread ? .call : .put }
 
+    /// One visible strategy quantity controls every leg in contract-only mode.
+    /// Calculation, actual-entry initialization and the full-mode transition
+    /// must not read a hidden protection-leg quantity left by an older draft.
+    func contractParameterQuantity() throws -> Int {
+        guard let quantity = Int(shortLeg.quantity), quantity > 0,
+              quantity <= Int.max / 200 else { throw OptionLabDraftError.invalidNumber }
+        return quantity
+    }
+
+    /// Materialize the effective simple-mode quantities before exposing the
+    /// individual leg fields. Validation happens before mutation. Once in full
+    /// mode, user-edited quantities remain independent and are never reset here.
+    public mutating func enterAdvancedResearch() throws {
+        guard usesContractParametersOnly else { return }
+        let quantity = String(try contractParameterQuantity())
+        shortLeg.quantity = quantity
+        if hasLongLeg { longLeg.quantity = quantity }
+        usesContractParametersOnly = false
+    }
+
     public init(input: OptionLabInput) {
         chainEvidence = input.chainEvidence
         usesEnteredPrices = input.usesEnteredPrices
@@ -297,7 +317,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
             reference: "MANUAL-CONTRACT-PARAMETERS; user-entered prices; timestamps are local calculation/entry metadata, not market quote times",
             enteredAt: createdAt)
         let current = try Money(underlyingPrice)
-        guard let quantity = Int(shortLeg.quantity) else { throw OptionLabDraftError.invalidNumber }
+        let quantity = try contractParameterQuantity()
         func leg(_ draft: OptionLabLegDraft) throws -> OptionLabLeg {
             guard let multiplier = Int(draft.multiplier) else { throw OptionLabDraftError.invalidNumber }
             let strike = try Money(draft.strike)
@@ -338,7 +358,7 @@ public struct OptionLabInputDraft: Equatable, Sendable {
         if (try? Money(underlyingPrice).amount).map({ $0 > 0 }) != true {
             issue(.underlying, "prices", "标的当前价格必须明确填写且大于零。")
         }
-        if Int(shortLeg.quantity).map({ $0 > 0 && $0 <= Int.max / 200 }) != true {
+        if (try? contractParameterQuantity()) == nil {
             issue(.shortLeg, "quantity", "策略张数必须是有效正整数；保护腿使用相同张数。")
         }
         let legs: [(OptionDailySection, String, OptionLabLegDraft)] = [(.shortLeg, "卖出合约", shortLeg)]

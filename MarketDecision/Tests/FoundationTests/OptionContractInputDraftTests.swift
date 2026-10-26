@@ -99,15 +99,51 @@ struct OptionContractInputDraftTests {
         #expect(throws: OptionLabDraftError.invalidDate) { try value.buildForCalculation(createdAt: calculation) }
     }
 
-    @Test func strategyQuantityIsSharedWhileOriginalProtectionQuantityRemainsEditableInFullMode() throws {
-        var value = draft(.putCreditSpread)
-        value.longLeg.quantity = "7"
+    @Test(arguments: [OptionLabStrategy.putCreditSpread, .callCreditSpread])
+    func enteringAdvancedResearchCarriesSharedStrategyQuantity(_ strategy: OptionLabStrategy) throws {
+        var value = draft(strategy)
+        value.shortLeg.quantity = "5"; value.longLeg.quantity = "1"
+        let original = value
         #expect(value.calculationChecklist(createdAt: calculation).isEmpty)
         let input = try value.buildForCalculation(createdAt: calculation)
-        #expect(input.shortLeg.quantity == 3 && input.longLeg?.quantity == 3)
-        #expect(value.longLeg.quantity == "7")
-        value.usesContractParametersOnly = false
+        #expect(input.shortLeg.quantity == 5 && input.longLeg?.quantity == 5)
+        #expect(value == original) // Read-only calculation does not mutate the draft.
+        var expected = original
+        expected.longLeg.quantity = "5"; expected.usesContractParametersOnly = false
+        try value.enterAdvancedResearch()
+        #expect(value == expected) // No source, cash or quote evidence is filled.
+        #expect(!value.calculationChecklist(createdAt: calculation).groups.flatMap(\.issues).contains { $0.id == "longLeg.quantityMatch" })
+        #expect(!value.calculationChecklist(createdAt: calculation).isEmpty) // Full evidence is still required.
+
+        value.longLeg.quantity = "2"
+        let edited = value
+        try value.enterAdvancedResearch()
+        #expect(value == edited) // Already-full drafts retain explicit per-leg edits.
         #expect(value.calculationChecklist(createdAt: calculation).groups.flatMap(\.issues).contains { $0.id == "longLeg.quantityMatch" })
+    }
+
+    @Test(arguments: ["", "0", "-1", "1.5", "invalid", String(Int.max)])
+    func invalidStrategyQuantityRejectsCalculationOpeningAndTransitionAtomically(_ quantity: String) throws {
+        var value = draft(.putCreditSpread)
+        value.expirationDate = "2025-11-14"
+        value.shortLeg.quantity = quantity; value.longLeg.quantity = "1"
+        let original = value
+        #expect(value.calculationChecklist(createdAt: calculation).groups.flatMap(\.issues).contains { $0.id == "shortLeg.quantity" })
+        #expect(throws: OptionLabDraftError.invalidNumber) { try value.buildForCalculation(createdAt: calculation) }
+        #expect(throws: OptionLabDraftError.invalidNumber) {
+            try OptionTradeEntryDraft(openingFrom: value, automaticContractTerms: true)
+        }
+        #expect(throws: OptionLabDraftError.invalidNumber) { try value.enterAdvancedResearch() }
+        #expect(value == original)
+    }
+
+    @Test func singleLegTransitionDoesNotRewriteUnusedProtectionFields() throws {
+        var value = draft(.coveredCall)
+        value.longLeg.quantity = "unused"
+        var expected = value
+        expected.usesContractParametersOnly = false
+        try value.enterAdvancedResearch()
+        #expect(value == expected)
     }
 
     @Test func explicitFeesAndChartSamplesAreRetainedAndInvalidSamplesAreNeverReplaced() throws {
@@ -171,7 +207,7 @@ struct OptionContractInputDraftTests {
     @Test func copiedLocalRecordTimesCannotBecomeFullQuoteEvidenceWithoutExplicitConfirmation() throws {
         let input = try draft().buildForCalculation(createdAt: calculation)
         var copy = OptionLabInputDraft(input: input)
-        copy.usesContractParametersOnly = false
+        try copy.enterAdvancedResearch()
         copy.cashBeforeTrade = "100000"; copy.committedCash = "0"
         copy.availableShares = "0"; copy.committedShares = "0"; copy.capitalReference = "explicit balance"
         #expect(copy.calculationChecklist(createdAt: calculation).groups.flatMap(\.issues).contains { $0.id == "timing.recordedMetadata" })
@@ -188,7 +224,7 @@ struct OptionContractInputDraftTests {
         let simple = draft()
         #expect(throws: (any Error).self) { try simple.build(createdAt: calculation) }
         var full = simple
-        full.usesContractParametersOnly = false
+        try full.enterAdvancedResearch()
         let settlement = try #require(ISO8601DateFormatter().date(from: full.settlementAt))
         try full.applyManualQuoteAssistance(quotedAt: calculation, settlementAt: settlement,
             quoteReference: "explicit full manual source", expiryReference: "explicit user expiry")
