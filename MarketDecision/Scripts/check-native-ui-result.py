@@ -7,6 +7,7 @@ import sys
 
 expected = {
     'testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries',
+    'testInvestmentQuickReportsAndSharesReopenWithoutBlocking',
     'testThreeDailyEntrancesKeepAdvancedToolsCollapsedAndReturn',
     'testMacroSourceExplicitPreviewApprovalAndFrozenReleaseCycleReplay',
     'testMarketStateMissingEvidenceFrozenReplayAndArchiveCancellation',

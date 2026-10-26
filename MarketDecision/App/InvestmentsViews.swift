@@ -332,21 +332,16 @@ private struct InvestmentsContent: View {
         return VStack(alignment: .leading, spacing: 6) {
             Divider()
             HStack(alignment: .top, spacing: 12) {
-                DisclosureGroup(isExpanded: $showsPeriodReport) {
-                    if let summary {
-                        if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
-                        reportDetails(summary)
-                        Button { prepareShare() } label: { Label("分享完整估值报告", systemImage: "square.and.arrow.up") }
-                            .buttonStyle(.plain).foregroundStyle(accent)
-                            .disabled(model.isBusy || model.savedReport == nil || summary.netPnL == nil)
-                            .accessibilityIdentifier("investmentShareFrozen")
-                    } else {
-                        Text("尚无完整估值报告。快捷区间报告直接汇总已入账收益；含持仓浮盈与收益率的报告可在高级详情中核算。")
-                            .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
-                    }
-                } label: {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) {
-                        Text("冻结区间报告").font(.callout.weight(.medium))
+                        Button { showsPeriodReport.toggle() } label: {
+                            Label("冻结区间报告", systemImage: showsPeriodReport ? "chevron.down" : "chevron.right")
+                                .font(.callout.weight(.medium))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(showsPeriodReport ? "已展开" : "已收起")
+                        .accessibilityIdentifier("investmentPeriodReport")
                         if let summary {
                             Text("\(summary.startDay) → \(summary.endDay)").font(.caption).foregroundStyle(.secondary)
                             Text(InvestmentSummary.amountText(summary.netPnL) + " USD")
@@ -355,7 +350,20 @@ private struct InvestmentsContent: View {
                                 .accessibilityIdentifier("investmentNetPnL")
                         }
                     }
-                }.accessibilityIdentifier("investmentPeriodReport")
+                    if showsPeriodReport {
+                        if let summary {
+                            if let reason = summary.unavailableReason { Text(reason).font(.callout).foregroundStyle(.orange) }
+                            reportDetails(summary)
+                            Button { prepareShare() } label: { Label("分享完整估值报告", systemImage: "square.and.arrow.up") }
+                                .buttonStyle(.plain).foregroundStyle(accent)
+                                .disabled(model.isBusy || model.savedReport == nil || summary.netPnL == nil)
+                                .accessibilityIdentifier("investmentShareFrozen")
+                        } else {
+                            Text("尚无完整估值报告。快捷区间报告直接汇总已入账收益；含持仓浮盈与收益率的报告可在高级详情中核算。")
+                                .font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+                        }
+                    }
+                }
                 Spacer(minLength: 0)
                 Button { generateQuickReports(sharing: true) } label: { Label("分享区间报告", systemImage: "square.and.arrow.up") }
                     .buttonStyle(.plain).foregroundStyle(accent)

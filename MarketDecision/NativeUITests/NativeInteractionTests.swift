@@ -557,6 +557,36 @@ import XCTest
         XCTAssertFalse(create.isEnabled)
         XCTAssertFalse(cash.exists)
     }
+    private func assertInvestmentToggleState(_ element: XCUIElement, _ expected: Bool,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        guard element.exists else {
+            XCTFail("Missing investment toggle: \(element.identifier)", file: file, line: line)
+            return
+        }
+        let raw = element.value
+        let actual: Bool?
+        let valueDescription: String
+        if let number = raw as? NSNumber {
+            // AX may bridge a native checkbox or switch through NSNumber.
+            // Mixed/unknown states are not equivalent to unchecked.
+            actual = number == NSNumber(value: 0) ? false
+                : (number == NSNumber(value: 1) ? true : nil)
+            valueDescription = number.stringValue
+        } else if let text = raw as? String {
+            // This also accepts NSString through Foundation bridging.
+            actual = text == "0" ? false : (text == "1" ? true : nil)
+            valueDescription = String(reflecting: text)
+        } else {
+            actual = nil
+            valueDescription = raw == nil ? "nil" : "unsupported non-scalar value"
+        }
+        let typeDescription = raw.map { String(reflecting: type(of: $0)) } ?? "nil"
+        // Only this synthetic host's toggle identifier and scalar AX value
+        // are included; no window/account/record hierarchy is logged.
+        XCTAssertEqual(actual, Optional(expected),
+            "Toggle \(element.identifier): AX type=\(typeDescription), value=\(valueDescription)",
+            file: file, line: line)
+    }
     func testInvestmentDailyAccountEvidenceSaveShareAndReuseKeepConfirmationBoundaries() {
         configure(); launchMainWindow(); selectPage("pageInvestments")
         let share = mainWindow.buttons["investmentShare"]
@@ -603,36 +633,6 @@ import XCTest
             XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: updated, object: element)], timeout: 5),
                            .completed, "Investment input did not accept the entered value: \(element.debugDescription)")
         }
-        func assertToggleState(_ element: XCUIElement, _ expected: Bool,
-                               file: StaticString = #filePath, line: UInt = #line) {
-            guard element.exists else {
-                XCTFail("Missing investment toggle: \(element.identifier)", file: file, line: line)
-                return
-            }
-            let raw = element.value
-            let actual: Bool?
-            let valueDescription: String
-            if let number = raw as? NSNumber {
-                // AX may bridge a native checkbox or switch through NSNumber.
-                // Mixed/unknown states are not equivalent to unchecked.
-                actual = number == NSNumber(value: 0) ? false
-                    : (number == NSNumber(value: 1) ? true : nil)
-                valueDescription = number.stringValue
-            } else if let text = raw as? String {
-                // This also accepts NSString through Foundation bridging.
-                actual = text == "0" ? false : (text == "1" ? true : nil)
-                valueDescription = String(reflecting: text)
-            } else {
-                actual = nil
-                valueDescription = raw == nil ? "nil" : "unsupported non-scalar value"
-            }
-            let typeDescription = raw.map { String(reflecting: type(of: $0)) } ?? "nil"
-            // Only this synthetic host's toggle identifier and scalar AX value
-            // are included; no window/account/record hierarchy is logged.
-            XCTAssertEqual(actual, Optional(expected),
-                "Toggle \(element.identifier): AX type=\(typeDescription), value=\(valueDescription)",
-                file: file, line: line)
-        }
         func evidence(_ prefix: String, reference: String) {
             let source = mainWindow.textFields[prefix + "Source"]
             expandDisclosure(prefix + "Details", revealing: source)
@@ -655,10 +655,10 @@ import XCTest
         }
         let flows = mainWindow.checkBoxes["investmentConfirmFlows"]
         XCTAssertTrue(flows.exists || flows.waitForExistence(timeout: 5)); reach(flows)
-        assertToggleState(flows, false)
+        assertInvestmentToggleState(flows, false)
         evidence("investmentFlow", reference: "empty-account-flows-v1")
-        reach(flows); waitEnabled(flows); assertToggleState(flows, false)
-        flows.click(); assertToggleState(flows, true)
+        reach(flows); waitEnabled(flows); assertInvestmentToggleState(flows, false)
+        flows.click(); assertInvestmentToggleState(flows, true)
         let calculate = mainWindow.buttons["investmentCalculate"]
         reach(calculate); waitEnabled(calculate); calculate.click()
         waitText("0.00 USD", in: mainWindow.staticTexts["investmentCalculationPnL"])
@@ -684,10 +684,42 @@ import XCTest
         XCTAssertTrue(sharing.descendants(matching: .any)["investmentSharePreview"].exists)
         XCTAssertTrue(sharing.staticTexts["金额已隐藏"].exists)
         XCTAssertFalse(sharing.staticTexts["Daily workflow test"].exists)
-        assertToggleState(sharing.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch, true)
-        assertToggleState(sharing.checkBoxes["investmentShareHoldings"], false)
+        assertInvestmentToggleState(sharing.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch, true)
+        assertInvestmentToggleState(sharing.checkBoxes["investmentShareHoldings"], false)
         // Preview only: no clipboard mutation, browser launch, file panel or post.
         sharing.buttons["investmentShareClose"].click(); waitAbsent(sharing)
+        waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
+        openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
+        let reuse = mainWindow.buttons["investmentReuseEvidence"]
+        XCTAssertTrue(reuse.exists || reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
+        XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))
+        XCTAssertEqual(mainWindow.textFields["investmentStartDay"].value as? String, "2026-01-05")
+        XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
+        XCTAssertFalse(calendar.exists)
+        XCTAssertFalse(mainWindow.textFields["investmentValuation-2026-01-05"].exists)
+        reach(flows)
+        assertInvestmentToggleState(flows, false) // Reuse never re-approves completeness.
+        reach(calculate); waitEnabled(calculate); calculate.click()
+        waitText("待补数据", in: mainWindow.staticTexts["investmentCalculationPnL"])
+    }
+    func testInvestmentQuickReportsAndSharesReopenWithoutBlocking() {
+        configure(); launchMainWindow(); selectPage("pageInvestments")
+        let share = mainWindow.buttons["investmentShare"]
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share, false)
+        let record = mainWindow.buttons["investmentRecord"]
+        waitEnabled(record); record.click()
+        let accountName = mainWindow.textFields["ledgerAccountName"]
+        XCTAssertTrue(accountName.exists || accountName.waitForExistence(timeout: 10)); waitEnabled(accountName)
+        accountName.click(); accountName.typeText("Quick reports test")
+        let create = mainWindow.buttons["ledgerCreateAccount"]
+        waitEnabled(create); create.click()
+        let next = mainWindow.buttons["ledgerContinueCalculation"]
+        XCTAssertTrue(next.exists || next.waitForExistence(timeout: 5)); waitEnabled(next)
+        // This fresh ordinary account has no frozen report or market evidence.
+        // Return through the normal UI; reload selects its only ledger account.
+        closeInvestmentDetail()
+        XCTAssertTrue(share.exists || share.waitForExistence(timeout: 10)); waitEnabled(share)
+        XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
         // Quick cards use booked P&L only, without promoting their results to
         // complete valuation, return-rate or frozen-report evidence.
         let quick = mainWindow.buttons["investmentGenerateReport"]
@@ -718,14 +750,14 @@ import XCTest
         waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareReturn"].exists)
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareHoldings"].exists)
-        XCTAssertFalse(quickPreview.staticTexts["Daily workflow test"].exists)
+        XCTAssertFalse(quickPreview.staticTexts["Quick reports test"].exists)
         let amounts = mainWindow.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch
-        assertToggleState(amounts, true)
+        assertInvestmentToggleState(amounts, true)
         for index in 0..<3 {
             waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
         }
         amounts.click()
-        assertToggleState(amounts, false)
+        assertInvestmentToggleState(amounts, false)
         waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
         // Native preview only: changing periods must recheck storage and retain
         // privacy settings. Do not open the save panel or invoke clipboard/X.
@@ -736,7 +768,7 @@ import XCTest
             waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
         }
         amounts.click()
-        assertToggleState(amounts, true)
+        assertInvestmentToggleState(amounts, true)
         waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareTotal"])
         for index in 0..<3 {
             waitText("金额已隐藏", in: quickPreview.staticTexts["investmentShareBreakdown-\(index)"])
@@ -774,19 +806,8 @@ import XCTest
             waitReportAction(shareClose); shareClose.click(); waitAbsent(quickPreview)
             waitReportAction(quick)
         }
-        waitText("0.00", in: mainWindow.staticTexts["investmentNetPnL"])
-        openInvestmentTool("investmentStartCalculation", title: "补齐数据并核算")
-        let reuse = mainWindow.buttons["investmentReuseEvidence"]
-        XCTAssertTrue(reuse.exists || reuse.waitForExistence(timeout: 10)); waitEnabled(reuse); reuse.click()
-        XCTAssertTrue(mainWindow.descendants(matching: .any)["investmentReusedStatus"].waitForExistence(timeout: 5))
-        XCTAssertEqual(mainWindow.textFields["investmentStartDay"].value as? String, "2026-01-05")
-        XCTAssertEqual(mainWindow.textFields["investmentEndDay"].value as? String, "2026-01-06")
-        XCTAssertFalse(calendar.exists)
-        XCTAssertFalse(mainWindow.textFields["investmentValuation-2026-01-05"].exists)
-        reach(flows)
-        assertToggleState(flows, false) // Reuse never re-approves completeness.
-        reach(calculate); waitEnabled(calculate); calculate.click()
-        waitText("待补数据", in: mainWindow.staticTexts["investmentCalculationPnL"])
+        // Read-only booked reports never create a complete frozen valuation.
+        XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
     }
     func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
         configure(); launchMainWindow()

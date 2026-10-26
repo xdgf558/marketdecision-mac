@@ -28,6 +28,22 @@ class NativeResultTests(unittest.TestCase):
         node = next(node for node in self.tree['testNodes'] if node['name'] == name)
         node['result'] = 'Failed'
         self.rejected()
+    def test_quick_reports_and_shares_cannot_be_omitted_from_previous_suite(self):
+        name = 'testInvestmentQuickReportsAndSharesReopenWithoutBlocking'
+        self.assertIn(name, result.expected)
+        self.tree['testNodes'] = [node for node in self.tree['testNodes'] if node['name'] != name + '()']
+        # Neither an aggregate claiming all passes nor the former smaller suite
+        # may hide the absent report/share lifecycle case.
+        self.rejected()
+        self.summary.update(totalTestCount=len(result.expected) - 1, passedTests=len(result.expected) - 1)
+        self.rejected()
+    def test_quick_reports_and_shares_must_actually_pass(self):
+        name = 'testInvestmentQuickReportsAndSharesReopenWithoutBlocking()'
+        node = next(node for node in self.tree['testNodes'] if node['name'] == name)
+        for status in ['Failed', 'Skipped']:
+            with self.subTest(status=status):
+                node['result'] = status
+                self.rejected()
     def test_skip_is_not_pass(self):
         self.summary.update(skippedTests=1, passedTests=3); self.rejected()
     def test_failure_is_not_pass(self):
