@@ -317,17 +317,34 @@ private enum AIBenchmarkValidation {
     static func sourceURL(_ raw: String) throws -> URL {
         guard raw.utf8.count <= 2048, plain(raw, maximum: 2048),
               !raw.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) }),
-              let parts = URLComponents(string: raw), parts.scheme == "https", parts.user == nil, parts.password == nil,
-              parts.port == nil, parts.fragment == nil, parts.query == nil,
+              var parts = URLComponents(string: raw), parts.scheme == "https", parts.user == nil, parts.password == nil,
+              parts.port == nil, parts.fragment == nil,
               let host = parts.host?.lowercased(), host.count <= 253,
               host.range(of: #"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$"#, options: .regularExpression) != nil,
               let suffix = host.split(separator: ".").last,
               String(suffix).range(of: #"^[a-z]{2,63}$"#, options: .regularExpression) != nil,
               !["localhost", "local", "localdomain", "internal", "invalid", "test", "example", "onion", "lan", "home"].contains(String(suffix)),
-              host.split(separator: ".").allSatisfy({ $0.count <= 63 }),
-              let url = parts.url else { throw AIBenchmarkError.invalidEvidence }
-        // Query strings are deliberately excluded from exported citations: a query
-        // may contain credentials. This is syntax validation, not DNS authentication.
+              host.split(separator: ".").allSatisfy({ $0.count <= 63 }) else {
+            throw AIBenchmarkError.invalidEvidence
+        }
+        // Apply the same canonicalization to tool sources, citation annotations and
+        // final points. Only these exact tracking names may be removed. Unknown or
+        // resource-selecting queries (date/symbol/etc.) remain unsupported, so they
+        // cannot collapse to a different page; credential query parameters are refused.
+        if parts.percentEncodedQuery != nil {
+            let trackingNames: Set<String> = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"]
+            guard let items = parts.queryItems, !items.isEmpty, items.count <= 16,
+                  items.allSatisfy({ item in
+                      guard trackingNames.contains(item.name), let value = item.value,
+                            plain(value, maximum: 256) else { return false }
+                      // Decode before checking; reject controls, nested separators
+                      // and malformed/double-encoded values instead of reinterpreting them.
+                      return value.range(of: #"^[A-Za-z0-9._~+ -]{1,256}$"#, options: .regularExpression) != nil
+                  }) else { throw AIBenchmarkError.invalidEvidence }
+            parts.percentEncodedQuery = nil
+        }
+        guard let url = parts.url else { throw AIBenchmarkError.invalidEvidence }
+        // This is syntax validation and metadata matching, not DNS/source authentication.
         return url
     }
 

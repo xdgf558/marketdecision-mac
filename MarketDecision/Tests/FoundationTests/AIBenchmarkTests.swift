@@ -216,6 +216,129 @@ struct AIBenchmarkTests {
         #expect(result.reference?.sources[0].title == "fred.stlouisfed.org")
     }
 
+    @Test func trackingOnBothSidesNormalizesAllExportedSourceURLs() throws {
+        let value = try request()
+        let metadataURL = source + "?utm_source=chatgpt.com&utm_medium=web&utm_campaign=benchmark&utm_term=SP500&utm_content=close"
+        var claim = payload()
+        claim["start"] = ["day": "2025-01-27", "close": "6000", "sourceURL": source + "?utm_source=chatgpt.com"]
+        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_campaign=another-campaign"]
+        let result = try value.parseResponse(bytes(envelope([
+            search(sources: [["type": "url", "url": metadataURL, "title": "Synthetic reference"]]), message(claim)
+        ])))
+        try result.validate(for: value)
+        let reference = try #require(result.reference)
+        #expect(reference.changePercent == (try Money("10")))
+        #expect(reference.startSourceURL.absoluteString == source)
+        #expect(reference.endSourceURL.absoluteString == source)
+        #expect(reference.sources.map(\.url.absoluteString) == [source])
+        #expect(reference.sources.allSatisfy { $0.url.query == nil })
+    }
+
+    @Test func trackingOnlyInMetadataMatchesUntrackedFinalSources() throws {
+        let value = try request()
+        let sources: [[String: Any]] = [["type": "url", "url": source + "?utm_source=chatgpt.com"]]
+        let result = try value.parseResponse(bytes(envelope([search(sources: sources), message(payload())])))
+        try result.validate(for: value)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+        #expect(result.reference?.startSourceURL.absoluteString == source)
+        #expect(result.reference?.endSourceURL.absoluteString == source)
+    }
+
+    @Test func trackingOnlyInFinalSourcesMatchesUntrackedMetadata() throws {
+        let value = try request()
+        var claim = payload()
+        claim["start"] = ["day": "2025-01-27", "close": "6000", "sourceURL": source + "?utm_source=chatgpt.com"]
+        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_medium=web"]
+        let result = try value.parseResponse(response(claim))
+        try result.validate(for: value)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+        #expect(result.reference?.startSourceURL.absoluteString == source)
+        #expect(result.reference?.endSourceURL.absoluteString == source)
+    }
+
+    @Test func trackingInActualCitationAnnotationUsesSameSourceNormalization() throws {
+        let value = try request()
+        let citation: [String: Any] = ["type": "url_citation", "url": source + "?utm_source=chatgpt.com",
+                                       "title": "Synthetic reference", "start_index": 0, "end_index": 20]
+        var claim = payload()
+        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_content=close"]
+        let result = try value.parseResponse(bytes(envelope([
+            search(sources: []), message(claim, annotations: [citation])
+        ])))
+        try result.validate(for: value)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+        #expect(result.reference?.endSourceURL.absoluteString == source)
+    }
+
+    @Test func trackingCannotHideSensitiveUnknownOrResourceQueryParameters() throws {
+        let value = try request()
+        for query in ["api_key=secret", "api%5Fkey=secret", "access_token=secret", "signature=secret",
+                      "date=2026-01-27", "symbol=SP500", "series_id=SP500", "source=other",
+                      "utm_custom=unrecognized", "UTM_SOURCE=chatgpt.com"] {
+            for combined in ["utm_source=chatgpt.com&" + query, query + "&utm_source=chatgpt.com"] {
+                let invalidURL = source + "?" + combined
+                var claim = payload()
+                claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": invalidURL]
+                let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": invalidURL]]
+                #expect(throws: AIBenchmarkError.invalidEvidence) {
+                    try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
+                }
+            }
+        }
+    }
+
+    @Test func resourceQueriesAndDifferentPathsCannotAliasUntrackedSource() throws {
+        let value = try request()
+        for otherURL in [source + "?symbol=SP500&utm_source=chatgpt.com",
+                         source + "?date=2026-01-27&utm_source=chatgpt.com",
+                         "https://fred.stlouisfed.org/series/OTHER?utm_source=chatgpt.com"] {
+            var claim = payload()
+            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": otherURL]
+            #expect(throws: AIBenchmarkError.invalidEvidence) { try value.parseResponse(response(claim)) }
+            let sources: [[String: Any]] = [["type": "url", "url": otherURL]]
+            #expect(throws: AIBenchmarkError.invalidEvidence) {
+                try value.parseResponse(bytes(envelope([search(sources: sources), message(payload())])))
+            }
+        }
+    }
+
+    @Test func trackingValuesRejectEmptyControlNestedAndNonASCIIContents() throws {
+        let value = try request()
+        for query in ["utm_source", "utm_source=", "utm_source=%0A", "utm_source=%00", "utm_source=%E4%B8%AD",
+                      "utm_source=chatgpt.com%26api_key%3Dsecret", "utm_source=web%3Btoken%3Dsecret",
+                      "utm_source=%250A", "utm_source=" + String(repeating: "x", count: 257)] {
+            let invalidURL = source + "?" + query
+            var claim = payload()
+            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": invalidURL]
+            let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": invalidURL]]
+            #expect(throws: AIBenchmarkError.invalidEvidence) {
+                try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
+            }
+        }
+    }
+
+    @Test func trackingValuesAndQueryCountHonorClosedBudgets() throws {
+        let value = try request()
+        let queries = ["utm_source=" + String(repeating: "x", count: 256),
+                       "utm_content=letters.ABC_123~plus+space%20hyphen-",
+                       Array(repeating: "utm_source=chatgpt.com", count: 16).joined(separator: "&")]
+        for query in queries {
+            let trackedURL = source + "?" + query
+            var claim = payload()
+            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": trackedURL]
+            let result = try value.parseResponse(response(claim))
+            try result.validate(for: value)
+            #expect(result.reference?.endSourceURL.absoluteString == source)
+        }
+        let excessiveURL = source + "?" + Array(repeating: "utm_source=chatgpt.com", count: 17).joined(separator: "&")
+        var claim = payload()
+        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": excessiveURL]
+        let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": excessiveURL]]
+        #expect(throws: AIBenchmarkError.invalidEvidence) {
+            try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
+        }
+    }
+
     @Test func reasoningAndCommentaryAreIgnoredButMultipleFinalAnswersFailClosed() throws {
         let value = try request()
         let reasoning: [String: Any] = ["type": "reasoning", "summary": [], "encrypted_content": "synthetic"]
