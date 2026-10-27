@@ -88,14 +88,19 @@ struct InvestmentBenchmarkWorkspaceTests {
                            available: Bool = true,
                            readKey: (@Sendable () async throws -> Data?)? = nil,
                            factory: (@Sendable () async throws -> InvestmentBenchmarkSession)? = nil) -> InvestmentBenchmarkWorkspaceModel {
-        .init(credentials: credentials ?? self.credentials(), networkAvailable: available,
-              readKey: readKey ?? { await probe.record("key"); return Data("synthetic-benchmark-key".utf8) },
-              factory: factory ?? {
-                  await probe.record("factory")
-                  return InvestmentBenchmarkSession(send: { request, _ in
-                      await probe.record("send"); return try benchmarkWorkspaceResponse(request)
-                  }, close: { await probe.record("close") })
-              })
+        // Preserve Sendable before nil-coalescing; Swift 6.1 does not infer it
+        // for an inline default closure in the optional expression.
+        let defaultReadKey: @Sendable () async throws -> Data? = {
+            await probe.record("key"); return Data("synthetic-benchmark-key".utf8)
+        }
+        let defaultFactory: @Sendable () async throws -> InvestmentBenchmarkSession = {
+            await probe.record("factory")
+            return InvestmentBenchmarkSession(send: { request, _ in
+                await probe.record("send"); return try benchmarkWorkspaceResponse(request)
+            }, close: { await probe.record("close") })
+        }
+        return .init(credentials: credentials ?? self.credentials(), networkAvailable: available,
+                     readKey: readKey ?? defaultReadKey, factory: factory ?? defaultFactory)
     }
     private func select(_ model: InvestmentBenchmarkWorkspaceModel, id: UUID = UUID()) {
         model.select(snapshotID: id, start: start, end: end, model: "synthetic-model")
