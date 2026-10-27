@@ -11,7 +11,7 @@ struct AISettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("AI 财报解读设置").font(.title2.weight(.semibold))
+                Text("AI 设置").font(.title2.weight(.semibold))
                 Spacer()
                 Button("完成") { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(.horizontal, 20).padding(.top, 20)
@@ -21,11 +21,14 @@ struct AISettingsView: View {
                         .accessibilityIdentifier("aiModelID")
                     Text("默认 gpt-6-luna。可填写账户支持的 Responses / Structured Outputs 模型；API 单独按使用量计费。")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("收益分享的标普参考另需模型支持 web_search；联网搜索有工具费用，不支持时会提示失败，不自动换模型或重试。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 CredentialSettingsSection(model: credentials, title: "OpenAI API Key",
                     explanation: "密钥只存入本机钥匙串，不会回显。点击 AI 解读时用于向 OpenAI 认证，不放入分析正文。保存不代表账户或额度已验证。",
                     identifierPrefix: "aiCredential")
                 Section("发送范围") {
+                    Text("收益分享中点击“AI 查询标普 500”时，只发送指数名称和统计起止时刻，搜索公开网页并显示出处。不发送你的账户、收益、持仓或交易。联网结果是未独立核验的市场参考，不是已获准行情源。")
                     Text("发送当前公司的财务摘要与本地计算引用。补充估值资料后，还会发送你确认可用于 AI 的参考价、实际股数、日期及本地参考倍数。同一次请求生成解读，并在收入与股数齐备时提出三个目标市销率假设；你确认后才在本地计算情景股价。不发送持仓、交易记录、完整财报或 SEC 联系邮箱。")
                     Text("请求关闭响应存储（store=false）；这不等于零保留，服务方仍可能按政策保留安全监测记录。")
                         .font(.caption).foregroundStyle(.secondary)

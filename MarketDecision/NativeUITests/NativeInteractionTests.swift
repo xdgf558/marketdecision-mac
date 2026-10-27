@@ -752,6 +752,10 @@ import XCTest
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareReturn"].exists)
         XCTAssertFalse(mainWindow.checkBoxes["investmentShareHoldings"].exists)
         XCTAssertFalse(quickPreview.staticTexts["Quick reports test"].exists)
+        // Opening a share never starts a paid search or invents an index return.
+        // Do not click the real search action in this synthetic native host.
+        XCTAssertTrue(mainWindow.buttons["investmentBenchmarkSearch"].exists)
+        XCTAssertFalse(quickPreview.descendants(matching: .any)["investmentShareBenchmark"].exists)
         let amounts = mainWindow.descendants(matching: .any)["investmentShareHideAmounts"].firstMatch
         assertInvestmentToggleState(amounts, true)
         for index in 0..<3 {
@@ -767,6 +771,7 @@ import XCTest
             waitEnabled(select); select.click()
             waitText(title, in: quickPreview.staticTexts["investmentShareCardPeriod"])
             waitText("0.00 USD", in: quickPreview.staticTexts["investmentShareTotal"])
+            XCTAssertFalse(quickPreview.descendants(matching: .any)["investmentShareBenchmark"].exists)
         }
         amounts.click()
         assertInvestmentToggleState(amounts, true)

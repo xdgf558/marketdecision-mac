@@ -167,22 +167,35 @@ struct AIAnalysisNetworkRequest: Codable, Sendable {
     static let maximumEncodedBytes = 256 * 1_024
     static let endpoint = "https://api.openai.com/v1/responses"
     static let timeout: TimeInterval = 60
-    let request: AIInsightRequest
+    let request: AIInsightRequest?
+    let benchmarkRequest: AIBenchmarkRequest?
     private let apiKey: String
 
     init(request: AIInsightRequest, apiKey: Data) throws {
         self.request = request
+        benchmarkRequest = nil
+        guard let text = String(data: apiKey, encoding: .utf8) else { throw AIAnalysisNetworkError.invalidRequest }
+        self.apiKey = text
+        try validate()
+    }
+    init(benchmarkRequest: AIBenchmarkRequest, apiKey: Data) throws {
+        request = nil
+        self.benchmarkRequest = benchmarkRequest
         guard let text = String(data: apiKey, encoding: .utf8) else { throw AIAnalysisNetworkError.invalidRequest }
         self.apiKey = text
         try validate()
     }
     func validate() throws {
-        try request.validate()
+        // The two purposes have independent closed schemas. Financial analysis
+        // remains tool-free; benchmark search cannot carry financial inputs.
+        guard (request != nil) != (benchmarkRequest != nil) else { throw AIAnalysisNetworkError.invalidRequest }
+        try request?.validate()
+        try benchmarkRequest?.validate()
         guard (16...1_024).contains(apiKey.utf8.count),
               apiKey.utf8.allSatisfy({ (33...126).contains($0) }),
               !apiKey.contains(":"), !apiKey.contains("\""), !apiKey.contains("\\")
         else { throw AIAnalysisNetworkError.invalidRequest }
-        guard try request.encodedBody().count <= AIInsightLimits.requestBodyBytes else {
+        guard try body().count <= AIInsightLimits.requestBodyBytes else {
             throw AIAnalysisNetworkError.invalidRequest
         }
     }
@@ -196,8 +209,13 @@ struct AIAnalysisNetworkRequest: Codable, Sendable {
         guard bytes.count <= maximumEncodedBytes else { throw AIAnalysisNetworkError.invalidRequest }
         try validateDepth(bytes)
         guard
-              let original = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              Set(original.keys) == ["request", "apiKey"] else { throw AIAnalysisNetworkError.invalidRequest }
+              let original = try JSONSerialization.jsonObject(with: bytes) as? [String: Any] else {
+            throw AIAnalysisNetworkError.invalidRequest
+        }
+        let keys = Set(original.keys)
+        guard keys == ["request", "apiKey"] || keys == ["benchmarkRequest", "apiKey"] else {
+            throw AIAnalysisNetworkError.invalidRequest
+        }
         let value = try JSONDecoder().decode(Self.self, from: bytes)
         try value.validate()
         // Codable alone ignores unknown keys. Compare the decoded schema's re-encoding so
@@ -220,6 +238,13 @@ struct AIAnalysisNetworkRequest: Codable, Sendable {
             } else if byte == 125 || byte == 93 { depth -= 1 }
         }
     }
+    private func body() throws -> Data {
+        switch (request, benchmarkRequest) {
+        case (.some(let request), .none): return try request.encodedBody()
+        case (.none, .some(let request)): return try request.encodedBody()
+        default: throw AIAnalysisNetworkError.invalidRequest
+        }
+    }
     func makeURLRequest() throws -> URLRequest {
         try validate()
         guard let url = URL(string: Self.endpoint) else { throw AIAnalysisNetworkError.invalidRequest }
@@ -229,7 +254,7 @@ struct AIAnalysisNetworkRequest: Codable, Sendable {
         result.setValue("application/json", forHTTPHeaderField: "Accept")
         result.setValue("application/json", forHTTPHeaderField: "Content-Type")
         result.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization")
-        result.httpBody = try request.encodedBody()
+        result.httpBody = try body()
         return result
     }
 }
