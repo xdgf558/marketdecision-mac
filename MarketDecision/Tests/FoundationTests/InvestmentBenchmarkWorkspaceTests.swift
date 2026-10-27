@@ -314,7 +314,9 @@ struct InvestmentBenchmarkWorkspaceTests {
         let cases: [(AIBenchmarkError, String)] = [
             (.missingSearch, "NO-SEARCH"), (.invalidIndex, "INDEX"), (.invalidWindow, "WINDOW"),
             (.invalidPrice, "PRICE"), (.invalidEvidence, "SOURCE-METADATA"), (.malformedResponse, "FORMAT"),
-            (.unsupportedSourceURL, "SOURCE-URL"), (.missingSourceMetadata, "SOURCE-LIST"), (.unmatchedSource, "SOURCE-MATCH"),
+            (.unsupportedSourceURL, "SOURCE-URL"),
+            (.unsupportedSourceQuery, "SOURCE-QUERY"), (.unsafeSourceQueryValue, "SOURCE-QUERY-VALUE"),
+            (.unsupportedSourceFragment, "SOURCE-FRAGMENT"), (.sourceURLLimit, "SOURCE-LIMIT"), (.missingSourceMetadata, "SOURCE-LIST"), (.unmatchedSource, "SOURCE-MATCH"),
             (.ambiguousOutput, "AMBIGUOUS"), (.incompleteResponse, "INCOMPLETE"),
             (.budgetExceeded, "LIMIT"), (.invalidModel, "MODEL"), (.invalidRequest, "REQUEST")
         ]

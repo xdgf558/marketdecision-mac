@@ -182,7 +182,15 @@ private actor InvestmentBenchmarkSessionCleanup {
         case .invalidEvidence:
             detail = "本次响应的来源元数据格式无效，无法核对收盘资料。[AI-BENCHMARK-SOURCE-METADATA]"
         case .unsupportedSourceURL:
-            detail = "收盘资料引用的链接格式暂不支持，或含不能接受的参数；未删除这些参数后强行匹配。[AI-BENCHMARK-SOURCE-URL]"
+            detail = "收盘资料引用的地址格式不受支持，需为不含登录信息的公开 HTTPS 网页。[AI-BENCHMARK-SOURCE-URL]"
+        case .unsupportedSourceQuery:
+            detail = "来源链接包含未支持或敏感的查询参数，未删除参数后强行匹配。[AI-BENCHMARK-SOURCE-QUERY]"
+        case .unsafeSourceQueryValue:
+            detail = "来源链接的日期、代码等参数值无效或重复，未采用该链接。[AI-BENCHMARK-SOURCE-QUERY-VALUE]"
+        case .unsupportedSourceFragment:
+            detail = "来源链接的页面定位格式暂不支持，未丢弃定位后匹配其他内容。[AI-BENCHMARK-SOURCE-FRAGMENT]"
+        case .sourceURLLimit:
+            detail = "来源链接的长度或参数数量超出接收限制。[AI-BENCHMARK-SOURCE-LIMIT]"
         case .missingSourceMetadata:
             detail = "本次响应没有可用的来源链接，无法核对起止收盘资料。[AI-BENCHMARK-SOURCE-LIST]"
         case .unmatchedSource:
