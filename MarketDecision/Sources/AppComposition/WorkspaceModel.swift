@@ -43,6 +43,11 @@ import SecuritySupport
         return environment.makeAIInsightWorkspace(credentials: aiCredentials)
     }
 
+    public func makeInvestmentBenchmarkWorkspace() throws -> InvestmentBenchmarkWorkspaceModel {
+        guard let environment, let aiCredentials else { throw WorkspacePreparationError.notReady }
+        return environment.makeInvestmentBenchmarkWorkspace(credentials: aiCredentials)
+    }
+
     public func makeEquityResearchWorkspace() throws -> EquityResearchWorkspaceModel {
         guard let environment else { throw WorkspacePreparationError.notReady }
         return try environment.makeEquityResearchWorkspace()

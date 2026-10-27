@@ -162,5 +162,29 @@ public actor AIAnalysisXPCClient {
             throw error
         }
     }
+    /// An explicit, closed index search uses the same signed service and key route.
+    /// A connection is consumed by either purpose, never one call of each kind.
+    public func searchBenchmark(_ request: AIBenchmarkRequest, apiKey: Data) async throws -> AIBenchmarkResult {
+        guard !closed else { throw AIAnalysisNetworkError.closed }
+        guard !consumed else { throw AIAnalysisNetworkError.limitExceeded }
+        try Task.checkCancellation()
+        let bytes = try AIAnalysisNetworkRequest(benchmarkRequest: request, apiKey: apiKey).encoded()
+        consumed = true
+        let channel = channel
+        do {
+            let data = try await withTaskCancellationHandler {
+                try await channel.exchange(bytes)
+            } onCancel: { channel.close() }
+            try Task.checkCancellation()
+            guard !closed else { throw AIAnalysisNetworkError.closed }
+            let body = try AIAnalysisNetworkReply.decode(data).checkedBody()
+            let result = try request.parseResponse(body)
+            close()
+            return result
+        } catch {
+            close()
+            throw error
+        }
+    }
     public func close() { closed = true; channel.close() }
 }

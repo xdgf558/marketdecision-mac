@@ -105,7 +105,9 @@ private struct InvestmentsContent: View {
                 }
             } else { dashboard }
         }
-        .sheet(item: $share) { InvestmentShareSheet(snapshot: $0) }
+        .sheet(item: $share) {
+            InvestmentShareSheet(snapshot: $0, makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() })
+        }
         .sheet(item: $quickReportRequest, onDismiss: {
             // A late dismissal must not cancel a newly presented request.
             if quickReportRequest == nil { model.cancelPeriodReports() }
@@ -113,7 +115,8 @@ private struct InvestmentsContent: View {
             // Presentation and content share one identity; a separate Boolean
             // can present before the optional request is read by sheet content.
             InvestmentQuickReportsSheet(model: model, request: request,
-                                        accent: accent, lossColor: lossColor, close: {
+                                        accent: accent, lossColor: lossColor,
+                                        makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() }, close: {
                 guard quickReportRequest?.id == request.id else { return }
                 endQuickReports()
             })
@@ -622,6 +625,7 @@ private struct InvestmentQuickReportsSheet: View {
     let request: InvestmentQuickReportRequest
     let accent: Color
     let lossColor: Color
+    let makeBenchmark: @MainActor () throws -> InvestmentBenchmarkWorkspaceModel
     let close: () -> Void
     @State private var preparationID = UUID()
     @State private var isPreparing = true
@@ -760,7 +764,7 @@ private struct InvestmentQuickReportsSheet: View {
         // period switch still uses the model's fresh storage revision check.
         let epoch = model.inputEpoch
         let account = model.selectedAccountID
-        return InvestmentShareSheet(snapshot: snapshot) { period in
+        return InvestmentShareSheet(snapshot: snapshot, makeBenchmark: makeBenchmark) { period in
             guard model.inputEpoch == epoch, model.selectedAccountID == account,
                   let report = model.periodReports.first(where: { $0.period == period && $0.accountID == account }) else { return nil }
             let result = await model.preparePeriodShare(report)

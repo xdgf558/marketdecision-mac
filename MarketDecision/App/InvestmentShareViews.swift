@@ -23,6 +23,7 @@ private struct InvestmentSharePNG: FileDocument {
 
 struct InvestmentShareSheet: View {
     let snapshot: InvestmentShareSnapshot
+    let makeBenchmark: (@MainActor () throws -> InvestmentBenchmarkWorkspaceModel)?
     let selectPeriod: (@MainActor (InvestmentReportPeriod) async -> InvestmentShareSnapshot?)?
     @Environment(\.dismiss) private var dismiss
     @State private var displayedSnapshot: InvestmentShareSnapshot?
@@ -35,9 +36,17 @@ struct InvestmentShareSheet: View {
     @State private var exporting = false
     @State private var exportFile: InvestmentSharePNG?
     @State private var fileFlow = ResearchFileRequestFlow()
+    @State private var benchmark: InvestmentBenchmarkWorkspaceModel?
+    @State private var benchmarkPreparationFailed = false
+    @State private var showsAISettings = false
+    @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
     private let accent = Color(red: 0, green: 0.40, blue: 0.37)
     private let previewWidth: CGFloat = 460
-    private var content: InvestmentShareCardContent? { displayedSnapshot?.card(options: options) }
+    private var content: InvestmentShareCardContent? {
+        let result = benchmark?.selectedSnapshotID == displayedSnapshot?.id
+            && benchmark?.result?.request.model == modelName ? benchmark?.result : nil
+        return displayedSnapshot?.card(options: options, benchmark: result)
+    }
     private var isLoading: Bool { periodRequest != nil }
     private var busy: Bool { isLoading || fileFlow.isBusy }
     private var hidesAmounts: Binding<Bool> {
@@ -45,8 +54,10 @@ struct InvestmentShareSheet: View {
     }
 
     init(snapshot: InvestmentShareSnapshot,
+         makeBenchmark: (@MainActor () throws -> InvestmentBenchmarkWorkspaceModel)? = nil,
          selectPeriod: (@MainActor (InvestmentReportPeriod) async -> InvestmentShareSnapshot?)? = nil) {
         self.snapshot = snapshot
+        self.makeBenchmark = makeBenchmark
         self.selectPeriod = selectPeriod
         _displayedSnapshot = State(initialValue: snapshot)
         _selectedPeriod = State(initialValue: snapshot.periodSelection)
@@ -73,6 +84,15 @@ struct InvestmentShareSheet: View {
         .padding(28).frame(width: 944)
         .background(Color(nsColor: .windowBackgroundColor))
         .tint(accent)
+        .sheet(isPresented: $showsAISettings) {
+            if let benchmark { AISettingsView(credentials: benchmark.credentials) }
+        }
+        .task {
+            // Preparing page-local state never reads a secret or sends a request.
+            guard benchmark == nil, let makeBenchmark else { return }
+            do { benchmark = try makeBenchmark(); selectBenchmarkWindow() }
+            catch { benchmarkPreparationFailed = true }
+        }
         .fileExporter(isPresented: $exporting, document: exportFile, contentTypes: [.png],
                       defaultFilename: "投资收益分享.png") { result in
             switch result {
@@ -92,15 +112,19 @@ struct InvestmentShareSheet: View {
             periodRequest = nil
         }
         .onChange(of: options) { _, _ in clearFileResult() }
+        .onChange(of: displayedSnapshot?.id) { _, _ in selectBenchmarkWindow() }
+        .onChange(of: modelName) { _, _ in selectBenchmarkWindow() }
+        .onChange(of: benchmark?.credentials.revision) { _, _ in benchmark?.credentialsChanged() }
         .onAppear { visible = true }
         .onDisappear {
             visible = false; periodRequest = nil; displayedSnapshot = nil
+            benchmark?.disappear()
             fileFlow.dismiss(); exportFile = nil; exporting = false; message = nil
         }
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("统计周期").font(.headline)
                 if selectedPeriod != nil, selectPeriod != nil {
@@ -144,6 +168,7 @@ struct InvestmentShareSheet: View {
                     }
                 }
             }
+            benchmarkControls
             Divider()
             Text(snapshot.supportsReturn ? "仅分享已复算的冻结报告" : "仅展示已入账收益，不含持仓浮盈")
                 .font(.callout).foregroundStyle(.secondary)
@@ -173,7 +198,47 @@ struct InvestmentShareSheet: View {
             }
             Text("图片不含账户名称、原始交易或来源文件。打开 X 后需自行粘贴并发布。")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }.padding(.top, 20)
+        }.padding(.top, 10)
+    }
+
+    @ViewBuilder private var benchmarkControls: some View {
+        if displayedSnapshot?.benchmarkWindow != nil, makeBenchmark != nil {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text("标普 500 参考").font(.headline)
+                    Spacer()
+                    Button("AI 设置") { showsAISettings = true }
+                        .buttonStyle(.link).font(.caption).disabled(benchmark == nil || busy)
+                }
+                HStack {
+                    Button(benchmark?.isBusy == true ? "正在联网查询…" : "AI 查询标普 500") {
+                        selectBenchmarkWindow(); benchmark?.startSearch()
+                    }
+                    .disabled(benchmark == nil || benchmark?.isBusy == true || busy)
+                    .accessibilityIdentifier("investmentBenchmarkSearch")
+                    if benchmark?.isBusy == true {
+                        Button("取消") { benchmark?.cancel() }.buttonStyle(.link)
+                            .accessibilityIdentifier("investmentBenchmarkCancel")
+                    }
+                }
+                Text("只发送指数与日期，使用现有 OpenAI API；搜索另计费。切换周期后需重新点击。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if let message = benchmark?.message {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("investmentBenchmarkMessage")
+                } else if benchmarkPreparationFailed {
+                    Text("AI 设置暂不可用，请关闭后重开；收益分享仍可使用。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func selectBenchmarkWindow() {
+        benchmark?.select(snapshotID: displayedSnapshot?.id,
+            start: displayedSnapshot?.benchmarkWindow?.start,
+            end: displayedSnapshot?.benchmarkWindow?.end, model: modelName)
     }
 
     private var preview: some View {
@@ -186,6 +251,15 @@ struct InvestmentShareSheet: View {
                     .frame(width: previewWidth, height: InvestmentShareCard.height * previewWidth / InvestmentShareCard.width, alignment: .topLeading)
                 Text(content.asOfLabel).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                if let reference = content.benchmark {
+                    HStack(spacing: 10) {
+                        Text("标普出处：").font(.caption)
+                        ForEach(reference.sources.indices, id: \.self) { index in
+                            Link(reference.sources[index].url.host ?? "网页来源", destination: reference.sources[index].url)
+                                .font(.caption).lineLimit(1).help(reference.sources[index].title)
+                        }
+                    }
+                }
             } else {
                 VStack(spacing: 12) {
                     if isLoading { ProgressView("正在核对分享数据…") }
@@ -215,6 +289,15 @@ struct InvestmentShareSheet: View {
                 Text(content.valuationLabel)
                 Text(content.versionLabel)
                 Text(content.footnote)
+                if let reference = content.benchmark {
+                    Divider()
+                    Text("标普 500 价格指数 " + reference.percentage)
+                    Text(reference.dates + " · 不含股息")
+                    Text(reference.qualification + "；实际收盘日期可能与入账统计的具体时刻不同。不能用已入账金额判断是否跑赢指数。")
+                    ForEach(reference.sources.indices, id: \.self) { index in
+                        Link(reference.sources[index].title, destination: reference.sources[index].url)
+                    }
+                }
             }
         }.font(.callout).padding(20).frame(width: 420)
     }
@@ -224,6 +307,7 @@ struct InvestmentShareSheet: View {
         guard period != displayedSnapshot?.periodSelection else { return }
         clearFileResult(); showsDetails = false
         selectedPeriod = period; displayedSnapshot = nil
+        selectBenchmarkWindow()
         periodRequest = .init(period: period)
     }
 
@@ -292,21 +376,22 @@ private struct InvestmentShareCard: View {
                 Text("个人投资").font(.system(size: 24, weight: .medium))
                 Spacer(); Text("USD").font(.system(size: 20, weight: .semibold)).opacity(0.75)
             }
-            Text(content.periodTitle).font(.system(size: 26, weight: .semibold)).padding(.top, 28)
+            Text(content.periodTitle).font(.system(size: 26, weight: .semibold)).padding(.top, content.benchmark == nil ? 28 : 16)
                 .accessibilityIdentifier("investmentShareCardPeriod")
             Text(content.dateRange).font(.system(size: 18)).opacity(0.8).padding(.top, 6)
             Text(content.periodBoundaryLabel).font(.system(size: 10)).opacity(0.75).padding(.top, 5)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(content.profitLabel).font(.system(size: 22, weight: .medium)).padding(.top, 26)
-            Text(currency(content.amount)).font(.system(size: 72, weight: .semibold)).monospacedDigit()
+            Text(content.profitLabel).font(.system(size: 22, weight: .medium)).padding(.top, content.benchmark == nil ? 26 : 16)
+            Text(currency(content.amount)).font(.system(size: content.benchmark == nil ? 72 : 60, weight: .semibold)).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.4).padding(.top, 8)
                 .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                 .accessibilityLabel(content.amount).accessibilityIdentifier("investmentShareTotal")
-            Rectangle().fill(Color.white.opacity(0.28)).frame(height: 1).padding(.top, 24).padding(.bottom, 20)
+            Rectangle().fill(Color.white.opacity(0.28)).frame(height: 1)
+                .padding(.top, content.benchmark == nil ? 24 : 14).padding(.bottom, content.benchmark == nil ? 20 : 12)
             if content.breakdown.isEmpty {
                 frozenDetails
             } else {
-                VStack(spacing: 17) {
+                VStack(spacing: content.benchmark == nil ? 17 : 10) {
                     ForEach(content.breakdown.indices, id: \.self) { index in
                         HStack {
                             Text(content.breakdown[index].title)
@@ -317,6 +402,22 @@ private struct InvestmentShareCard: View {
                         }.font(.system(size: 20)).lineLimit(1).minimumScaleFactor(0.6)
                     }
                 }
+            }
+            if let reference = content.benchmark {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("标普 500 价格指数").font(.system(size: 17, weight: .medium))
+                        Spacer()
+                        Text(reference.percentage).font(.system(size: 23, weight: .semibold)).monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("investmentShareBenchmark")
+                    Text(reference.dates + " · 收盘价 · 不含股息").font(.system(size: 11))
+                    Text(reference.qualification).font(.system(size: 11, weight: .medium))
+                    Text("来源：" + reference.sources.compactMap { $0.url.host }.joined(separator: " · "))
+                        .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.65)
+                }
+                .padding(.top, 12)
             }
             Spacer(minLength: 12)
             VStack(alignment: .leading, spacing: 5) {
