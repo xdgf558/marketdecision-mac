@@ -121,7 +121,7 @@ struct InvestmentBenchmarkPresentationTests {
         #expect(unavailable.reference == nil && !unavailable.unavailableReason.isEmpty)
         #expect(snapshot.card(options: .init()).benchmark == nil)
         #expect(snapshot.card(options: .init(), benchmark: unavailable).benchmark == nil)
-        #expect(throws: AIBenchmarkError.invalidEvidence) {
+        #expect(throws: AIBenchmarkError.missingSourceMetadata) {
             try response(query, includeSource: false)
         }
         #expect(snapshot.card(options: .init(), benchmark: unavailable).amount == "金额已隐藏")

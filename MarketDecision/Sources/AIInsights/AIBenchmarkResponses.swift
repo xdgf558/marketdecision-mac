@@ -5,6 +5,7 @@ import CoreDomain
 public enum AIBenchmarkError: Error, Equatable, Sendable {
     case invalidRequest, invalidModel, budgetExceeded, malformedResponse, incompleteResponse
     case missingSearch, ambiguousOutput, invalidIndex, invalidPrice, invalidWindow, invalidEvidence
+    case unsupportedSourceURL, missingSourceMetadata, unmatchedSource
 }
 
 /// An explicit, bounded web-search request. Contains no account, ledger, financial
@@ -89,9 +90,10 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
             throw AIBenchmarkError.malformedResponse
         }
         let first = try Self.point(value["start"]), last = try Self.point(value["end"])
+        guard !parsed.sources.isEmpty else { throw AIBenchmarkError.missingSourceMetadata }
         var sources: [AIBenchmarkSource] = []
         for url in [first.url, last.url] {
-            guard let source = parsed.sources[url.absoluteString] else { throw AIBenchmarkError.invalidEvidence }
+            guard let source = parsed.sources[url.absoluteString] else { throw AIBenchmarkError.unmatchedSource }
             if !sources.contains(where: { $0.url == url }) { sources.append(source) }
         }
         let reference = try AIBenchmarkReference(startDay: first.day, endDay: last.day,
@@ -104,7 +106,11 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
         guard let value = raw as? [String: Any], Set(value.keys) == Set(["day", "close", "sourceURL"]),
               let day = value["day"] as? String, let close = value["close"] as? String,
               let url = value["sourceURL"] as? String else { throw AIBenchmarkError.malformedResponse }
-        return (day, try AIBenchmarkValidation.price(close), try AIBenchmarkValidation.sourceURL(url))
+        let price = try AIBenchmarkValidation.price(close)
+        let source: URL
+        do { source = try AIBenchmarkValidation.sourceURL(url) }
+        catch { throw AIBenchmarkError.unsupportedSourceURL }
+        return (day, price, source)
     }
 
     private static func output(_ output: [[String: Any]]) throws -> (text: Data, sources: [String: AIBenchmarkSource]) {
@@ -141,6 +147,14 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
                     throw AIBenchmarkError.missingSearch
                 }
                 if actionType == "search" { completedSearches += 1 }
+                // OpenPage and FindInPage expose the visited URL directly, rather
+                // than in Search.sources. Only completed tool actions reach here;
+                // the same URL policy, source budget and final membership checks apply.
+                // An omitted/null OpenPage URL supplies no evidence of its own.
+                if actionType != "search", let rawURL = action["url"], !(rawURL is NSNull) {
+                    guard let url = rawURL as? String else { throw AIBenchmarkError.invalidEvidence }
+                    try recordSource(["url": url])
+                }
                 if let rawSources = action["sources"] {
                     guard let list = rawSources as? [[String: Any]], list.count <= 64 else {
                         throw AIBenchmarkError.budgetExceeded

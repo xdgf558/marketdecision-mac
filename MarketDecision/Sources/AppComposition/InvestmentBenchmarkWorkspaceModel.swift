@@ -180,7 +180,13 @@ private actor InvestmentBenchmarkSessionCleanup {
         case .invalidPrice:
             detail = "返回的起止收盘值无效，无法计算标普涨跌幅。[AI-BENCHMARK-PRICE]"
         case .invalidEvidence:
-            detail = "收盘资料缺少本次联网搜索中可追溯的网页引用，已拒绝展示。[AI-BENCHMARK-SOURCE]"
+            detail = "本次响应的来源元数据格式无效，无法核对收盘资料。[AI-BENCHMARK-SOURCE-METADATA]"
+        case .unsupportedSourceURL:
+            detail = "收盘资料引用的链接格式暂不支持，或含不能接受的参数；未删除这些参数后强行匹配。[AI-BENCHMARK-SOURCE-URL]"
+        case .missingSourceMetadata:
+            detail = "本次响应没有可用的来源链接，无法核对起止收盘资料。[AI-BENCHMARK-SOURCE-LIST]"
+        case .unmatchedSource:
+            detail = "收盘资料引用的网页与本次搜索、已打开页面及引用记录对不上，未展示涨跌幅。[AI-BENCHMARK-SOURCE-MATCH]"
         case .malformedResponse:
             detail = "标普查询响应的内容结构不符合要求，未取得可核对的数据。[AI-BENCHMARK-FORMAT]"
         case .ambiguousOutput:

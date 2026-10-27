@@ -313,7 +313,8 @@ struct InvestmentBenchmarkWorkspaceTests {
     @Test func benchmarkResponseFailuresUseClosedSpecificDiagnosticsWithoutRetrying() async throws {
         let cases: [(AIBenchmarkError, String)] = [
             (.missingSearch, "NO-SEARCH"), (.invalidIndex, "INDEX"), (.invalidWindow, "WINDOW"),
-            (.invalidPrice, "PRICE"), (.invalidEvidence, "SOURCE"), (.malformedResponse, "FORMAT"),
+            (.invalidPrice, "PRICE"), (.invalidEvidence, "SOURCE-METADATA"), (.malformedResponse, "FORMAT"),
+            (.unsupportedSourceURL, "SOURCE-URL"), (.missingSourceMetadata, "SOURCE-LIST"), (.unmatchedSource, "SOURCE-MATCH"),
             (.ambiguousOutput, "AMBIGUOUS"), (.incompleteResponse, "INCOMPLETE"),
             (.budgetExceeded, "LIMIT"), (.invalidModel, "MODEL"), (.invalidRequest, "REQUEST")
         ]
