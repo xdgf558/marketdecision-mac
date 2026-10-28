@@ -814,6 +814,16 @@ import XCTest
         }
         // Read-only booked reports never create a complete frozen valuation.
         XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
+        waitReportAction(share); share.click()
+        XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 10))
+        waitText("不代表收益率为 0%", in: mainWindow.staticTexts["investmentShareReturnMissing"])
+        let prepareReturn = mainWindow.buttons["investmentSharePrepareReturn"]
+        waitReportAction(prepareReturn); prepareReturn.click(); waitAbsent(quickPreview)
+        let startDay = mainWindow.textFields["investmentStartDay"]
+        XCTAssertTrue(startDay.exists || startDay.waitForExistence(timeout: 5))
+        XCTAssertFalse((startDay.value as? String ?? "").isEmpty)
+        XCTAssertFalse((mainWindow.textFields["investmentEndDay"].value as? String ?? "").isEmpty)
+        XCTAssertFalse(mainWindow.staticTexts["investmentCalculationPnL"].exists)
     }
     func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
         configure(); launchMainWindow()

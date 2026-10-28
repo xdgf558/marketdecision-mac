@@ -168,8 +168,9 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
         return await preparePeriodShare(report)
     }
 
-    /// Recheck the currently displayed booked report before making its share
-    /// projection. This does not create a frozen NAV report or write the ledger.
+    /// Recheck booked facts and, when available, reopen one current-account
+    /// frozen NAV report for its return evidence. Listing alone never validates
+    /// a report, and neither path creates a new valuation or writes the ledger.
     public func preparePeriodShare(_ report: InvestmentPeriodReport) async -> InvestmentShareSnapshot? {
         guard canPrepare, let baseline = preparationBaseline,
               selectedAccountID == report.accountID,
@@ -189,8 +190,47 @@ public struct PortfolioPreparationBaseline: Equatable, Sendable {
                   periodReports.contains(report) else { return nil }
             guard current.ledger.revision == baseline.ledgerRevision,
                   current.revision == baseline.performanceRevision else { throw PerformanceStoreError.stalePlan }
-            context = current
-            return InvestmentShareSnapshot(periodReport: report)
+            var accountReturn: InvestmentAccountReturnEvidence?
+            var returnUnavailableReason: String?
+            do {
+                let summaries = try await storage.reports(accountID: report.accountID)
+                guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                      periodReports.contains(report) else { return nil }
+                let window = InvestmentBenchmarkWindow(start: report.startDate, end: report.endDate)
+                if let candidate = InvestmentAccountReturnEvidence.candidate(from: summaries,
+                    accountID: report.accountID, ledgerRevision: baseline.ledgerRevision, window: window) {
+                    let saved = try await storage.open(id: candidate.id)
+                    guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                          periodReports.contains(report) else { return nil }
+                    guard saved.id == candidate.id, saved.inputHash == candidate.inputHash,
+                          saved.reportHash == candidate.reportHash, saved.createdAt == candidate.createdAt,
+                          saved.ledgerRevision == candidate.ledgerRevision,
+                          saved.report.input.request.accountID == candidate.accountID else {
+                        throw PerformanceStoreError.corruptedStorage
+                    }
+                    guard saved.isCurrentLedger else { throw PerformanceStoreError.stalePlan }
+                    accountReturn = try InvestmentAccountReturnEvidence(saved: saved,
+                        accountID: report.accountID, ledgerRevision: baseline.ledgerRevision)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if (error as? PerformanceStoreError) == .stalePlan { throw error }
+                // A damaged/unavailable NAV report must not invalidate healthy
+                // booked facts, but it also cannot supply a zero return or an
+                // older fallback report. The final revision check still runs.
+                returnUnavailableReason = "本地净值报告未通过重开核对，暂不显示账户收益率；已入账金额仍可分享。"
+            }
+            guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                  periodReports.contains(report) else { return nil }
+            let verified = try await storage.context()
+            guard ownsPeriodReport(token, accountID: report.accountID, epoch: baseline.inputEpoch),
+                  periodReports.contains(report) else { return nil }
+            guard verified.ledger.revision == baseline.ledgerRevision,
+                  verified.revision == baseline.performanceRevision else { throw PerformanceStoreError.stalePlan }
+            context = verified
+            return InvestmentShareSnapshot(periodReport: report, accountReturn: accountReturn,
+                returnUnavailableReason: returnUnavailableReason)
         } catch is CancellationError {
             return nil
         } catch {
