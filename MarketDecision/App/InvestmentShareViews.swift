@@ -39,6 +39,7 @@ struct InvestmentShareSheet: View {
     @State private var benchmark: InvestmentBenchmarkWorkspaceModel?
     @State private var benchmarkPreparationFailed = false
     @State private var showsAISettings = false
+    @State private var showsBenchmarkSources = false
     @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
     private let accent = Color(red: 0, green: 0.40, blue: 0.37)
     private let previewWidth: CGFloat = 460
@@ -223,7 +224,30 @@ struct InvestmentShareSheet: View {
                 }
                 Text("只发送指数与日期，使用现有 OpenAI API；搜索另计费。切换周期后需重新点击。")
                     .font(.caption2).foregroundStyle(.secondary)
-                if let message = benchmark?.message {
+                if let content, let reference = content.benchmark {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(content.profitLabel)
+                            Spacer()
+                            Text(content.amount).monospacedDigit()
+                        }
+                        HStack {
+                            Text("同期标普 500")
+                            Spacer()
+                            Text(reference.percentage).fontWeight(.semibold).monospacedDigit()
+                        }
+                        Text(reference.dates + " · " + reference.closes)
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("本地计算涨跌幅 · 不含股息 · AI 搜索未独立核验")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        benchmarkSources(reference)
+                        if displayedSnapshot?.supportsReturn == false {
+                            Text("收益为已入账金额；没有完整净值收益率，暂不计算跑赢或跑输。")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("investmentBenchmarkComparison")
+                } else if let message = benchmark?.message {
                     Text(message).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("investmentBenchmarkMessage")
@@ -236,9 +260,34 @@ struct InvestmentShareSheet: View {
     }
 
     private func selectBenchmarkWindow() {
+        showsBenchmarkSources = false
         benchmark?.select(snapshotID: displayedSnapshot?.id,
             start: displayedSnapshot?.benchmarkWindow?.start,
             end: displayedSnapshot?.benchmarkWindow?.end, model: modelName)
+    }
+
+    private func benchmarkSources(_ reference: InvestmentShareBenchmarkContent) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(reference.sources.prefix(2), id: \.url) { source in
+                Link(reference.sourceLabel + " · " + source.title, destination: source.url)
+                    .font(.caption2).lineLimit(1).help(source.url.absoluteString)
+            }
+            if reference.sources.count > 2 {
+                Button("查看全部来源（\(reference.sources.count)）") { showsBenchmarkSources = true }
+                    .buttonStyle(.link).font(.caption2)
+                    .popover(isPresented: $showsBenchmarkSources) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(reference.sourceLabel).font(.headline)
+                                ForEach(reference.sources, id: \.url) { source in
+                                    Link(source.title, destination: source.url)
+                                        .help(source.url.absoluteString)
+                                }
+                            }.padding(14)
+                        }.frame(width: 360, height: 240)
+                    }
+            }
+        }
     }
 
     private var preview: some View {
@@ -251,15 +300,6 @@ struct InvestmentShareSheet: View {
                     .frame(width: previewWidth, height: InvestmentShareCard.height * previewWidth / InvestmentShareCard.width, alignment: .topLeading)
                 Text(content.asOfLabel).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                if let reference = content.benchmark {
-                    HStack(spacing: 10) {
-                        Text("标普出处：").font(.caption)
-                        ForEach(reference.sources.indices, id: \.self) { index in
-                            Link(reference.sources[index].url.host ?? "网页来源", destination: reference.sources[index].url)
-                                .font(.caption).lineLimit(1).help(reference.sources[index].title)
-                        }
-                    }
-                }
             } else {
                 VStack(spacing: 12) {
                     if isLoading { ProgressView("正在核对分享数据…") }
@@ -272,34 +312,38 @@ struct InvestmentShareSheet: View {
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("收益明细与统计口径").font(.headline)
-            if let content {
-                Text(content.period).font(.caption).textSelection(.enabled)
-                HStack { Text(content.profitLabel); Spacer(); Text(content.amount).monospacedDigit() }
-                ForEach(content.breakdown.indices, id: \.self) { index in
-                    HStack { Text(content.breakdown[index].title); Spacer(); Text(content.breakdown[index].value).monospacedDigit() }
-                }
-                Divider()
-                Text(content.scope)
-                if !content.breakdown.isEmpty {
-                    Text("交易费用已计入交易盈亏；费用与税款一行仅列独立入账支出，不重复扣除。")
-                }
-                Text(content.evidenceLabel)
-                Text(content.valuationLabel)
-                Text(content.versionLabel)
-                Text(content.footnote)
-                if let reference = content.benchmark {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("收益明细与统计口径").font(.headline)
+                if let content {
+                    Text(content.period).font(.caption).textSelection(.enabled)
+                    HStack { Text(content.profitLabel); Spacer(); Text(content.amount).monospacedDigit() }
+                    ForEach(content.breakdown.indices, id: \.self) { index in
+                        HStack { Text(content.breakdown[index].title); Spacer(); Text(content.breakdown[index].value).monospacedDigit() }
+                    }
                     Divider()
-                    Text("标普 500 价格指数 " + reference.percentage)
-                    Text(reference.dates + " · 不含股息")
-                    Text(reference.qualification + "；实际收盘日期可能与入账统计的具体时刻不同。不能用已入账金额判断是否跑赢指数。")
-                    ForEach(reference.sources.indices, id: \.self) { index in
-                        Link(reference.sources[index].title, destination: reference.sources[index].url)
+                    Text(content.scope)
+                    if !content.breakdown.isEmpty {
+                        Text("交易费用已计入交易盈亏；费用与税款一行仅列独立入账支出，不重复扣除。")
+                    }
+                    Text(content.evidenceLabel)
+                    Text(content.valuationLabel)
+                    Text(content.versionLabel)
+                    Text(content.footnote)
+                    if let reference = content.benchmark {
+                        Divider()
+                        Text("标普 500 价格指数 " + reference.percentage)
+                        Text(reference.dates + " · 不含股息")
+                        Text(reference.closes + " · 本地计算涨跌幅")
+                        Text(reference.qualification + "；实际收盘日期可能与入账统计的具体时刻不同。不能用已入账金额判断是否跑赢指数。")
+                        Text(reference.sourceLabel)
+                        ForEach(reference.sources.indices, id: \.self) { index in
+                            Link(reference.sources[index].title, destination: reference.sources[index].url)
+                        }
                     }
                 }
-            }
-        }.font(.callout).padding(20).frame(width: 420)
+            }.font(.callout).padding(20)
+        }.frame(width: 420, height: 440)
     }
 
     private func changePeriod(_ period: InvestmentReportPeriod) {
@@ -414,7 +458,8 @@ private struct InvestmentShareCard: View {
                     .accessibilityIdentifier("investmentShareBenchmark")
                     Text(reference.dates + " · 收盘价 · 不含股息").font(.system(size: 11))
                     Text(reference.qualification).font(.system(size: 11, weight: .medium))
-                    Text("来源：" + reference.sources.compactMap { $0.url.host }.joined(separator: " · "))
+                    Text(reference.sourceLabel + "：" + Array(reference.sources.prefix(3)).compactMap { $0.url.host }.joined(separator: " · ")
+                         + (reference.sources.count > 3 ? " 等" : ""))
                         .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.65)
                 }
                 .padding(.top, 12)

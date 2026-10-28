@@ -40,24 +40,29 @@ struct InvestmentBenchmarkPresentationTests {
     /// an offline response fixture; no request is sent to OpenAI or the source.
     private func response(_ request: AIBenchmarkRequest, startDay: String = "2026-09-23",
                           endDay: String = "2026-10-23", endClose: String = "112.5",
-                          available: Bool = true, includeSource: Bool = true) throws -> AIBenchmarkResult {
+                          available: Bool = true, includeSource: Bool = true,
+                          citationURL: String? = nil) throws -> AIBenchmarkResult {
         let payload: [String: Any] = [
             "status": available ? "available" : "unavailable", "index": "S&P500",
             "returnType": "PRICE_RETURN", "currency": "USD",
-            "start": available ? ["day": startDay, "close": "100", "sourceURL": sourceURL] : NSNull(),
-            "end": available ? ["day": endDay, "close": endClose, "sourceURL": sourceURL] : NSNull(),
+            "start": available ? ["day": startDay, "close": "100"] : NSNull(),
+            "end": available ? ["day": endDay, "close": endClose] : NSNull(),
             "unavailableReason": available ? NSNull() : "insufficient_evidence"
         ]
         let text = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         let sources: [[String: String]] = includeSource
             ? [["type": "url", "url": sourceURL, "title": "SYNTHETIC benchmark source"]] : []
+        let annotations: [[String: Any]] = citationURL.map {
+            [["type": "url_citation", "url": $0, "title": "SYNTHETIC answer citation",
+              "start_index": 0, "end_index": text.count]]
+        } ?? []
         let envelope: [String: Any] = [
             "object": "response", "status": "completed", "model": "synthetic-model",
             "output": [
                 ["id": "ws_synthetic_presentation", "type": "web_search_call", "status": "completed",
                  "action": ["type": "search", "sources": sources]],
                 ["type": "message", "role": "assistant", "status": "completed",
-                 "content": [["type": "output_text", "text": text, "annotations": []]]]
+                 "content": [["type": "output_text", "text": text, "annotations": annotations]]]
             ]
         ]
         return try request.parseResponse(JSONSerialization.data(withJSONObject: envelope))
@@ -76,6 +81,8 @@ struct InvestmentBenchmarkPresentationTests {
         #expect(benchmark.percentage == "+12.50%")
         #expect(benchmark.dates == "2026-09-23 → 2026-10-23")
         #expect(benchmark.sources.map(\.url.absoluteString) == [sourceURL])
+        #expect(benchmark.closes == "100 → 112.5 点")
+        #expect(benchmark.sourceLabel == "搜索来源")
         #expect(benchmark.qualification == "AI 联网参考 · 未独立核验")
         #expect(card.amount == "金额已隐藏")
         #expect(card.breakdown.count == 3)
@@ -85,6 +92,19 @@ struct InvestmentBenchmarkPresentationTests {
         let visible = snapshot.card(options: shown, benchmark: result)
         #expect(visible.amount == "+16.00 USD")
         #expect(visible.benchmark == benchmark)
+    }
+
+    @Test func finalAnswerCitationsDisplayWithoutRewrittenURLsOrPrivateIncomeLeakage() throws {
+        let snapshot = try monthSnapshot()
+        let cited = "https://fred.stlouisfed.org/graph/?id=SP500&cosd=2026-09-23#observations"
+        let result = try response(request(snapshot), citationURL: cited)
+        let card = snapshot.card(options: .init(), benchmark: result)
+        let benchmark = try #require(card.benchmark)
+        #expect(benchmark.sourceLabel == "回答引用")
+        #expect(benchmark.sources.map(\.url.absoluteString) == [cited])
+        #expect(benchmark.percentage == "+12.50%" && benchmark.closes == "100 → 112.5 点")
+        #expect(card.amount == "金额已隐藏" && card.breakdown.allSatisfy { $0.value == "金额已隐藏" })
+        #expect(card.returnLabel == nil && card.returnText.isEmpty)
     }
 
     @Test func bookedIncomeDoesNotBecomeAccountReturnOrExcessReturn() throws {

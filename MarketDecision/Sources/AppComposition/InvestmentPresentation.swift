@@ -215,6 +215,8 @@ public struct InvestmentShareBreakdownRow: Sendable, Equatable {
 public struct InvestmentShareBenchmarkContent: Sendable, Equatable {
     public let percentage: String
     public let dates: String
+    public let closes: String
+    public let sourceLabel: String
     public let sources: [AIBenchmarkSource]
     public let qualification = "AI 联网参考 · 未独立核验"
 
@@ -224,6 +226,8 @@ public struct InvestmentShareBenchmarkContent: Sendable, Equatable {
               let reference = result.reference else { return nil }
         percentage = InvestmentSummary.amountText(reference.changePercent) + "%"
         dates = reference.startDay + " → " + reference.endDay
+        closes = reference.startClose.decimalString + " → " + reference.endClose.decimalString + " 点"
+        sourceLabel = reference.sourceKind == .answerCitations ? "回答引用" : "搜索来源"
         sources = reference.sources
     }
 }

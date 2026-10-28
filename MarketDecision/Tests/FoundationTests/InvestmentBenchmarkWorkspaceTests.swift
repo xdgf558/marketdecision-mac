@@ -58,8 +58,8 @@ private func benchmarkWorkspaceResponse(_ request: AIBenchmarkRequest, available
     let body: [String: Any] = [
         "status": available ? "available" : "unavailable", "index": "S&P500",
         "returnType": "PRICE_RETURN", "currency": "USD",
-        "start": available ? ["day": "2025-10-24", "close": "6000", "sourceURL": source] : NSNull(),
-        "end": available ? ["day": "2026-10-23", "close": "6600", "sourceURL": source] : NSNull(),
+        "start": available ? ["day": "2025-10-24", "close": "6000"] : NSNull(),
+        "end": available ? ["day": "2026-10-23", "close": "6600"] : NSNull(),
         "unavailableReason": available ? NSNull() : unavailableReason
     ]
     let outputText = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
@@ -315,8 +315,7 @@ struct InvestmentBenchmarkWorkspaceTests {
             (.missingSearch, "NO-SEARCH"), (.invalidIndex, "INDEX"), (.invalidWindow, "WINDOW"),
             (.invalidPrice, "PRICE"), (.invalidEvidence, "SOURCE-METADATA"), (.malformedResponse, "FORMAT"),
             (.unsupportedSourceURL, "SOURCE-URL"),
-            (.unsupportedSourceQuery, "SOURCE-QUERY"), (.unsafeSourceQueryValue, "SOURCE-QUERY-VALUE"),
-            (.unsupportedSourceFragment, "SOURCE-FRAGMENT"), (.sourceURLLimit, "SOURCE-LIMIT"), (.missingSourceMetadata, "SOURCE-LIST"), (.unmatchedSource, "SOURCE-MATCH"),
+            (.sourceURLLimit, "SOURCE-LIMIT"), (.missingSourceMetadata, "SOURCE-LIST"),
             (.ambiguousOutput, "AMBIGUOUS"), (.incompleteResponse, "INCOMPLETE"),
             (.budgetExceeded, "LIMIT"), (.invalidModel, "MODEL"), (.invalidRequest, "REQUEST")
         ]
