@@ -495,14 +495,15 @@ private struct InvestmentShareCard: View {
                 .padding(.top, 12)
             }
             Spacer(minLength: 12)
+            // Keep general bookkeeping explanations in the in-app details,
+            // not on the shared image. Preserve special evidence qualifiers.
             VStack(alignment: .leading, spacing: 5) {
-                Text(content.evidenceLabel).font(.system(size: 12, weight: .medium))
-                Text(content.benchmark != nil
-                     ? "入账金额不含持仓浮盈；账户收益率按完整净值计算"
-                     : (content.breakdown.isEmpty ? content.valuationLabel + " · " + content.versionLabel : "含已入账费用，不含持仓浮盈 · 入出金不计收益"))
-                    .font(.system(size: 13))
-                if !content.breakdown.isEmpty { Text(content.versionLabel).font(.system(size: 10)) }
-                Text(content.footnote).font(.system(size: 10))
+                if content.evidenceLabel.hasPrefix("SYNTHETIC") {
+                    Text(content.evidenceLabel).font(.system(size: 12, weight: .medium))
+                }
+                if content.breakdown.isEmpty {
+                    Text(content.valuationLabel + " · " + content.versionLabel).font(.system(size: 13))
+                }
             }.opacity(0.85).fixedSize(horizontal: false, vertical: true)
         }
         .padding(36).frame(width: Self.width, height: Self.height, alignment: .topLeading)
