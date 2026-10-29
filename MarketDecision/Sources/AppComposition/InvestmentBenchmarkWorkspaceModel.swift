@@ -193,6 +193,8 @@ private actor InvestmentBenchmarkSessionCleanup {
             detail = "标普查询返回多个或不明确的最终答案，无法唯一确定结果。[AI-BENCHMARK-AMBIGUOUS]"
         case .incompleteResponse:
             detail = "标普查询尚未返回完整结果，未展示未完成的数据。[AI-BENCHMARK-INCOMPLETE]"
+        case .outputLimitReached:
+            detail = "本次推理与回答达到 token 上限，标普查询未完成；不会自动加额或展示残缺数据。[AI-BENCHMARK-OUTPUT-LIMIT]"
         case .budgetExceeded:
             detail = "标普查询内容超出本地接收限制，已停止处理。[AI-BENCHMARK-LIMIT]"
         case .invalidModel:

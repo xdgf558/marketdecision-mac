@@ -125,7 +125,7 @@ enum AIInsightFailureMessage {
     private static func response(_ error: AIInsightError) -> String {
         switch error {
         case .outputLimitReached:
-            return "API 已响应，但达到本次输出 token 上限，解读未生成完整。此上限也包含推理 token；不会自动加额或重发。[AI-OUTPUT-LIMIT]"
+            return "本次推理与回答达到 token 上限，解读未完成；这不是 API Key 无效。可在 AI 设置查看额度，已用 token 可能计费，不会自动加额或重发。[AI-OUTPUT-LIMIT]"
         case .contentFiltered:
             return "API 的内容过滤中断了解读，未取得完整回答。[AI-CONTENT-FILTER]"
         case .responseFailed:

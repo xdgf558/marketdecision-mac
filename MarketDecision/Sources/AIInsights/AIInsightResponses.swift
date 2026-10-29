@@ -13,6 +13,19 @@ public enum AIModelConfiguration {
         model == defaultModel ? "max" : nil
     }
 
+    public enum Purpose: Sendable { case financialAnalysis, benchmarkSearch }
+
+    /// Responses counts both reasoning and visible output against this limit.
+    /// Keep a fixed, disclosed allowance for SOL/MAX; never escalate on failure.
+    /// This is a token ceiling, not a monetary spending cap or completion guarantee.
+    public static func maxOutputTokens(for model: String, purpose: Purpose) -> Int {
+        if model == defaultModel { return 25_000 }
+        switch purpose {
+        case .financialAnalysis: return 3_000
+        case .benchmarkSearch: return 2_000
+        }
+    }
+
     /// Once per installation: upgrade the former default, preserve a custom
     /// selection and never overwrite a later intentional switch back to Luna.
     public static func migrateStoredModel(in defaults: UserDefaults) {
@@ -54,7 +67,7 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
             "store": false,
             "stream": false,
             // An output token budget is not a monetary spending cap.
-            "max_output_tokens": 3_000,
+            "max_output_tokens": AIModelConfiguration.maxOutputTokens(for: model, purpose: .financialAnalysis),
             "instructions": Self.instructions,
             "input": [["role": "user", "content": [["type": "input_text", "text": summaryText]]]],
             "text": ["format": ["type": "json_schema", "name": "financial_evidence_insight",

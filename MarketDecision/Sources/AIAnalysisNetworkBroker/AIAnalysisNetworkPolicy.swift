@@ -166,7 +166,9 @@ public enum AIAnalysisReplyCode: Int, Sendable {
 struct AIAnalysisNetworkRequest: Codable, Sendable {
     static let maximumEncodedBytes = 256 * 1_024
     static let endpoint = "https://api.openai.com/v1/responses"
-    static let timeout: TimeInterval = 60
+    // Non-streaming MAX reasoning can take minutes before the first response.
+    // Both the URLRequest and session resource deadline use this finite bound.
+    static let timeout: TimeInterval = 300
     let request: AIInsightRequest?
     let benchmarkRequest: AIBenchmarkRequest?
     private let apiKey: String

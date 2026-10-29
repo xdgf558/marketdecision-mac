@@ -3,7 +3,7 @@ import CoreDomain
 
 /// Closed diagnostics; remote text, URLs and search queries never become error messages.
 public enum AIBenchmarkError: Error, Equatable, Sendable {
-    case invalidRequest, invalidModel, budgetExceeded, malformedResponse, incompleteResponse
+    case invalidRequest, invalidModel, budgetExceeded, malformedResponse, incompleteResponse, outputLimitReached
     case missingSearch, ambiguousOutput, invalidIndex, invalidPrice, invalidWindow, invalidEvidence
     case unsupportedSourceURL, sourceURLLimit, missingSourceMetadata
 }
@@ -47,7 +47,8 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
         var body: [String: Any] = [
             "model": model, "store": false, "stream": false,
             "tools": [["type": "web_search"]], "tool_choice": "required", "max_tool_calls": 3,
-            "include": ["web_search_call.action.sources"], "max_output_tokens": 2_000,
+            "include": ["web_search_call.action.sources"],
+            "max_output_tokens": AIModelConfiguration.maxOutputTokens(for: model, purpose: .benchmarkSearch),
             "instructions": Self.instructions,
             "input": [["role": "user", "content": [["type": "input_text", "text": String(decoding: queryData, as: UTF8.self)]]]],
             "text": ["format": ["type": "json_schema", "name": "sp500_price_reference",
@@ -64,7 +65,15 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
     public func parseResponse(_ data: Data) throws -> AIBenchmarkResult {
         try validate()
         let root = try AIBenchmarkValidation.object(data, byteLimit: 512 * 1024)
-        guard root["object"] as? String == "response", root["status"] as? String == "completed" else {
+        guard root["object"] as? String == "response" else {
+            throw AIBenchmarkError.incompleteResponse
+        }
+        guard root["status"] as? String == "completed" else {
+            if root["status"] as? String == "incomplete",
+               let details = root["incomplete_details"] as? [String: Any],
+               details["reason"] as? String == "max_output_tokens" {
+                throw AIBenchmarkError.outputLimitReached
+            }
             throw AIBenchmarkError.incompleteResponse
         }
         guard root["error"] == nil || root["error"] is NSNull,

@@ -95,27 +95,56 @@ struct AIBenchmarkTests {
         #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(value)) == value)
     }
 
-    @Test func solBenchmarkRequestUsesMaxWithoutChangingSearchOrOutputBudgets() throws {
+    @Test func solBenchmarkRequestReservesReasoningBudgetWithoutChangingSearchScope() throws {
         let original = try request()
         let upgraded = AIBenchmarkRequest(start: original.start, end: original.end,
             model: AIInsightRequest.defaultModel)
         var body = try #require(JSONSerialization.jsonObject(with: upgraded.encodedBody()) as? [String: Any])
         #expect(body["model"] as? String == "gpt-6.1-sol")
         #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
-        #expect(body["max_output_tokens"] as? Int == 2_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["max_tool_calls"] as? Int == 3)
         #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(upgraded)) == upgraded)
         body.removeValue(forKey: "reasoning")
         body.removeValue(forKey: "model")
+        body.removeValue(forKey: "max_output_tokens")
         let comparable = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
         for model in ["gpt-6-luna", "synthetic-model", "gpt-6.1-sol-custom"] {
             let custom = AIBenchmarkRequest(start: original.start, end: original.end, model: model)
             var customBody = try #require(JSONSerialization.jsonObject(with: custom.encodedBody()) as? [String: Any])
             #expect(customBody["model"] as? String == model)
             #expect(customBody["reasoning"] == nil)
+            #expect(customBody["max_output_tokens"] as? Int == 2_000)
+            customBody.removeValue(forKey: "max_output_tokens")
             customBody.removeValue(forKey: "model")
             #expect(try JSONSerialization.data(withJSONObject: customBody, options: [.sortedKeys]) == comparable)
         }
+    }
+
+    @Test func outputLimitRejectsCompleteLookingPricesAndNeverChangesRequestBudget() throws {
+        let original = try request()
+        let value = AIBenchmarkRequest(start: original.start, end: original.end, model: "gpt-6.1-sol")
+        let originalBody = try value.encodedBody()
+        var result = try envelope([search(), message(payload())])
+        result["status"] = "incomplete"
+        result["incomplete_details"] = ["reason": "max_output_tokens", "message": "Bearer synthetic-private-text"]
+        #expect(throws: AIBenchmarkError.outputLimitReached) { try value.parseResponse(bytes(result)) }
+
+        // An output-limit reason never authorizes partial prices or changes a different status.
+        result["status"] = "completed"
+        #expect(throws: AIBenchmarkError.malformedResponse) { try value.parseResponse(bytes(result)) }
+        for status in ["failed", "in_progress", "queued"] {
+            result["status"] = status
+            #expect(throws: AIBenchmarkError.incompleteResponse) { try value.parseResponse(bytes(result)) }
+        }
+        result["status"] = "incomplete"
+        let unknownDetails: [Any] = [NSNull(), ["reason": "MAX_OUTPUT_TOKENS"], ["reason": 3],
+                                    ["reason": "content_filter"], ["reason": "unknown_future_reason"]]
+        for details in unknownDetails {
+            result["incomplete_details"] = details
+            #expect(throws: AIBenchmarkError.incompleteResponse) { try value.parseResponse(bytes(result)) }
+        }
+        #expect(try value.encodedBody() == originalBody)
     }
 
     @Test func completedSearchProducesLocallyCalculatedBoundReference() throws {

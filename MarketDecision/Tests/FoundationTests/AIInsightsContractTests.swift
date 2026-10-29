@@ -118,7 +118,7 @@ struct AIInsightsContractTests {
         #expect(Set(body.keys) == Set(["model", "reasoning", "store", "stream", "max_output_tokens", "instructions", "input", "text"]))
         #expect(body["model"] as? String == "gpt-6.1-sol")
         #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["store"] as? Bool == false)
         #expect(body["stream"] as? Bool == false)
         let messages = try #require(body["input"] as? [[String: Any]])
@@ -191,7 +191,7 @@ struct AIInsightsContractTests {
     @Test func oneRequestRequiresBoundedFinancialContextValuationWithoutExtraInputFields() throws {
         let request = AIInsightRequest(input: input())
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         let messages = try #require(body["input"] as? [[String: Any]])
         #expect(messages.count == 1)
         let format = try #require((body["text"] as? [String: Any])?["format"] as? [String: Any])
@@ -366,7 +366,7 @@ struct AIInsightsContractTests {
     @Test func referenceRequestKeepsOneRequestBudgetAndNoTargetsOrAssumptionPayload() throws {
         let request = AIInsightRequest(input: referenceInput())
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
         let messages = try #require(body["input"] as? [[String: Any]])
         #expect(messages.count == 1)
@@ -469,7 +469,7 @@ struct AIInsightsContractTests {
             #expect(throws: AIInsightError.incompleteResponse) { try request.parseResponse(bytes(envelope)) }
         }
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["model"] as? String == AIInsightRequest.defaultModel)
     }
 

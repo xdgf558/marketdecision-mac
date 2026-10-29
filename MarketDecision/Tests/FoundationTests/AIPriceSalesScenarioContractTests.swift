@@ -187,7 +187,7 @@ struct AIPriceSalesScenarioContractTests {
     @Test func scenarioRequestKeepsOneRequestBudgetAndExplicitUnconfirmedAssumptions() throws {
         let request = AIInsightRequest(input: input())
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
         let messages = try #require(body["input"] as? [[String: Any]])
         #expect(messages.count == 1)

@@ -2296,7 +2296,10 @@
     {"selector": "FoundationTests.PortfolioWorkspaceTests/cancelledNAVReopenReturnsNoSnapshotAndAllowsExplicitRetry()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"},
     {"selector": "FoundationTests.AIInsightsContractTests/storedModelUpgradeRunsOnceAndPreservesCustomChoices()", "source": "Tests/FoundationTests/AIInsightsContractTests.swift", "execution": "required"},
     {"selector": "FoundationTests.AIInsightsContractTests/customModelsKeepTheirOriginalRequestBudgetWithoutForcedReasoning()", "source": "Tests/FoundationTests/AIInsightsContractTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.AIBenchmarkTests/solBenchmarkRequestUsesMaxWithoutChangingSearchOrOutputBudgets()", "source": "Tests/FoundationTests/AIBenchmarkTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.AIBenchmarkNetworkTests/solBenchmarkDescriptorRebuildsMaxAtTheFixedEndpoint()", "source": "Tests/FoundationTests/AIBenchmarkNetworkTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.AIBenchmarkTests/solBenchmarkRequestReservesReasoningBudgetWithoutChangingSearchScope()", "source": "Tests/FoundationTests/AIBenchmarkTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIBenchmarkNetworkTests/solBenchmarkDescriptorRebuildsMaxAtTheFixedEndpoint()", "source": "Tests/FoundationTests/AIBenchmarkNetworkTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIAnalysisNetworkBrokerTests/modelSpecificBudgetsSurviveClosedDescriptorRoundTrip()", "source": "Tests/FoundationTests/AIAnalysisNetworkBrokerTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIBenchmarkTests/outputLimitRejectsCompleteLookingPricesAndNeverChangesRequestBudget()", "source": "Tests/FoundationTests/AIBenchmarkTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.InvestmentBenchmarkWorkspaceTests/outputLimitDiscardsPartialBenchmarkAndRequiresAnExplicitRetry()", "source": "Tests/FoundationTests/InvestmentBenchmarkWorkspaceTests.swift", "execution": "required"}
   ]
 }

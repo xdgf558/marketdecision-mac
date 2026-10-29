@@ -53,7 +53,8 @@ private struct BenchmarkWorkspaceSecretFailure: LocalizedError, CustomStringConv
 }
 
 private func benchmarkWorkspaceResponse(_ request: AIBenchmarkRequest, available: Bool = false,
-                                        unavailableReason: String = "insufficient_evidence") throws -> AIBenchmarkResult {
+                                        unavailableReason: String = "insufficient_evidence",
+                                        incompleteReason: String? = nil) throws -> AIBenchmarkResult {
     let source = "https://fred.stlouisfed.org/series/SP500"
     let body: [String: Any] = [
         "status": available ? "available" : "unavailable", "index": "S&P500",
@@ -64,9 +65,12 @@ private func benchmarkWorkspaceResponse(_ request: AIBenchmarkRequest, available
     ]
     let outputText = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
     let sources: [[String: String]] = available ? [["type": "url", "url": source, "title": "S&P 500 — synthetic test"]] : []
+    let details: Any
+    if let incompleteReason { details = ["reason": incompleteReason] }
+    else { details = NSNull() }
     let response: [String: Any] = [
-        "object": "response", "status": "completed", "model": "synthetic-model",
-        "error": NSNull(), "incomplete_details": NSNull(),
+        "object": "response", "status": incompleteReason == nil ? "completed" : "incomplete", "model": "synthetic-model",
+        "error": NSNull(), "incomplete_details": details,
         "output": [
             ["type": "web_search_call", "id": "ws_synthetic", "status": "completed",
              "action": ["type": "search", "query": "S&P 500 synthetic fixture", "sources": sources]],
@@ -310,13 +314,39 @@ struct InvestmentBenchmarkWorkspaceTests {
         #expect(await probe.events == ["factory", "key", "send", "close"])
     }
 
+    @Test func outputLimitDiscardsPartialBenchmarkAndRequiresAnExplicitRetry() async throws {
+        let probe = BenchmarkWorkspaceProbe()
+        let model = workspace(probe, factory: {
+            await probe.record("factory")
+            return InvestmentBenchmarkSession(send: { request, _ in
+                await probe.record("send")
+                let data = try request.encodedBody()
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(body["max_output_tokens"] as? Int == 25_000)
+                #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+                return try benchmarkWorkspaceResponse(request, available: true,
+                                                      incompleteReason: "max_output_tokens")
+            }, close: { await probe.record("close") })
+        })
+        model.select(snapshotID: UUID(), start: start, end: end, model: "gpt-6.1-sol")
+        await (try #require(model.startSearch())).value
+        #expect(model.result == nil && !model.isBusy)
+        #expect(model.message?.contains("[AI-BENCHMARK-OUTPUT-LIMIT]") == true)
+        #expect(await probe.events == ["factory", "key", "send", "close"])
+
+        // Only a second explicit action may send again, with the same finite budget.
+        await (try #require(model.startSearch())).value
+        #expect(model.result == nil && !model.isBusy)
+        #expect(await probe.events == ["factory", "key", "send", "close", "factory", "key", "send", "close"])
+    }
+
     @Test func benchmarkResponseFailuresUseClosedSpecificDiagnosticsWithoutRetrying() async throws {
         let cases: [(AIBenchmarkError, String)] = [
             (.missingSearch, "NO-SEARCH"), (.invalidIndex, "INDEX"), (.invalidWindow, "WINDOW"),
             (.invalidPrice, "PRICE"), (.invalidEvidence, "SOURCE-METADATA"), (.malformedResponse, "FORMAT"),
             (.unsupportedSourceURL, "SOURCE-URL"),
             (.sourceURLLimit, "SOURCE-LIMIT"), (.missingSourceMetadata, "SOURCE-LIST"),
-            (.ambiguousOutput, "AMBIGUOUS"), (.incompleteResponse, "INCOMPLETE"),
+            (.ambiguousOutput, "AMBIGUOUS"), (.incompleteResponse, "INCOMPLETE"), (.outputLimitReached, "OUTPUT-LIMIT"),
             (.budgetExceeded, "LIMIT"), (.invalidModel, "MODEL"), (.invalidRequest, "REQUEST")
         ]
         for (failure, code) in cases {
