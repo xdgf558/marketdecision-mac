@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AppComposition
+import AIInsights
 
 private struct InvestmentSharePeriodRequest: Identifiable {
     let id = UUID()
@@ -24,6 +25,7 @@ private struct InvestmentSharePNG: FileDocument {
 struct InvestmentShareSheet: View {
     let snapshot: InvestmentShareSnapshot
     let makeBenchmark: (@MainActor () throws -> InvestmentBenchmarkWorkspaceModel)?
+    let prepareReturn: (@MainActor (InvestmentBenchmarkWindow) -> Void)?
     let selectPeriod: (@MainActor (InvestmentReportPeriod) async -> InvestmentShareSnapshot?)?
     @Environment(\.dismiss) private var dismiss
     @State private var displayedSnapshot: InvestmentShareSnapshot?
@@ -39,7 +41,8 @@ struct InvestmentShareSheet: View {
     @State private var benchmark: InvestmentBenchmarkWorkspaceModel?
     @State private var benchmarkPreparationFailed = false
     @State private var showsAISettings = false
-    @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
+    @State private var showsBenchmarkSources = false
+    @AppStorage(AIModelConfiguration.modelPreferenceKey) private var modelName = AIModelConfiguration.defaultModel
     private let accent = Color(red: 0, green: 0.40, blue: 0.37)
     private let previewWidth: CGFloat = 460
     private var content: InvestmentShareCardContent? {
@@ -55,10 +58,12 @@ struct InvestmentShareSheet: View {
 
     init(snapshot: InvestmentShareSnapshot,
          makeBenchmark: (@MainActor () throws -> InvestmentBenchmarkWorkspaceModel)? = nil,
+         prepareReturn: (@MainActor (InvestmentBenchmarkWindow) -> Void)? = nil,
          selectPeriod: (@MainActor (InvestmentReportPeriod) async -> InvestmentShareSnapshot?)? = nil) {
         self.snapshot = snapshot
         self.makeBenchmark = makeBenchmark
         self.selectPeriod = selectPeriod
+        self.prepareReturn = prepareReturn
         _displayedSnapshot = State(initialValue: snapshot)
         _selectedPeriod = State(initialValue: snapshot.periodSelection)
     }
@@ -156,7 +161,7 @@ struct InvestmentShareSheet: View {
                     .disabled(busy).accessibilityIdentifier("investmentShareHideAmounts")
                 Text("开启后，分享图将隐藏总额与所有金额明细。")
                     .font(.caption).foregroundStyle(.secondary)
-                if snapshot.supportsReturn {
+                if displayedSnapshot?.supportsReturn == true {
                     Toggle("显示收益率", isOn: $options.showReturn).toggleStyle(.checkbox)
                         .disabled(busy).accessibilityIdentifier("investmentShareReturn")
                 }
@@ -169,8 +174,13 @@ struct InvestmentShareSheet: View {
                 }
             }
             benchmarkControls
+            if let content, content.benchmark == nil, !content.accountReturn.isAvailable {
+                Text(content.accountReturn.explanation).font(.caption2).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("investmentShareReturnMissing")
+                if let window = displayedSnapshot?.benchmarkWindow { prepareReturnButton(window) }
+            }
             Divider()
-            Text(snapshot.supportsReturn ? "仅分享已复算的冻结报告" : "仅展示已入账收益，不含持仓浮盈")
+            Text("收益率与入账金额分别展示；缺少净值时不计算收益率。")
                 .font(.callout).foregroundStyle(.secondary)
             VStack(spacing: 12) {
                 Button(action: saveCard) {
@@ -223,7 +233,32 @@ struct InvestmentShareSheet: View {
                 }
                 Text("只发送指数与日期，使用现有 OpenAI API；搜索另计费。切换周期后需重新点击。")
                     .font(.caption2).foregroundStyle(.secondary)
-                if let message = benchmark?.message {
+                if let content, let reference = content.benchmark {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("我的收益率（TWR）")
+                            Spacer()
+                            Text(reference.accountReturn.percentage).fontWeight(.semibold).monospacedDigit()
+                        }
+                        HStack {
+                            Text("标普 500 涨跌幅")
+                            Spacer()
+                            Text(reference.percentage).fontWeight(.semibold).monospacedDigit()
+                        }
+                        if let difference = reference.accountReturn.difference {
+                            HStack { Text("差值"); Spacer(); Text(difference).monospacedDigit() }
+                        }
+                        Text(reference.dates + " · " + reference.closes)
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Text("本地计算涨跌幅 · 不含股息 · AI 搜索未独立核验")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        benchmarkSources(reference)
+                        Text(reference.accountReturn.explanation)
+                            .font(.caption2).foregroundStyle(.secondary)
+                        if !reference.accountReturn.isAvailable { prepareReturnButton(reference.valuationWindow) }
+                    }
+                    .accessibilityIdentifier("investmentBenchmarkComparison")
+                } else if let message = benchmark?.message {
                     Text(message).font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("investmentBenchmarkMessage")
@@ -235,10 +270,45 @@ struct InvestmentShareSheet: View {
         }
     }
 
+    @ViewBuilder private func prepareReturnButton(_ window: InvestmentBenchmarkWindow) -> some View {
+        if let prepareReturn {
+            Button("补齐净值并核算收益率") {
+                benchmark?.cancel()
+                prepareReturn(window)
+            }.buttonStyle(.link).font(.caption).disabled(busy)
+                .accessibilityIdentifier("investmentSharePrepareReturn")
+        }
+    }
+
     private func selectBenchmarkWindow() {
+        showsBenchmarkSources = false
         benchmark?.select(snapshotID: displayedSnapshot?.id,
             start: displayedSnapshot?.benchmarkWindow?.start,
             end: displayedSnapshot?.benchmarkWindow?.end, model: modelName)
+    }
+
+    private func benchmarkSources(_ reference: InvestmentShareBenchmarkContent) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(reference.sources.prefix(2), id: \.url) { source in
+                Link(reference.sourceLabel + " · " + source.title, destination: source.url)
+                    .font(.caption2).lineLimit(1).help(source.url.absoluteString)
+            }
+            if reference.sources.count > 2 {
+                Button("查看全部来源（\(reference.sources.count)）") { showsBenchmarkSources = true }
+                    .buttonStyle(.link).font(.caption2)
+                    .popover(isPresented: $showsBenchmarkSources) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(reference.sourceLabel).font(.headline)
+                                ForEach(reference.sources, id: \.url) { source in
+                                    Link(source.title, destination: source.url)
+                                        .help(source.url.absoluteString)
+                                }
+                            }.padding(14)
+                        }.frame(width: 360, height: 240)
+                    }
+            }
+        }
     }
 
     private var preview: some View {
@@ -251,15 +321,6 @@ struct InvestmentShareSheet: View {
                     .frame(width: previewWidth, height: InvestmentShareCard.height * previewWidth / InvestmentShareCard.width, alignment: .topLeading)
                 Text(content.asOfLabel).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                if let reference = content.benchmark {
-                    HStack(spacing: 10) {
-                        Text("标普出处：").font(.caption)
-                        ForEach(reference.sources.indices, id: \.self) { index in
-                            Link(reference.sources[index].url.host ?? "网页来源", destination: reference.sources[index].url)
-                                .font(.caption).lineLimit(1).help(reference.sources[index].title)
-                        }
-                    }
-                }
             } else {
                 VStack(spacing: 12) {
                     if isLoading { ProgressView("正在核对分享数据…") }
@@ -272,34 +333,41 @@ struct InvestmentShareSheet: View {
     }
 
     private var details: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("收益明细与统计口径").font(.headline)
-            if let content {
-                Text(content.period).font(.caption).textSelection(.enabled)
-                HStack { Text(content.profitLabel); Spacer(); Text(content.amount).monospacedDigit() }
-                ForEach(content.breakdown.indices, id: \.self) { index in
-                    HStack { Text(content.breakdown[index].title); Spacer(); Text(content.breakdown[index].value).monospacedDigit() }
-                }
-                Divider()
-                Text(content.scope)
-                if !content.breakdown.isEmpty {
-                    Text("交易费用已计入交易盈亏；费用与税款一行仅列独立入账支出，不重复扣除。")
-                }
-                Text(content.evidenceLabel)
-                Text(content.valuationLabel)
-                Text(content.versionLabel)
-                Text(content.footnote)
-                if let reference = content.benchmark {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("收益明细与统计口径").font(.headline)
+                if let content {
+                    Text(content.period).font(.caption).textSelection(.enabled)
+                    HStack { Text(content.profitLabel); Spacer(); Text(content.amount).monospacedDigit() }
+                    ForEach(content.breakdown.indices, id: \.self) { index in
+                        HStack { Text(content.breakdown[index].title); Spacer(); Text(content.breakdown[index].value).monospacedDigit() }
+                    }
                     Divider()
-                    Text("标普 500 价格指数 " + reference.percentage)
-                    Text(reference.dates + " · 不含股息")
-                    Text(reference.qualification + "；实际收盘日期可能与入账统计的具体时刻不同。不能用已入账金额判断是否跑赢指数。")
-                    ForEach(reference.sources.indices, id: \.self) { index in
-                        Link(reference.sources[index].title, destination: reference.sources[index].url)
+                    Text(content.scope)
+                    if !content.breakdown.isEmpty {
+                        Text("交易费用已计入交易盈亏；费用与税款一行仅列独立入账支出，不重复扣除。")
+                    }
+                    Text(content.evidenceLabel)
+                    Text(content.valuationLabel)
+                    Text(content.versionLabel)
+                    Text(content.footnote)
+                    if let reference = content.benchmark {
+                        Divider()
+                        Text("我的收益率（TWR） " + reference.accountReturn.percentage)
+                        Text("标普 500 价格指数 " + reference.percentage)
+                        if let difference = reference.accountReturn.difference { Text("差值 " + difference) }
+                        Text(reference.accountReturn.explanation)
+                        Text(reference.dates + " · 不含股息")
+                        Text(reference.closes + " · 本地计算涨跌幅")
+                        Text(reference.qualification + "；实际收盘日期可能与入账统计的具体时刻不同。不能用已入账金额判断是否跑赢指数。")
+                        Text(reference.sourceLabel)
+                        ForEach(reference.sources.indices, id: \.self) { index in
+                            Link(reference.sources[index].title, destination: reference.sources[index].url)
+                        }
                     }
                 }
-            }
-        }.font(.callout).padding(20).frame(width: 420)
+            }.font(.callout).padding(20)
+        }.frame(width: 420, height: 440)
     }
 
     private func changePeriod(_ period: InvestmentReportPeriod) {
@@ -381,11 +449,11 @@ private struct InvestmentShareCard: View {
             Text(content.dateRange).font(.system(size: 18)).opacity(0.8).padding(.top, 6)
             Text(content.periodBoundaryLabel).font(.system(size: 10)).opacity(0.75).padding(.top, 5)
                 .fixedSize(horizontal: false, vertical: true)
-            Text(content.profitLabel).font(.system(size: 22, weight: .medium)).padding(.top, content.benchmark == nil ? 26 : 16)
-            Text(currency(content.amount)).font(.system(size: content.benchmark == nil ? 72 : 60, weight: .semibold)).monospacedDigit()
+            Text(content.benchmark == nil ? content.profitLabel : "我的收益率（TWR）").font(.system(size: 22, weight: .medium)).padding(.top, content.benchmark == nil ? 26 : 16)
+            Text(content.benchmark?.accountReturn.percentage ?? currency(content.amount)).font(.system(size: content.benchmark == nil ? 72 : 54, weight: .semibold)).monospacedDigit()
                 .lineLimit(1).minimumScaleFactor(0.4).padding(.top, 8)
                 .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
-                .accessibilityLabel(content.amount).accessibilityIdentifier("investmentShareTotal")
+                .accessibilityLabel(content.benchmark?.accountReturn.percentage ?? content.amount).accessibilityIdentifier("investmentShareTotal")
             Rectangle().fill(Color.white.opacity(0.28)).frame(height: 1)
                 .padding(.top, content.benchmark == nil ? 24 : 14).padding(.bottom, content.benchmark == nil ? 20 : 12)
             if content.breakdown.isEmpty {
@@ -412,20 +480,31 @@ private struct InvestmentShareCard: View {
                     }
                     .accessibilityElement(children: .combine)
                     .accessibilityIdentifier("investmentShareBenchmark")
-                    Text(reference.dates + " · 收盘价 · 不含股息").font(.system(size: 11))
+                    if let difference = reference.accountReturn.difference {
+                        HStack { Text("差值（百分点）"); Spacer(); Text(difference) }.font(.system(size: 15))
+                    }
+                    Text(reference.dates + " · 收盘日期区间").font(.system(size: 11))
+                    Text(reference.accountReturn.isAvailable
+                         ? "账户含费用及股息；标普不含股息，差值仅供参考"
+                         : "账户缺少同期净值，未计算收益率或差值")
+                        .font(.system(size: 11))
                     Text(reference.qualification).font(.system(size: 11, weight: .medium))
-                    Text("来源：" + reference.sources.compactMap { $0.url.host }.joined(separator: " · "))
+                    Text(reference.sourceLabel + "：" + Array(reference.sources.prefix(3)).compactMap { $0.url.host }.joined(separator: " · ")
+                         + (reference.sources.count > 3 ? " 等" : ""))
                         .font(.system(size: 10)).lineLimit(1).minimumScaleFactor(0.65)
                 }
                 .padding(.top, 12)
             }
             Spacer(minLength: 12)
+            // Keep general bookkeeping explanations in the in-app details,
+            // not on the shared image. Preserve special evidence qualifiers.
             VStack(alignment: .leading, spacing: 5) {
-                Text(content.evidenceLabel).font(.system(size: 12, weight: .medium))
-                Text(content.breakdown.isEmpty ? content.valuationLabel + " · " + content.versionLabel : "含已入账费用，不含持仓浮盈 · 入出金不计收益")
-                    .font(.system(size: 13))
-                if !content.breakdown.isEmpty { Text(content.versionLabel).font(.system(size: 10)) }
-                Text(content.footnote).font(.system(size: 10))
+                if content.evidenceLabel.hasPrefix("SYNTHETIC") {
+                    Text(content.evidenceLabel).font(.system(size: 12, weight: .medium))
+                }
+                if content.breakdown.isEmpty {
+                    Text(content.valuationLabel + " · " + content.versionLabel).font(.system(size: 13))
+                }
             }.opacity(0.85).fixedSize(horizontal: false, vertical: true)
         }
         .padding(36).frame(width: Self.width, height: Self.height, alignment: .topLeading)
@@ -445,7 +524,9 @@ private struct InvestmentShareCard: View {
 
     private var frozenDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let label = content.returnLabel {
+            if content.benchmark != nil {
+                HStack { Text(content.profitLabel); Spacer(); Text(currency(content.amount)).monospacedDigit() }.font(.system(size: 21))
+            } else if let label = content.returnLabel {
                 HStack { Text(label); Spacer(); Text(content.returnText).monospacedDigit() }.font(.system(size: 21))
             }
             if !content.holdings.isEmpty {

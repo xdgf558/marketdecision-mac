@@ -63,6 +63,7 @@ private struct InvestmentsContent: View {
     @State private var requestedAccountID: String?
     @State private var preferredReportID: UUID?
     @State private var continueToCalculation = false
+    @State private var comparisonWindow: InvestmentBenchmarkWindow?
     @State private var shareError: String?
     @Environment(\.colorScheme) private var colorScheme
     @State private var contributionPeriod = "全部"
@@ -98,7 +99,7 @@ private struct InvestmentsContent: View {
                             continueToCalculation = true; self.detail = nil; requestReload(account: account)
                         })
                     case .portfolio: PortfolioPage(workspace: workspace, initialAccountID: detailAccountID)
-                    case .calculation: InvestmentCalculationView(model: model) { id in
+                    case .calculation: InvestmentCalculationView(model: model, comparisonWindow: comparisonWindow) { id in
                         preferredReportID = id; self.detail = nil; requestReload(account: detailAccountID)
                     }
                     }
@@ -106,7 +107,8 @@ private struct InvestmentsContent: View {
             } else { dashboard }
         }
         .sheet(item: $share) {
-            InvestmentShareSheet(snapshot: $0, makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() })
+            InvestmentShareSheet(snapshot: $0, makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() },
+                                 prepareReturn: { showCalculation(window: $0) })
         }
         .sheet(item: $quickReportRequest, onDismiss: {
             // A late dismissal must not cancel a newly presented request.
@@ -116,7 +118,12 @@ private struct InvestmentsContent: View {
             // can present before the optional request is read by sheet content.
             InvestmentQuickReportsSheet(model: model, request: request,
                                         accent: accent, lossColor: lossColor,
-                                        makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() }, close: {
+                                        makeBenchmark: { try workspace.makeInvestmentBenchmarkWorkspace() },
+                                        prepareReturn: { window in
+                guard quickReportRequest?.id == request.id, model.selectedAccountID == request.accountID,
+                      model.inputEpoch == request.baseline.inputEpoch else { return }
+                showCalculation(window: window)
+            }, close: {
                 guard quickReportRequest?.id == request.id else { return }
                 endQuickReports()
             })
@@ -548,11 +555,12 @@ private struct InvestmentsContent: View {
         detailAccountID = model.selectedAccountID
         model.disappear(); share = nil; detail = value
     }
-    private func showCalculation() {
+    private func showCalculation(window: InvestmentBenchmarkWindow? = nil) {
         guard model.preparationBaseline != nil else { return }
         discardPositionRequest()
         endQuickReports()
         detailAccountID = model.selectedAccountID
+        comparisonWindow = window
         share = nil; shareError = nil; detail = .calculation
     }
     private func requestReload(account: String?) {
@@ -626,6 +634,7 @@ private struct InvestmentQuickReportsSheet: View {
     let accent: Color
     let lossColor: Color
     let makeBenchmark: @MainActor () throws -> InvestmentBenchmarkWorkspaceModel
+    let prepareReturn: @MainActor (InvestmentBenchmarkWindow) -> Void
     let close: () -> Void
     @State private var preparationID = UUID()
     @State private var isPreparing = true
@@ -764,7 +773,7 @@ private struct InvestmentQuickReportsSheet: View {
         // period switch still uses the model's fresh storage revision check.
         let epoch = model.inputEpoch
         let account = model.selectedAccountID
-        return InvestmentShareSheet(snapshot: snapshot, makeBenchmark: makeBenchmark) { period in
+        return InvestmentShareSheet(snapshot: snapshot, makeBenchmark: makeBenchmark, prepareReturn: prepareReturn) { period in
             guard model.inputEpoch == epoch, model.selectedAccountID == account,
                   let report = model.periodReports.first(where: { $0.period == period && $0.accountID == account }) else { return nil }
             let result = await model.preparePeriodShare(report)

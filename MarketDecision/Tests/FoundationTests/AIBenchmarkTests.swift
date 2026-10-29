@@ -20,8 +20,8 @@ struct AIBenchmarkTests {
     private func payload(start: String = "2025-01-27", end: String = "2026-01-27",
                          first: String = "6000", last: String = "6600") -> [String: Any] {
         ["status": "available", "index": "S&P500", "returnType": "PRICE_RETURN", "currency": "USD",
-         "start": ["day": start, "close": first, "sourceURL": source],
-         "end": ["day": end, "close": last, "sourceURL": source], "unavailableReason": NSNull()]
+         "start": ["day": start, "close": first],
+         "end": ["day": end, "close": last], "unavailableReason": NSNull()]
     }
 
     private func unavailable() -> [String: Any] {
@@ -37,6 +37,13 @@ struct AIBenchmarkTests {
         ["id": id, "type": "web_search_call", "status": "completed",
          "action": ["type": "search", "query": "S&P 500 synthetic contract fixture",
                     "sources": sources ?? [["type": "url", "url": source, "title": "Synthetic index reference"]]]]
+    }
+
+    private func pageAction(_ type: String, url: Any?, status: String = "completed") -> [String: Any] {
+        var action: [String: Any] = ["type": type]
+        if let url { action["url"] = url }
+        if type == "find_in_page" { action["pattern"] = "synthetic close" }
+        return ["id": "ws_page_synthetic", "type": "web_search_call", "status": status, "action": action]
     }
 
     private func message(_ payload: [String: Any], phase: String? = nil,
@@ -77,7 +84,67 @@ struct AIBenchmarkTests {
         #expect(query["returnType"] as? String == "PRICE_RETURN")
         let format = try #require((object["text"] as? [String: Any])?["format"] as? [String: Any])
         #expect(format["strict"] as? Bool == true)
+        let schema = try #require(format["schema"] as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let optionalPoint = try #require(properties["start"] as? [String: Any])
+        let alternatives = try #require(optionalPoint["anyOf"] as? [[String: Any]])
+        let point = try #require(alternatives.first)
+        #expect(point["required"] as? [String] == ["day", "close"])
+        let pointProperties = try #require(point["properties"] as? [String: Any])
+        #expect(Set(pointProperties.keys) == ["day", "close"])
         #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(value)) == value)
+    }
+
+    @Test func solBenchmarkRequestReservesReasoningBudgetWithoutChangingSearchScope() throws {
+        let original = try request()
+        let upgraded = AIBenchmarkRequest(start: original.start, end: original.end,
+            model: AIInsightRequest.defaultModel)
+        var body = try #require(JSONSerialization.jsonObject(with: upgraded.encodedBody()) as? [String: Any])
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 25_000)
+        #expect(body["max_tool_calls"] as? Int == 3)
+        #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(upgraded)) == upgraded)
+        body.removeValue(forKey: "reasoning")
+        body.removeValue(forKey: "model")
+        body.removeValue(forKey: "max_output_tokens")
+        let comparable = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        for model in ["gpt-6-luna", "synthetic-model", "gpt-6.1-sol-custom"] {
+            let custom = AIBenchmarkRequest(start: original.start, end: original.end, model: model)
+            var customBody = try #require(JSONSerialization.jsonObject(with: custom.encodedBody()) as? [String: Any])
+            #expect(customBody["model"] as? String == model)
+            #expect(customBody["reasoning"] == nil)
+            #expect(customBody["max_output_tokens"] as? Int == 2_000)
+            customBody.removeValue(forKey: "max_output_tokens")
+            customBody.removeValue(forKey: "model")
+            #expect(try JSONSerialization.data(withJSONObject: customBody, options: [.sortedKeys]) == comparable)
+        }
+    }
+
+    @Test func outputLimitRejectsCompleteLookingPricesAndNeverChangesRequestBudget() throws {
+        let original = try request()
+        let value = AIBenchmarkRequest(start: original.start, end: original.end, model: "gpt-6.1-sol")
+        let originalBody = try value.encodedBody()
+        var result = try envelope([search(), message(payload())])
+        result["status"] = "incomplete"
+        result["incomplete_details"] = ["reason": "max_output_tokens", "message": "Bearer synthetic-private-text"]
+        #expect(throws: AIBenchmarkError.outputLimitReached) { try value.parseResponse(bytes(result)) }
+
+        // An output-limit reason never authorizes partial prices or changes a different status.
+        result["status"] = "completed"
+        #expect(throws: AIBenchmarkError.malformedResponse) { try value.parseResponse(bytes(result)) }
+        for status in ["failed", "in_progress", "queued"] {
+            result["status"] = status
+            #expect(throws: AIBenchmarkError.incompleteResponse) { try value.parseResponse(bytes(result)) }
+        }
+        result["status"] = "incomplete"
+        let unknownDetails: [Any] = [NSNull(), ["reason": "MAX_OUTPUT_TOKENS"], ["reason": 3],
+                                    ["reason": "content_filter"], ["reason": "unknown_future_reason"]]
+        for details in unknownDetails {
+            result["incomplete_details"] = details
+            #expect(throws: AIBenchmarkError.incompleteResponse) { try value.parseResponse(bytes(result)) }
+        }
+        #expect(try value.encodedBody() == originalBody)
     }
 
     @Test func completedSearchProducesLocallyCalculatedBoundReference() throws {
@@ -91,8 +158,8 @@ struct AIBenchmarkTests {
         #expect(reference.endClose == (try Money("6600")))
         #expect(reference.startDay == "2025-01-27")
         #expect(reference.sources.count == 1)
-        #expect(reference.startSourceURL == reference.sources[0].url)
-        #expect(reference.endSourceURL == reference.sources[0].url)
+        #expect(reference.sourceKind == .searchSources)
+        #expect(reference.sources[0].url.absoluteString == source)
         let different = AIBenchmarkRequest(start: value.start, end: value.end.addingTimeInterval(1), model: value.model)
         #expect(throws: AIBenchmarkError.invalidRequest) { try result.validate(for: different) }
     }
@@ -178,6 +245,9 @@ struct AIBenchmarkTests {
         let value = try request()
         #expect(throws: AIBenchmarkError.missingSearch) { try value.parseResponse(bytes(envelope([message(payload())]))) }
         #expect(throws: AIBenchmarkError.missingSearch) { try value.parseResponse(bytes(envelope([message(unavailable())]))) }
+        #expect(throws: AIBenchmarkError.missingSearch) {
+            try value.parseResponse(bytes(envelope([message(payload(), annotations: [citation(source)])])))
+        }
         var incomplete = search(); incomplete["status"] = "in_progress"
         #expect(throws: AIBenchmarkError.missingSearch) { try value.parseResponse(bytes(envelope([incomplete, message(payload())]))) }
         #expect(throws: AIBenchmarkError.missingSearch) { try value.parseResponse(bytes(envelope([search(), search(), message(payload())]))) }
@@ -185,157 +255,345 @@ struct AIBenchmarkTests {
         #expect(throws: AIBenchmarkError.incompleteResponse) { try value.parseResponse(bytes(root)) }
     }
 
-    @Test func sourceMustAppearInThisSearchMetadataOrActualCitationAnnotation() throws {
+    private func citation(_ url: String, title: String = "Synthetic citation") -> [String: Any] {
+        ["type": "url_citation", "url": url, "title": title, "start_index": 0, "end_index": 20]
+    }
+
+    private func metadata(_ urls: [String]) -> [[String: Any]] {
+        urls.map { ["type": "url", "url": $0] }
+    }
+
+    @Test func responseMetadataRequiredAndModelAuthoredSourceURLsAreRefused() throws {
         let value = try request()
-        #expect(throws: AIBenchmarkError.invalidEvidence) {
+        #expect(throws: AIBenchmarkError.missingSourceMetadata) {
             try value.parseResponse(bytes(envelope([search(sources: []), message(payload())])))
         }
-        let citation: [String: Any] = ["type": "url_citation", "url": source, "title": "Synthetic source",
-                                       "start_index": 0, "end_index": 20]
-        let cited = try value.parseResponse(bytes(envelope([search(sources: []), message(payload(), annotations: [citation])])))
-        #expect(cited.reference?.sources[0].url.absoluteString == source)
-        var falseReference = payload()
-        falseReference["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": "https://www.spglobal.com/invented"]
-        #expect(throws: AIBenchmarkError.invalidEvidence) { try value.parseResponse(response(falseReference)) }
+        var invented = payload()
+        invented["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": "https://www.spglobal.com/invented"]
+        #expect(throws: AIBenchmarkError.malformedResponse) { try value.parseResponse(response(invented)) }
+        invented = payload(); invented["sources"] = [source]
+        #expect(throws: AIBenchmarkError.malformedResponse) { try value.parseResponse(response(invented)) }
     }
 
-    @Test func unsafeCitationsCannotPassEvenWhenSearchMetadataContainsThem() throws {
+    @Test func finalCitationsTakePriorityWithoutRepeatingSearchURLs() throws {
         let value = try request()
-        for unsafe in ["http://fred.stlouisfed.org/series/SP500", "https://user:password@fred.stlouisfed.org/series/SP500",
-                       "https://fred.stlouisfed.org:443/series/SP500", "https://127.0.0.1/index", "https://[::1]/index",
-                       "https://localhost/index", "https://service.local/index", "https://fred.stlouisfed.org/series/SP500?api_key=secret",
-                       "https://fred.stlouisfed.org/series/SP500#secret", "https://fred.stlouisfed.org/a b"] {
-            var claim = payload(); claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": unsafe]
-            let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": unsafe]]
-            #expect(throws: AIBenchmarkError.invalidEvidence) {
-                try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
-            }
-        }
-        let unsafeTitle: [[String: Any]] = [["type": "url", "url": source, "title": "secret\nInjected title"]]
-        let result = try value.parseResponse(bytes(envelope([search(sources: unsafeTitle), message(payload())])))
-        #expect(result.reference?.sources[0].title == "fred.stlouisfed.org")
-    }
-
-    @Test func trackingOnBothSidesNormalizesAllExportedSourceURLs() throws {
-        let value = try request()
-        let metadataURL = source + "?utm_source=chatgpt.com&utm_medium=web&utm_campaign=benchmark&utm_term=SP500&utm_content=close"
-        var claim = payload()
-        claim["start"] = ["day": "2025-01-27", "close": "6000", "sourceURL": source + "?utm_source=chatgpt.com"]
-        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_campaign=another-campaign"]
+        let cited = source + "?symbol=SP500&date=2026-01-27#history"
         let result = try value.parseResponse(bytes(envelope([
-            search(sources: [["type": "url", "url": metadataURL, "title": "Synthetic reference"]]), message(claim)
+            search(), message(payload(), phase: "final_answer", annotations: [citation(cited)])
         ])))
         try result.validate(for: value)
-        let reference = try #require(result.reference)
-        #expect(reference.changePercent == (try Money("10")))
-        #expect(reference.startSourceURL.absoluteString == source)
-        #expect(reference.endSourceURL.absoluteString == source)
-        #expect(reference.sources.map(\.url.absoluteString) == [source])
-        #expect(reference.sources.allSatisfy { $0.url.query == nil })
-    }
-
-    @Test func trackingOnlyInMetadataMatchesUntrackedFinalSources() throws {
-        let value = try request()
-        let sources: [[String: Any]] = [["type": "url", "url": source + "?utm_source=chatgpt.com"]]
-        let result = try value.parseResponse(bytes(envelope([search(sources: sources), message(payload())])))
-        try result.validate(for: value)
-        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
-        #expect(result.reference?.startSourceURL.absoluteString == source)
-        #expect(result.reference?.endSourceURL.absoluteString == source)
-    }
-
-    @Test func trackingOnlyInFinalSourcesMatchesUntrackedMetadata() throws {
-        let value = try request()
-        var claim = payload()
-        claim["start"] = ["day": "2025-01-27", "close": "6000", "sourceURL": source + "?utm_source=chatgpt.com"]
-        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_medium=web"]
-        let result = try value.parseResponse(response(claim))
-        try result.validate(for: value)
-        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
-        #expect(result.reference?.startSourceURL.absoluteString == source)
-        #expect(result.reference?.endSourceURL.absoluteString == source)
-    }
-
-    @Test func trackingInActualCitationAnnotationUsesSameSourceNormalization() throws {
-        let value = try request()
-        let citation: [String: Any] = ["type": "url_citation", "url": source + "?utm_source=chatgpt.com",
-                                       "title": "Synthetic reference", "start_index": 0, "end_index": 20]
-        var claim = payload()
-        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": source + "?utm_content=close"]
-        let result = try value.parseResponse(bytes(envelope([
-            search(sources: []), message(claim, annotations: [citation])
+        #expect(result.reference?.sourceKind == .answerCitations)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [cited])
+        #expect(result.reference?.changePercent == (try Money("10")))
+        let unphased = try value.parseResponse(bytes(envelope([
+            search(sources: []), message(payload(), annotations: [citation(cited)])
         ])))
-        try result.validate(for: value)
+        #expect(unphased.reference?.sourceKind == .answerCitations)
+    }
+
+    @Test func commentaryCitationsNeverBecomeAnswerOrSearchSources() throws {
+        let value = try request(), commentaryURL = source + "#commentary"
+        let commentary = try message(unavailable(), phase: "commentary", annotations: [citation(commentaryURL)])
+        let result = try value.parseResponse(bytes(envelope([search(), commentary, message(payload())])))
+        #expect(result.reference?.sourceKind == .searchSources)
         #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
-        #expect(result.reference?.endSourceURL.absoluteString == source)
+        #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+            try value.parseResponse(bytes(envelope([search(sources: []), commentary, message(payload())])))
+        }
     }
 
-    @Test func trackingCannotHideSensitiveUnknownOrResourceQueryParameters() throws {
+    @Test func unsafeFinalCitationsFallBackToSearchSourcesWithoutRelabeling() throws {
         let value = try request()
-        for query in ["api_key=secret", "api%5Fkey=secret", "access_token=secret", "signature=secret",
-                      "date=2026-01-27", "symbol=SP500", "series_id=SP500", "source=other",
-                      "utm_custom=unrecognized", "UTM_SOURCE=chatgpt.com"] {
-            for combined in ["utm_source=chatgpt.com&" + query, query + "&utm_source=chatgpt.com"] {
-                let invalidURL = source + "?" + combined
-                var claim = payload()
-                claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": invalidURL]
-                let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": invalidURL]]
-                #expect(throws: AIBenchmarkError.invalidEvidence) {
-                    try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
-                }
+        let unsafe = citation(source + "?api_key=secret")
+        let result = try value.parseResponse(bytes(envelope([search(), message(payload(), annotations: [unsafe])])))
+        #expect(result.reference?.sourceKind == .searchSources)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+        #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+            try value.parseResponse(bytes(envelope([search(sources: []), message(payload(), annotations: [unsafe])])))
+        }
+        let cited = source + "#valid-citation"
+        let mixed = try value.parseResponse(bytes(envelope([
+            search(), message(payload(), annotations: [unsafe, citation(cited)])
+        ])))
+        #expect(mixed.reference?.sourceKind == .answerCitations)
+        #expect(mixed.reference?.sources.map(\.url.absoluteString) == [cited])
+    }
+
+    @Test func sourceListsDeduplicateInFirstSeenOrder() throws {
+        let value = try request(), second = source + "#second"
+        let citations = [citation(second, title: "First title"), citation(source), citation(second, title: "Later title")]
+        let result = try value.parseResponse(bytes(envelope([search(), message(payload(), annotations: citations)])))
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [second, source])
+        #expect(result.reference?.sources.first?.title == "First title")
+        let searched = try value.parseResponse(bytes(envelope([
+            search(sources: metadata([second, source, second])), message(payload())
+        ])))
+        #expect(searched.reference?.sources.map(\.url.absoluteString) == [second, source])
+    }
+
+    @Test func completedOpenPageURLSuppliesSourceWithoutSourcesOrAnnotations() throws {
+        let value = try request()
+        let result = try value.parseResponse(bytes(envelope([
+            search(sources: []), pageAction("open_page", url: source), message(payload())
+        ])))
+        #expect(result.reference?.sourceKind == .searchSources)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+    }
+
+    @Test func completedFindInPageURLSuppliesSourceWithoutSourcesOrAnnotations() throws {
+        let value = try request()
+        let result = try value.parseResponse(bytes(envelope([
+            search(sources: []), pageAction("find_in_page", url: source), message(payload())
+        ])))
+        #expect(result.reference?.sourceKind == .searchSources)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+    }
+
+    @Test func optionalOpenPageURLDoesNotInvalidateOtherValidSources() throws {
+        let value = try request()
+        for action in [pageAction("open_page", url: nil), pageAction("open_page", url: NSNull())] {
+            let result = try value.parseResponse(bytes(envelope([search(), action, message(payload())])))
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+            #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+                try value.parseResponse(bytes(envelope([search(sources: []), action, message(payload())])))
             }
         }
     }
 
-    @Test func resourceQueriesAndDifferentPathsCannotAliasUntrackedSource() throws {
+    @Test func pageActionStillRequiresCompletedSearchAndCompletedVisit() throws {
         let value = try request()
-        for otherURL in [source + "?symbol=SP500&utm_source=chatgpt.com",
-                         source + "?date=2026-01-27&utm_source=chatgpt.com",
-                         "https://fred.stlouisfed.org/series/OTHER?utm_source=chatgpt.com"] {
-            var claim = payload()
-            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": otherURL]
-            #expect(throws: AIBenchmarkError.invalidEvidence) { try value.parseResponse(response(claim)) }
-            let sources: [[String: Any]] = [["type": "url", "url": otherURL]]
-            #expect(throws: AIBenchmarkError.invalidEvidence) {
-                try value.parseResponse(bytes(envelope([search(sources: sources), message(payload())])))
+        for type in ["open_page", "find_in_page"] {
+            #expect(throws: AIBenchmarkError.missingSearch) {
+                try value.parseResponse(bytes(envelope([pageAction(type, url: source), message(payload())])))
+            }
+            #expect(throws: AIBenchmarkError.missingSearch) {
+                try value.parseResponse(bytes(envelope([
+                    search(), pageAction(type, url: source, status: "in_progress"), message(payload())
+                ])))
             }
         }
     }
 
-    @Test func trackingValuesRejectEmptyControlNestedAndNonASCIIContents() throws {
+    @Test func pageActionSourcesPreserveDifferentPathsWithoutClaimingPriceBinding() throws {
+        let value = try request(), visited = "https://www.spglobal.com/spdji/en/indices/equity/sp-500/"
+        for type in ["open_page", "find_in_page"] {
+            let result = try value.parseResponse(bytes(envelope([
+                search(), pageAction(type, url: visited), message(payload())
+            ])))
+            #expect(result.reference?.sourceKind == .searchSources)
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [source, visited])
+        }
+    }
+
+    @Test func unsafePageActionURLCannotPolluteValidReference() throws {
         let value = try request()
-        for query in ["utm_source", "utm_source=", "utm_source=%0A", "utm_source=%00", "utm_source=%E4%B8%AD",
-                      "utm_source=chatgpt.com%26api_key%3Dsecret", "utm_source=web%3Btoken%3Dsecret",
-                      "utm_source=%250A", "utm_source=" + String(repeating: "x", count: 257)] {
-            let invalidURL = source + "?" + query
-            var claim = payload()
-            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": invalidURL]
-            let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": invalidURL]]
-            #expect(throws: AIBenchmarkError.invalidEvidence) {
-                try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
+        for type in ["open_page", "find_in_page"] {
+            let action = pageAction(type, url: source + "?access_token=secret")
+            let result = try value.parseResponse(bytes(envelope([search(), action, message(payload())])))
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+            #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+                try value.parseResponse(bytes(envelope([search(sources: []), action, message(payload())])))
             }
         }
     }
 
-    @Test func trackingValuesAndQueryCountHonorClosedBudgets() throws {
+    @Test func pageActionURLSharesSourceBudgetAndRejectsMalformedMetadata() throws {
         let value = try request()
-        let queries = ["utm_source=" + String(repeating: "x", count: 256),
-                       "utm_content=letters.ABC_123~plus+space%20hyphen-",
-                       Array(repeating: "utm_source=chatgpt.com", count: 16).joined(separator: "&")]
-        for query in queries {
-            let trackedURL = source + "?" + query
-            var claim = payload()
-            claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": trackedURL]
-            let result = try value.parseResponse(response(claim))
-            try result.validate(for: value)
-            #expect(result.reference?.endSourceURL.absoluteString == source)
-        }
-        let excessiveURL = source + "?" + Array(repeating: "utm_source=chatgpt.com", count: 17).joined(separator: "&")
-        var claim = payload()
-        claim["end"] = ["day": "2026-01-27", "close": "6600", "sourceURL": excessiveURL]
-        let sources: [[String: Any]] = [["type": "url", "url": source], ["type": "url", "url": excessiveURL]]
+        let sixtyFour = metadata(Array(repeating: source, count: 64))
+        let atLimit = try value.parseResponse(bytes(envelope([
+            search(sources: sixtyFour, id: "ws_first"),
+            search(sources: Array(sixtyFour.dropLast()), id: "ws_second"),
+            pageAction("open_page", url: source), message(payload())
+        ])))
+        #expect(atLimit.reference?.sources.count == 1)
         #expect(throws: AIBenchmarkError.invalidEvidence) {
-            try value.parseResponse(bytes(envelope([search(sources: sources), message(claim)])))
+            try value.parseResponse(bytes(envelope([
+                search(sources: sixtyFour, id: "ws_first"), search(sources: sixtyFour, id: "ws_second"),
+                pageAction("open_page", url: source), message(payload())
+            ])))
+        }
+        #expect(throws: AIBenchmarkError.invalidEvidence) {
+            try value.parseResponse(bytes(envelope([search(), pageAction("open_page", url: 123), message(payload())])))
+        }
+    }
+
+    @Test func unsafeSourceURLsAreFilteredWithoutReplacingTheirContents() throws {
+        let value = try request()
+        let unsafe = ["http://fred.stlouisfed.org/series/SP500", "javascript:alert(1)", "file:///tmp/data",
+                      "https://user:password@fred.stlouisfed.org/series/SP500", "https://127.0.0.1/index",
+                      "https://[::1]/index", "https://localhost/index", "https://service.local/index",
+                      "https://service.internal/index", "https://service.invalid/index", "https://fred.stlouisfed.org/a b"]
+        for url in unsafe {
+            let result = try value.parseResponse(bytes(envelope([
+                search(sources: metadata([url, source])), message(payload())
+            ])))
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [source])
+            #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+                try value.parseResponse(bytes(envelope([search(sources: metadata([url])), message(payload())])))
+            }
+        }
+        let standardPort = "https://fred.stlouisfed.org:443/series/SP500"
+        let accepted = try value.parseResponse(bytes(envelope([
+            search(sources: metadata([standardPort])), message(payload())
+        ])))
+        #expect(accepted.reference?.sources.first?.url.absoluteString == standardPort)
+    }
+
+    @Test func invalidSourceTitlesFallBackToHost() throws {
+        let result = try request().parseResponse(bytes(envelope([
+            search(sources: [["type": "url", "url": source, "title": "Injected\nremote text"]]), message(payload())
+        ])))
+        #expect(result.reference?.sources.first?.title == "fred.stlouisfed.org")
+    }
+
+    @Test func resourceQueriesRemainDisplayLinksWithoutTypedInterpretation() throws {
+        let value = try request()
+        let queries = ["symbol=%5EGSPC&date=2026-01-27&utm_source=chatgpt.com", "DATE=2026-02-29&custom=monthly",
+                       "symbol=SP500&symbol=SP500", "period1=-1&interval=1h", "from=2026/01/27&filter=adjusted",
+                       "q=S%26P%20500&empty=&flag", "url=https%3A%2F%2Ffred.stlouisfed.org%2Fseries%2FSP500",
+                       "symbol=%255EGSPC", "date=2026-01-27T21:00:00Z"]
+        for query in queries {
+            let url = source + "?" + query
+            let result = try value.parseResponse(bytes(envelope([search(sources: metadata([url])), message(payload())])))
+            try result.validate(for: value)
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [url])
+            #expect(result.reference?.changePercent == (try Money("10")))
+        }
+    }
+
+    @Test func resourceQueryOrderAndPresenceRemainDistinctDisplayLinks() throws {
+        let urls = [source + "?date=2026-01-27&symbol=SP500", source + "?symbol=SP500&date=2026-01-27",
+                    source + "?date=2026-01-27", source]
+        let result = try request().parseResponse(bytes(envelope([search(sources: metadata(urls)), message(payload())])))
+        #expect(result.reference?.sources.map(\.url.absoluteString) == urls)
+        #expect(result.reference?.sourceKind == .searchSources)
+    }
+
+    @Test func resourceSelectorsDoNotOverrideIndexOrPriceDateValidation() throws {
+        let value = try request()
+        let sources = metadata([source + "?date=2026-01-27&symbol=SP500"])
+        var wrongIndex = payload(); wrongIndex["index"] = "SPY"
+        #expect(throws: AIBenchmarkError.invalidIndex) {
+            try value.parseResponse(bytes(envelope([search(sources: sources), message(wrongIndex)])))
+        }
+        #expect(throws: AIBenchmarkError.invalidWindow) {
+            try value.parseResponse(bytes(envelope([search(sources: sources), message(payload(end: "2026-01-28"))])))
+        }
+        #expect(throws: AIBenchmarkError.invalidPrice) {
+            try value.parseResponse(bytes(envelope([search(sources: sources), message(payload(last: "0"))])))
+        }
+    }
+
+    @Test func resourceQueriesWorkThroughCitationAnnotations() throws {
+        let url = source + "?date=2026-01-27&utm_source=chatgpt.com&symbol=SP500#history"
+        let result = try request().parseResponse(bytes(envelope([
+            search(sources: []), message(payload(), annotations: [citation(url)])
+        ])))
+        #expect(result.reference?.sourceKind == .answerCitations)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == [url])
+    }
+
+    @Test func resourceQueriesWorkThroughCompletedPageActions() throws {
+        let value = try request(), url = source + "?custom=closing&date=2026-01-27#history"
+        for type in ["open_page", "find_in_page"] {
+            let result = try value.parseResponse(bytes(envelope([
+                search(sources: []), pageAction(type, url: url), message(payload())
+            ])))
+            #expect(result.reference?.sourceKind == .searchSources)
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [url])
+        }
+    }
+
+    @Test func differentPageAnchorsRemainDifferentDisplayLinks() throws {
+        let urls = [source + "#history", source + "#summary", source,
+                    source + "#:~:text=Index%20closing%20value", source + "#/history?date=2026-01-27"]
+        let result = try request().parseResponse(bytes(envelope([search(sources: metadata(urls)), message(payload())])))
+        #expect(result.reference?.sources.map(\.url.absoluteString) == urls)
+    }
+
+    @Test func distinctDatedEndpointSourcesRemainDistinct() throws {
+        let urls = [source + "?date=2025-01-27&symbol=SP500", source + "?date=2026-01-27&symbol=SP500"]
+        let result = try request().parseResponse(bytes(envelope([search(sources: metadata(urls)), message(payload())])))
+        #expect(result.reference?.sources.map(\.url.absoluteString) == urls)
+        #expect(result.reference?.changePercent == (try Money("10")))
+    }
+
+    @Test func obviousCredentialsInQueriesOrFragmentsAreNeverDisplayed() throws {
+        let value = try request()
+        for suffix in ["?api_key=secret", "?API-KEY=secret", "?utm_source=web&access_token=secret", "#access_token=secret",
+                       "?client_secret=secret", "?password=secret", "?authorization=Bearer%20secret", "?session_id=secret",
+                       "?X-Amz-Signature=secret", "?q=history%26api_key%3Dsecret", "?%61pi_key=secret",
+                       "?%2561pi_key=secret", "?%25252561pi_key=secret", "#:~:text=Index%26token%3Dsecret"] {
+            let url = source + suffix
+            #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+                try value.parseResponse(bytes(envelope([search(sources: metadata([url])), message(payload())])))
+            }
+            let filtered = try value.parseResponse(bytes(envelope([
+                search(sources: metadata([source, url])), message(payload())
+            ])))
+            #expect(filtered.reference?.sources.map(\.url.absoluteString) == [source])
+        }
+    }
+
+    @Test func encodedControlsAndMalformedEscapesNeverBecomeSources() throws {
+        let value = try request()
+        for suffix in ["?q=%0A", "?q=%00", "#history%0D", "/path%250A", "/path%252525250A", "?q=%E2%80%A8",
+                       "?q=%E2%80%A9", "?q=%", "?q=%0", "?q=%GG"] {
+            #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+                try value.parseResponse(bytes(envelope([search(sources: metadata([source + suffix])), message(payload())])))
+            }
+        }
+    }
+
+    @Test func normalFragmentRoutesAndEncodedTextAreRetained() throws {
+        let value = try request()
+        for fragment in ["/history?date=2026-01-27", "!history", ":~:text=Index%27s%20gain%2010%25",
+                         "history:~:text=S%26P%20500", ":~:text=Index%2520value", ":~:text=Index&text=value"] {
+            let url = source + "#" + fragment
+            let result = try value.parseResponse(bytes(envelope([
+                search(sources: []), message(payload(), annotations: [citation(url)])
+            ])))
+            #expect(result.reference?.sources.map(\.url.absoluteString) == [url])
+        }
+    }
+
+    @Test func sourceURLBudgetFiltersOversizedLinksWithoutTruncation() throws {
+        let value = try request(), prefix = source + "#"
+        let atLimit = prefix + String(repeating: "a", count: 2048 - prefix.utf8.count)
+        let accepted = try value.parseResponse(bytes(envelope([search(sources: metadata([atLimit])), message(payload())])))
+        #expect(accepted.reference?.sources.first?.url.absoluteString == atLimit)
+        #expect(throws: AIBenchmarkError.missingSourceMetadata) {
+            try value.parseResponse(bytes(envelope([search(sources: metadata([atLimit + "a"])), message(payload())])))
+        }
+        let filtered = try value.parseResponse(bytes(envelope([
+            search(sources: metadata([atLimit + "a", source])), message(payload())
+        ])))
+        #expect(filtered.reference?.sources.map(\.url.absoluteString) == [source])
+    }
+
+    @Test func completeSourceListSupports128EntriesAndBoundsRawMetadata() throws {
+        let value = try request(), urls = (0..<128).map { source + "#source-\($0)" }
+        let searches = [search(sources: metadata(Array(urls.prefix(64))), id: "first"),
+                        search(sources: metadata(Array(urls.suffix(64))), id: "second")]
+        let result = try value.parseResponse(bytes(envelope(searches + [message(payload())])))
+        try result.validate(for: value)
+        #expect(result.reference?.sources.map(\.url.absoluteString) == urls)
+        #expect(throws: AIBenchmarkError.invalidEvidence) {
+            try value.parseResponse(bytes(envelope(searches + [message(payload(), annotations: [citation(source)])])))
+        }
+    }
+
+    @Test func malformedSourceMetadataCannotBeReplacedWithModelText() throws {
+        let value = try request()
+        for malformed in [["type": "url", "url": 42], ["type": "url"], ["type": "other", "url": source]] as [[String: Any]] {
+            #expect(throws: AIBenchmarkError.invalidEvidence) {
+                try value.parseResponse(bytes(envelope([search(sources: [malformed]), message(payload())])))
+            }
+        }
+        #expect(throws: AIBenchmarkError.invalidEvidence) {
+            try value.parseResponse(bytes(envelope([
+                search(), message(payload(), annotations: [["type": "url_citation", "url": 42]])
+            ])))
         }
     }
 

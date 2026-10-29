@@ -92,7 +92,7 @@ private final class BenchmarkImmediateChannel: AIAnalysisNetworkChannel, @unchec
         #expect(decoded.request == nil && decoded.benchmarkRequest == request)
         let http = try decoded.makeURLRequest()
         #expect(http.url?.absoluteString == "https://api.openai.com/v1/responses")
-        #expect(http.httpMethod == "POST" && http.timeoutInterval == 60)
+        #expect(http.httpMethod == "POST" && http.timeoutInterval == 300)
         #expect(http.cachePolicy == .reloadIgnoringLocalCacheData && !http.httpShouldHandleCookies)
         #expect(Set((http.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }) == ["authorization", "content-type", "accept"])
         let body = try #require(http.httpBody)
@@ -103,6 +103,27 @@ private final class BenchmarkImmediateChannel: AIAnalysisNetworkChannel, @unchec
         #expect(tools.first?["type"] as? String == "web_search")
         #expect(object["store"] as? Bool == false && object["stream"] as? Bool == false)
         #expect(!String(decoding: body, as: UTF8.self).contains(String(decoding: benchmarkNetworkKey, as: UTF8.self)))
+    }
+
+    @Test func solBenchmarkDescriptorRebuildsMaxAtTheFixedEndpoint() throws {
+        let original = benchmarkNetworkRequest()
+        let request = AIBenchmarkRequest(start: original.start, end: original.end,
+            model: AIInsightRequest.defaultModel)
+        let envelope = try AIAnalysisNetworkRequest(benchmarkRequest: request, apiKey: benchmarkNetworkKey)
+        let decoded = try AIAnalysisNetworkRequest.decode(envelope.encoded())
+        let http = try decoded.makeURLRequest()
+        let bodyData = try #require(http.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(http.url?.absoluteString == "https://api.openai.com/v1/responses")
+        #expect(http.httpMethod == "POST" && http.timeoutInterval == 300)
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 25_000 && body["max_tool_calls"] as? Int == 3)
+        #expect((body["tools"] as? [[String: String]]) == [["type": "web_search"]])
+        #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
+        #expect(http.httpBody == (try request.encodedBody()))
+        #expect(!String(decoding: try #require(http.httpBody), as: UTF8.self)
+            .contains(String(decoding: benchmarkNetworkKey, as: UTF8.self)))
     }
 
     @Test func financialDescriptorRetainsOriginalWireAndToolFreeBody() throws {

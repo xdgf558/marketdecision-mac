@@ -167,16 +167,51 @@ private final class AISyntheticURLProtocol: URLProtocol {
         let decoded = try AIAnalysisNetworkRequest.decode(original.encoded())
         let request = try decoded.makeURLRequest()
         #expect(request.url?.absoluteString == "https://api.openai.com/v1/responses")
-        #expect(request.httpMethod == "POST" && request.timeoutInterval == 60)
+        #expect(request.httpMethod == "POST" && request.timeoutInterval == 300)
         #expect(request.cachePolicy == .reloadIgnoringLocalCacheData && !request.httpShouldHandleCookies)
         #expect(Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }) == ["authorization", "content-type", "accept"])
         #expect(request.httpBody == (try syntheticAIRequest().encodedBody()))
+        let bodyData = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 25_000)
+        #expect(body["tools"] == nil)
         #expect(!String(decoding: try #require(request.httpBody), as: UTF8.self).contains("synthetic-not-an-api-key"))
     }
+    @Test func modelSpecificBudgetsSurviveClosedDescriptorRoundTrip() throws {
+        let start = Date(timeIntervalSince1970: 1_761_336_000)
+        let end = Date(timeIntervalSince1970: 1_792_872_000)
+        let key = Data("synthetic-not-an-api-key".utf8)
+        for model in ["gpt-6.1-sol", "gpt-6-luna", "custom-model", "gpt-6.1-sol-custom"] {
+            let financial = AIInsightRequest(input: syntheticAIRequest().input, model: model)
+            let benchmark = AIBenchmarkRequest(start: start, end: end, model: model)
+            let financialEnvelope = try AIAnalysisNetworkRequest(request: financial, apiKey: key)
+            let benchmarkEnvelope = try AIAnalysisNetworkRequest(benchmarkRequest: benchmark, apiKey: key)
+            let expected = model == "gpt-6.1-sol" ? [25_000, 25_000] : [3_000, 2_000]
+            let originalBodies = [try financial.encodedBody(), try benchmark.encodedBody()]
+            for (index, envelope) in [financialEnvelope, benchmarkEnvelope].enumerated() {
+                let restored = try AIAnalysisNetworkRequest.decode(envelope.encoded())
+                let http = try restored.makeURLRequest()
+                let data = try #require(http.httpBody)
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                #expect(data == originalBodies[index])
+                #expect(http.timeoutInterval == 300)
+                #expect(body["max_output_tokens"] as? Int == expected[index])
+                #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
+                if model == "gpt-6.1-sol" {
+                    #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+                } else {
+                    #expect(body["reasoning"] == nil)
+                }
+            }
+        }
+    }
+
     @Test func unknownFieldsCredentialInjectionOversizeAndDeepJSONAreRejected() throws {
         let encoded = try syntheticAIEnvelope().encoded()
         let root = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        for name in ["url", "headers", "tools", "body"] {
+        for name in ["url", "headers", "tools", "body", "max_output_tokens", "timeout"] {
             var changed = root; changed[name] = "forbidden"
             #expect(throws: (any Error).self) { try AIAnalysisNetworkRequest.decode(JSONSerialization.data(withJSONObject: changed)) }
         }

@@ -107,13 +107,13 @@ struct AIPriceSalesScenarioContractTests {
     @Test func missingOrUnexpectedScenarioCannotBypassDirectOrParsedValidation() throws {
         let missing = analysis(proposal: nil)
         #expect(throws: AIInsightError.scenarioProposal(.missingProposal)) { try missing.validate(for: input()) }
-        #expect(throws: AIInsightError.malformedResponse) {
+        #expect(throws: AIInsightError.formatValidation(.valuationFields)) {
             try AIInsightRequest(input: input()).parseResponse(response(object(missing)))
         }
         let unqualified = input(revenue: nil)
         let supplied = analysis(proposal: try proposal())
         #expect(throws: AIInsightError.scenarioProposal(.ineligibleInput)) { try supplied.validate(for: unqualified) }
-        #expect(throws: AIInsightError.malformedResponse) {
+        #expect(throws: AIInsightError.formatValidation(.valuationFields)) {
             try AIInsightRequest(input: unqualified).parseResponse(response(object(supplied)))
         }
     }
@@ -178,7 +178,7 @@ struct AIPriceSalesScenarioContractTests {
             var generated = try object(analysis(proposal: try proposal()))
             var valuation = try #require(generated["valuation"] as? [String: Any])
             valuation["scenarioProposal"] = invalid; generated["valuation"] = valuation
-            #expect(throws: AIInsightError.malformedResponse) {
+            #expect(throws: AIInsightError.formatValidation(.scenarioFields)) {
                 try AIInsightRequest(input: input()).parseResponse(response(generated))
             }
         }
@@ -187,7 +187,7 @@ struct AIPriceSalesScenarioContractTests {
     @Test func scenarioRequestKeepsOneRequestBudgetAndExplicitUnconfirmedAssumptions() throws {
         let request = AIInsightRequest(input: input())
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
         let messages = try #require(body["input"] as? [[String: Any]])
         #expect(messages.count == 1)

@@ -135,7 +135,7 @@ private actor InvestmentBenchmarkSessionCleanup {
             result = received
             message = received.reference == nil
                 ? Self.unavailableMessage(code: received.unavailableCode)
-                : "已取得同期标普参考；仅作市场背景，不据此判断账户跑赢或跑输。"
+                : "已取得起止收盘点，本地已计算标普涨跌幅。"
         } catch {
             guard generation == token, selectedSnapshotID == snapshotID,
                   credentials.revision == credentialRevision else { return }
@@ -180,13 +180,21 @@ private actor InvestmentBenchmarkSessionCleanup {
         case .invalidPrice:
             detail = "返回的起止收盘值无效，无法计算标普涨跌幅。[AI-BENCHMARK-PRICE]"
         case .invalidEvidence:
-            detail = "收盘资料缺少本次联网搜索中可追溯的网页引用，已拒绝展示。[AI-BENCHMARK-SOURCE]"
+            detail = "本次响应的来源元数据格式无效，无法核对收盘资料。[AI-BENCHMARK-SOURCE-METADATA]"
+        case .unsupportedSourceURL:
+            detail = "收盘资料引用的地址格式不受支持，需为不含登录信息的公开 HTTPS 网页。[AI-BENCHMARK-SOURCE-URL]"
+        case .sourceURLLimit:
+            detail = "来源链接的长度或参数数量超出接收限制。[AI-BENCHMARK-SOURCE-LIMIT]"
+        case .missingSourceMetadata:
+            detail = "本次响应没有可用的来源链接，无法核对起止收盘资料。[AI-BENCHMARK-SOURCE-LIST]"
         case .malformedResponse:
             detail = "标普查询响应的内容结构不符合要求，未取得可核对的数据。[AI-BENCHMARK-FORMAT]"
         case .ambiguousOutput:
             detail = "标普查询返回多个或不明确的最终答案，无法唯一确定结果。[AI-BENCHMARK-AMBIGUOUS]"
         case .incompleteResponse:
             detail = "标普查询尚未返回完整结果，未展示未完成的数据。[AI-BENCHMARK-INCOMPLETE]"
+        case .outputLimitReached:
+            detail = "本次推理与回答达到 token 上限，标普查询未完成；不会自动加额或展示残缺数据。[AI-BENCHMARK-OUTPUT-LIMIT]"
         case .budgetExceeded:
             detail = "标普查询内容超出本地接收限制，已停止处理。[AI-BENCHMARK-LIMIT]"
         case .invalidModel:

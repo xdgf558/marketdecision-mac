@@ -78,7 +78,7 @@ struct AIInsightEvidenceSchemaTests {
         // One 128-ID enum plus the one selected valuation scope, not 7 copies.
         #expect(enumValues(in: schema).count == 129)
         #expect(bytes.count <= AIInsightLimits.requestBodyBytes)
-        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["max_output_tokens"] as? Int == 25_000)
         #expect(body["model"] as? String == AIInsightRequest.defaultModel)
         #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
         for excluded in ["tools", "previous_response_id", "background", "metadata", "user"] {

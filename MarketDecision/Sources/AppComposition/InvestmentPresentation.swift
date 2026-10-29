@@ -74,8 +74,9 @@ public struct InvestmentBenchmarkWindow: Sendable, Equatable {
     public let end: Date
 }
 
-/// Only whitelisted presentation values are retained. Account names/IDs, events,
-/// credentials, source bytes and hashes cannot be rendered or encoded by this type.
+/// Whitelisted presentation values plus a private account/revision binding for
+/// local return evidence. Account identity, events, credentials, source bytes
+/// and hashes cannot be rendered or encoded by this type.
 public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
     public let id: UUID
     public let benchmarkWindow: InvestmentBenchmarkWindow?
@@ -96,6 +97,8 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
         case booked(BookedFacts)
     }
     private let content: Content
+    private let accountReturn: InvestmentAccountReturnEvidence?
+    private let returnUnavailableReason: String
     public static let composeURL = URL(string: "https://x.com/compose/post")!
 
     public var periodSelection: InvestmentReportPeriod? {
@@ -105,7 +108,7 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
 
     public var supportsReturn: Bool {
         if case .frozen = content { return true }
-        return false
+        return accountReturn != nil
     }
     public var supportsHoldingNames: Bool {
         if case .frozen = content { return true }
@@ -127,13 +130,22 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
            let end = saved.report.daily.last?.valuationAt, start < end {
             benchmarkWindow = .init(start: start, end: end)
         } else { benchmarkWindow = nil }
+        accountReturn = try? InvestmentAccountReturnEvidence(saved: saved,
+            accountID: saved.report.input.request.accountID, ledgerRevision: saved.ledgerRevision)
+        returnUnavailableReason = saved.isCurrentLedger
+            ? "该报告尚无可用于同期对比的净值证据；合成示例与陈旧估值不能用作真实账户收益。"
+            : "该报告属于历史账本版本，请用当前记录重新核算后对比。"
         content = .frozen(summary, holdingNames: names, historical: !saved.isCurrentLedger)
     }
 
     /// The model must first recheck the selected account, page and ledger revision.
     /// Keep only booked presentation facts; no account identifier, cash balance,
     /// event, source text, holdings or valuation qualification crosses this boundary.
-    public init(periodReport: InvestmentPeriodReport) {
+    public init(periodReport: InvestmentPeriodReport, accountReturn: InvestmentAccountReturnEvidence? = nil,
+                returnUnavailableReason: String? = nil) {
+        self.accountReturn = accountReturn?.matches(accountID: periodReport.accountID,
+            ledgerRevision: periodReport.ledgerRevision) == true ? accountReturn : nil
+        self.returnUnavailableReason = returnUnavailableReason ?? InvestmentAccountReturnEvidence.missingCopy
         id = UUID()
         benchmarkWindow = .init(start: periodReport.startDate, end: periodReport.endDate)
         let formatter = DateFormatter()
@@ -162,8 +174,18 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
 
     public func card(options: InvestmentShareOptions, benchmark: AIBenchmarkResult? = nil) -> InvestmentShareCardContent {
         // A result from another date window can never ride along with a new image.
+        let acceptedBenchmark = benchmarkWindow.flatMap { window in
+            benchmark.flatMap { value in
+                value.request.start == window.start && value.request.end == window.end
+                    && (try? value.validate(for: value.request)) != nil ? value : nil
+            }
+        }
+        let comparison = benchmarkWindow.flatMap { window in
+            accountReturn?.presentation(window: window, benchmark: acceptedBenchmark?.reference,
+                                        showReturn: options.showReturn)
+        } ?? .unavailable(returnUnavailableReason)
         let benchmarkContent = benchmarkWindow.flatMap { window in
-            benchmark.flatMap { InvestmentShareBenchmarkContent(result: $0, window: window) }
+            acceptedBenchmark.flatMap { InvestmentShareBenchmarkContent(result: $0, window: window, accountReturn: comparison) }
         }
         switch content {
         case .frozen(let summary, let holdingNames, let historical):
@@ -182,7 +204,7 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
                   valuationLabel: summary.usesStalePrices ? "含 STALE 估值，仅作账本记录" : "原始 EOD 估值 · 非实时",
                   versionLabel: historical ? "历史账本版本" : "最近核对时与账本版本一致",
                   scope: "所选账户 · 所选区间净盈亏（已扣外部资金流）",
-                  footnote: "研究用途 · 个人记录，不代表未来收益", benchmark: benchmarkContent)
+                  footnote: "研究用途 · 个人记录，不代表未来收益", benchmark: benchmarkContent, accountReturn: comparison)
         case .booked(let facts):
             let display: (Money) -> String = { value in
                 options.showAmounts ? InvestmentSummary.amountText(value) + " USD" : "金额已隐藏"
@@ -193,14 +215,14 @@ public struct InvestmentShareSnapshot: Sendable, Equatable, Identifiable {
                   breakdown: [.init(title: "交易盈亏", value: display(facts.realizedPnL)),
                               .init(title: "股息与利息", value: display(facts.cashIncome)),
                               .init(title: "费用与税款", value: display(facts.cashCharges))],
-                  profitLabel: "已入账收益", returnLabel: nil,
+                  profitLabel: "已入账收益", returnLabel: accountReturn == nil ? nil : "账户收益率（TWR）",
                   amount: display(facts.amount),
-                  returnText: "", holdings: [],
+                  returnText: accountReturn == nil ? "" : comparison.percentage, holdings: [],
                   evidenceLabel: facts.synthetic ? "SYNTHETIC · 合成数据示例，非真实账户业绩" : "本地记录 · 按当前有效入账记录汇总",
                   valuationLabel: "不含持仓浮盈、净值或收益率",
                   versionLabel: "生成时账本已核对 · 后续补录或冲销后需重新生成",
                   scope: "所选账户 · 已实现交易盈亏＋股息、利息－独立费用、税款；入出金不计收益",
-                  footnote: "开仓权利金不直接计为利润 · 个人记录，不代表未来收益", benchmark: benchmarkContent)
+                  footnote: "开仓权利金不直接计为利润 · 个人记录，不代表未来收益", benchmark: benchmarkContent, accountReturn: comparison)
         }
     }
 }
@@ -211,19 +233,30 @@ public struct InvestmentShareBreakdownRow: Sendable, Equatable {
 }
 
 /// This is an AI search reference, not an admitted market-data feed or proof of
-/// source accuracy/licensing. It does not calculate account excess return.
+/// source accuracy/licensing. A percentage-point comparison is descriptive,
+/// not a total-return benchmark or proof of investment outperformance.
 public struct InvestmentShareBenchmarkContent: Sendable, Equatable {
     public let percentage: String
     public let dates: String
+    public let closes: String
+    public let sourceLabel: String
     public let sources: [AIBenchmarkSource]
     public let qualification = "AI 联网参考 · 未独立核验"
+    public let accountReturn: InvestmentReturnComparisonContent
+    public let valuationWindow: InvestmentBenchmarkWindow
 
-    init?(result: AIBenchmarkResult, window: InvestmentBenchmarkWindow) {
+    init?(result: AIBenchmarkResult, window: InvestmentBenchmarkWindow, accountReturn: InvestmentReturnComparisonContent) {
         guard result.request.start == window.start, result.request.end == window.end,
               (try? result.validate(for: result.request)) != nil,
-              let reference = result.reference else { return nil }
+              let reference = result.reference,
+              let first = InvestmentAccountReturnEvidence.close(reference.startDay),
+              let last = InvestmentAccountReturnEvidence.close(reference.endDay) else { return nil }
+        self.accountReturn = accountReturn
+        valuationWindow = .init(start: first, end: last)
         percentage = InvestmentSummary.amountText(reference.changePercent) + "%"
         dates = reference.startDay + " → " + reference.endDay
+        closes = reference.startClose.decimalString + " → " + reference.endClose.decimalString + " 点"
+        sourceLabel = reference.sourceKind == .answerCitations ? "回答引用" : "搜索来源"
         sources = reference.sources
     }
 }
@@ -248,4 +281,5 @@ public struct InvestmentShareCardContent: Sendable, Equatable {
     public let scope: String
     public let footnote: String
     public let benchmark: InvestmentShareBenchmarkContent?
+    public let accountReturn: InvestmentReturnComparisonContent
 }
