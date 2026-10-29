@@ -1,10 +1,34 @@
 import Foundation
 import CoreFoundation
 
+/// Shared by financial interpretation, benchmark search and their settings UI.
+/// Unknown custom models keep their API default rather than inheriting an
+/// unsupported reasoning parameter. This does not probe account availability.
+public enum AIModelConfiguration {
+    public static let defaultModel = "gpt-6.1-sol"
+    public static let modelPreferenceKey = "openAIFinancialModel"
+    private static let migrationKey = "openAIModelMigration.sol61.v1"
+
+    public static func reasoningEffort(for model: String) -> String? {
+        model == defaultModel ? "max" : nil
+    }
+
+    /// Once per installation: upgrade the former default, preserve a custom
+    /// selection and never overwrite a later intentional switch back to Luna.
+    public static func migrateStoredModel(in defaults: UserDefaults) {
+        guard !defaults.bool(forKey: migrationKey) else { return }
+        let previous = defaults.string(forKey: modelPreferenceKey)
+        if previous == nil || previous == "gpt-6-luna" {
+            defaults.set(defaultModel, forKey: modelPreferenceKey)
+        }
+        defaults.set(true, forKey: migrationKey)
+    }
+}
+
 /// One explicit request. No tools, browsing, retries, previous response, background
 /// mode, or streaming. `store: false` does not assert Zero Data Retention.
 public struct AIInsightRequest: Codable, Equatable, Sendable {
-    public static let defaultModel = "gpt-6-luna"
+    public static let defaultModel = AIModelConfiguration.defaultModel
     public static let promptVersion = "financial-evidence-interpretation.v5.ps-scenarios"
     public let input: AIInsightInput
     public let model: String
@@ -25,7 +49,7 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
         try validate()
         let summaryData = try input.encoded()
         guard let summaryText = String(data: summaryData, encoding: .utf8) else { throw AIInsightError.invalidInput }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "store": false,
             "stream": false,
@@ -36,6 +60,9 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
             "text": ["format": ["type": "json_schema", "name": "financial_evidence_insight",
                                   "strict": true, "schema": Self.schema(scope: valuationScope, evidenceIDs: input.evidenceIDs.sorted(), requiresScenarioProposal: input.supportsPriceSalesScenarios)]]
         ]
+        if let effort = AIModelConfiguration.reasoningEffort(for: model) {
+            body["reasoning"] = ["effort": effort]
+        }
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
         guard data.count <= AIInsightLimits.requestBodyBytes else { throw AIInsightError.budgetExceeded }
         return data

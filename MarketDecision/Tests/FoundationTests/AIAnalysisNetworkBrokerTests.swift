@@ -171,6 +171,12 @@ private final class AISyntheticURLProtocol: URLProtocol {
         #expect(request.cachePolicy == .reloadIgnoringLocalCacheData && !request.httpShouldHandleCookies)
         #expect(Set((request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }) == ["authorization", "content-type", "accept"])
         #expect(request.httpBody == (try syntheticAIRequest().encodedBody()))
+        let bodyData = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 3_000)
+        #expect(body["tools"] == nil)
         #expect(!String(decoding: try #require(request.httpBody), as: UTF8.self).contains("synthetic-not-an-api-key"))
     }
     @Test func unknownFieldsCredentialInjectionOversizeAndDeepJSONAreRejected() throws {

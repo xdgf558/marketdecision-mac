@@ -2293,6 +2293,10 @@
     {"selector": "FoundationTests.PortfolioWorkspaceTests/periodShareKeepsBookedFactsButNeverFallbackReturnAfterNAVReadOrReplayFailure()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"},
     {"selector": "FoundationTests.PortfolioWorkspaceTests/periodShareRejectsStaleOpenedNAVAndEitherRevisionChangingDuringEvidenceRead()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"},
     {"selector": "FoundationTests.PortfolioWorkspaceTests/lateNAVSuccessOrFailureCannotPublishAfterDepartureOrClearNewAccountBusyState()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"},
-    {"selector": "FoundationTests.PortfolioWorkspaceTests/cancelledNAVReopenReturnsNoSnapshotAndAllowsExplicitRetry()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"}
+    {"selector": "FoundationTests.PortfolioWorkspaceTests/cancelledNAVReopenReturnsNoSnapshotAndAllowsExplicitRetry()", "source": "Tests/FoundationTests/PortfolioWorkspaceTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIInsightsContractTests/storedModelUpgradeRunsOnceAndPreservesCustomChoices()", "source": "Tests/FoundationTests/AIInsightsContractTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIInsightsContractTests/customModelsKeepTheirOriginalRequestBudgetWithoutForcedReasoning()", "source": "Tests/FoundationTests/AIInsightsContractTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIBenchmarkTests/solBenchmarkRequestUsesMaxWithoutChangingSearchOrOutputBudgets()", "source": "Tests/FoundationTests/AIBenchmarkTests.swift", "execution": "required"},
+    {"selector": "FoundationTests.AIBenchmarkNetworkTests/solBenchmarkDescriptorRebuildsMaxAtTheFixedEndpoint()", "source": "Tests/FoundationTests/AIBenchmarkNetworkTests.swift", "execution": "required"}
   ]
 }

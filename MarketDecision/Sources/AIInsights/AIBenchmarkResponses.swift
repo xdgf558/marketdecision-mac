@@ -44,7 +44,7 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
             "endLatestDay": try AIBenchmarkValidation.dayCeiling(for: end, calendar: calendar)
         ]
         let queryData = try JSONSerialization.data(withJSONObject: query, options: [.sortedKeys])
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model, "store": false, "stream": false,
             "tools": [["type": "web_search"]], "tool_choice": "required", "max_tool_calls": 3,
             "include": ["web_search_call.action.sources"], "max_output_tokens": 2_000,
@@ -53,6 +53,9 @@ public struct AIBenchmarkRequest: Codable, Equatable, Sendable {
             "text": ["format": ["type": "json_schema", "name": "sp500_price_reference",
                                   "strict": true, "schema": Self.schema]]
         ]
+        if let effort = AIModelConfiguration.reasoningEffort(for: model) {
+            body["reasoning"] = ["effort": effort]
+        }
         let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes])
         guard data.count <= 32 * 1024 else { throw AIBenchmarkError.budgetExceeded }
         return data

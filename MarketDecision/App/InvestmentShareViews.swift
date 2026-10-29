@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AppComposition
+import AIInsights
 
 private struct InvestmentSharePeriodRequest: Identifiable {
     let id = UUID()
@@ -41,7 +42,7 @@ struct InvestmentShareSheet: View {
     @State private var benchmarkPreparationFailed = false
     @State private var showsAISettings = false
     @State private var showsBenchmarkSources = false
-    @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
+    @AppStorage(AIModelConfiguration.modelPreferenceKey) private var modelName = AIModelConfiguration.defaultModel
     private let accent = Color(red: 0, green: 0.40, blue: 0.37)
     private let previewWidth: CGFloat = 460
     private var content: InvestmentShareCardContent? {

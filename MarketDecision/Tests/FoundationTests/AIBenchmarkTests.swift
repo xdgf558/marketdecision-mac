@@ -95,6 +95,29 @@ struct AIBenchmarkTests {
         #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(value)) == value)
     }
 
+    @Test func solBenchmarkRequestUsesMaxWithoutChangingSearchOrOutputBudgets() throws {
+        let original = try request()
+        let upgraded = AIBenchmarkRequest(start: original.start, end: original.end,
+            model: AIInsightRequest.defaultModel)
+        var body = try #require(JSONSerialization.jsonObject(with: upgraded.encodedBody()) as? [String: Any])
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 2_000)
+        #expect(body["max_tool_calls"] as? Int == 3)
+        #expect(try JSONDecoder().decode(AIBenchmarkRequest.self, from: JSONEncoder().encode(upgraded)) == upgraded)
+        body.removeValue(forKey: "reasoning")
+        body.removeValue(forKey: "model")
+        let comparable = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+        for model in ["gpt-6-luna", "synthetic-model", "gpt-6.1-sol-custom"] {
+            let custom = AIBenchmarkRequest(start: original.start, end: original.end, model: model)
+            var customBody = try #require(JSONSerialization.jsonObject(with: custom.encodedBody()) as? [String: Any])
+            #expect(customBody["model"] as? String == model)
+            #expect(customBody["reasoning"] == nil)
+            customBody.removeValue(forKey: "model")
+            #expect(try JSONSerialization.data(withJSONObject: customBody, options: [.sortedKeys]) == comparable)
+        }
+    }
+
     @Test func completedSearchProducesLocallyCalculatedBoundReference() throws {
         let value = try request(), result = try value.parseResponse(response())
         try result.validate(for: value)

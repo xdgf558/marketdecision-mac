@@ -105,6 +105,27 @@ private final class BenchmarkImmediateChannel: AIAnalysisNetworkChannel, @unchec
         #expect(!String(decoding: body, as: UTF8.self).contains(String(decoding: benchmarkNetworkKey, as: UTF8.self)))
     }
 
+    @Test func solBenchmarkDescriptorRebuildsMaxAtTheFixedEndpoint() throws {
+        let original = benchmarkNetworkRequest()
+        let request = AIBenchmarkRequest(start: original.start, end: original.end,
+            model: AIInsightRequest.defaultModel)
+        let envelope = try AIAnalysisNetworkRequest(benchmarkRequest: request, apiKey: benchmarkNetworkKey)
+        let decoded = try AIAnalysisNetworkRequest.decode(envelope.encoded())
+        let http = try decoded.makeURLRequest()
+        let bodyData = try #require(http.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+        #expect(http.url?.absoluteString == "https://api.openai.com/v1/responses")
+        #expect(http.httpMethod == "POST" && http.timeoutInterval == 60)
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 2_000 && body["max_tool_calls"] as? Int == 3)
+        #expect((body["tools"] as? [[String: String]]) == [["type": "web_search"]])
+        #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
+        #expect(http.httpBody == (try request.encodedBody()))
+        #expect(!String(decoding: try #require(http.httpBody), as: UTF8.self)
+            .contains(String(decoding: benchmarkNetworkKey, as: UTF8.self)))
+    }
+
     @Test func financialDescriptorRetainsOriginalWireAndToolFreeBody() throws {
         let request = benchmarkFinancialRequest()
         let bytes = try AIAnalysisNetworkRequest(request: request, apiKey: benchmarkNetworkKey).encoded()

@@ -115,7 +115,10 @@ struct AIInsightsContractTests {
     @Test func outboundBodyContainsOnlySummaryAndExplicitNonStoredNonStreamingRequest() throws {
         let request = AIInsightRequest(input: input())
         let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
-        #expect(Set(body.keys) == Set(["model", "store", "stream", "max_output_tokens", "instructions", "input", "text"]))
+        #expect(Set(body.keys) == Set(["model", "reasoning", "store", "stream", "max_output_tokens", "instructions", "input", "text"]))
+        #expect(body["model"] as? String == "gpt-6.1-sol")
+        #expect(body["reasoning"] as? [String: String] == ["effort": "max"])
+        #expect(body["max_output_tokens"] as? Int == 3_000)
         #expect(body["store"] as? Bool == false)
         #expect(body["stream"] as? Bool == false)
         let messages = try #require(body["input"] as? [[String: Any]])
@@ -132,6 +135,43 @@ struct AIInsightsContractTests {
         let instructions = try #require(body["instructions"] as? String)
         #expect(instructions.contains("不可信数据"))
         #expect(instructions.contains("不把缺失当成零"))
+    }
+
+    @Test func storedModelUpgradeRunsOnceAndPreservesCustomChoices() throws {
+        let initialChoices: [String?] = [nil, "gpt-6-luna", "custom-model"]
+        for initial in initialChoices {
+            let suiteName = "local.marketdecision.tests.ai-model-" + UUID().uuidString
+            let defaults = try #require(UserDefaults(suiteName: suiteName))
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            if let initial { defaults.set(initial, forKey: AIModelConfiguration.modelPreferenceKey) }
+            defaults.set("preserved", forKey: "unrelated-setting")
+
+            AIModelConfiguration.migrateStoredModel(in: defaults)
+            let expected = initial == "custom-model" ? "custom-model" : "gpt-6.1-sol"
+            #expect(defaults.string(forKey: AIModelConfiguration.modelPreferenceKey) == expected)
+            AIModelConfiguration.migrateStoredModel(in: defaults)
+            #expect(defaults.string(forKey: AIModelConfiguration.modelPreferenceKey) == expected)
+            #expect(defaults.string(forKey: "unrelated-setting") == "preserved")
+
+            // A later deliberate user choice must survive subsequent launches,
+            // even when that choice is the old default model.
+            defaults.set("gpt-6-luna", forKey: AIModelConfiguration.modelPreferenceKey)
+            AIModelConfiguration.migrateStoredModel(in: defaults)
+            #expect(defaults.string(forKey: AIModelConfiguration.modelPreferenceKey) == "gpt-6-luna")
+        }
+    }
+
+    @Test func customModelsKeepTheirOriginalRequestBudgetWithoutForcedReasoning() throws {
+        for model in ["gpt-6-luna", "custom-model", "gpt-6.1-sol-custom"] {
+            let request = AIInsightRequest(input: input(), model: model)
+            let body = try #require(JSONSerialization.jsonObject(with: request.encodedBody()) as? [String: Any])
+            #expect(body["model"] as? String == model)
+            #expect(body["reasoning"] == nil)
+            #expect(body["max_output_tokens"] as? Int == 3_000)
+            #expect(body["store"] as? Bool == false && body["stream"] as? Bool == false)
+            #expect(body["tools"] == nil)
+            #expect(try JSONDecoder().decode(AIInsightRequest.self, from: JSONEncoder().encode(request)) == request)
+        }
     }
 
     @Test func completedResponseBindsActualModelAndExactInputWithEvidence() throws {
