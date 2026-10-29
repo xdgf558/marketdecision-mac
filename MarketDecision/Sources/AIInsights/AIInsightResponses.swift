@@ -83,9 +83,9 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
 
     public func parseResponse(_ data: Data) throws -> AIInsightResult {
         try validate()
-        let root = try Self.object(data, limit: AIInsightLimits.responseBytes)
+        let root = try Self.object(data, limit: AIInsightLimits.responseBytes, issue: .responseJSON)
         guard root["object"] as? String == "response", let status = root["status"] as? String else {
-            throw AIInsightError.malformedResponse
+            throw AIInsightError.formatValidation(.responseEnvelope)
         }
         guard status == "completed" else {
             if status == "failed" { throw AIInsightError.responseFailed }
@@ -101,19 +101,27 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
             throw AIInsightError.incompleteResponse
         }
         guard root["error"] == nil || root["error"] is NSNull,
-              root["incomplete_details"] == nil || root["incomplete_details"] is NSNull,
-              let actualModel = root["model"] as? String,
-              actualModel.utf8.count <= 100,
-              AIInsightInput.matches(actualModel, #"^[A-Za-z0-9][A-Za-z0-9._\-]{0,99}$"#),
-              let outputs = root["output"] as? [[String: Any]], !outputs.isEmpty, outputs.count <= 4 else {
-            throw AIInsightError.malformedResponse
+              root["incomplete_details"] == nil || root["incomplete_details"] is NSNull else {
+            throw AIInsightError.formatValidation(.responseEnvelope)
         }
+        guard let actualModel = root["model"] as? String,
+              actualModel.utf8.count <= 100,
+              AIInsightInput.matches(actualModel, #"^[A-Za-z0-9][A-Za-z0-9._\-]{0,99}$"#) else {
+            throw AIInsightError.formatValidation(.responseModel)
+        }
+        guard let outputs = root["output"] as? [[String: Any]], !outputs.isEmpty else {
+            throw AIInsightError.formatValidation(.responseOutput)
+        }
+        // Responses may include several reasoning/commentary items. Their count is
+        // not the number of answers. The bounded response is traversed completely;
+        // analysisText still rejects tools, invalid metadata and multiple final answers.
+        // https://developers.openai.com/api/docs/guides/text
         let analysisData = try Self.analysisText(from: outputs)
-        let analysisObject = try Self.object(analysisData, limit: AIInsightLimits.analysisBytes)
+        let analysisObject = try Self.object(analysisData, limit: AIInsightLimits.analysisBytes, issue: .analysisJSON)
         try Self.validateAnalysisShape(analysisObject, scope: valuationScope, requiresScenarioProposal: input.supportsPriceSalesScenarios)
         let analysis: AIInsightAnalysis
         do { analysis = try JSONDecoder().decode(AIInsightAnalysis.self, from: analysisData) }
-        catch { throw AIInsightError.malformedResponse }
+        catch { throw AIInsightError.formatValidation(.analysisDecode) }
         try analysis.validate(for: input)
         return try AIInsightResult(inputDigest: input.digest(), requestedModel: model,
             model: actualModel, promptVersion: Self.promptVersion, analysis: analysis,
@@ -194,7 +202,7 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
               let output = integer(value["output_tokens"]),
               let total = integer(value["total_tokens"]),
               input <= Int.max - output, total == input + output else {
-            throw AIInsightError.malformedResponse
+            throw AIInsightError.formatValidation(.usage)
         }
         return AIInsightUsage(inputTokens: input, outputTokens: output, totalTokens: total)
     }
@@ -203,7 +211,7 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
               let value = Int(number.stringValue), value >= 0 else { return nil }
         return value
     }
-    private static func object(_ data: Data, limit: Int) throws -> [String: Any] {
+    private static func object(_ data: Data, limit: Int, issue: AIInsightFormatIssue) throws -> [String: Any] {
         guard data.count <= limit else { throw AIInsightError.budgetExceeded }
         // Bound nesting before JSONSerialization allocates the decoded graph.
         var depth = 0, quoted = false, escaped = false
@@ -220,11 +228,11 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
         }
         do {
             guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw AIInsightError.malformedResponse
+                throw AIInsightError.formatValidation(issue)
             }
             return value
         } catch let error as AIInsightError { throw error }
-        catch { throw AIInsightError.malformedResponse }
+        catch { throw AIInsightError.formatValidation(issue) }
     }
     private var valuationScope: AIInsightValuationScope {
         input.referenceValuation == nil ? .financialContextOnly : .referenceMultiples
@@ -235,37 +243,40 @@ public struct AIInsightRequest: Codable, Equatable, Sendable {
         if requiresScenarioProposal { expectedValuationKeys.insert("scenarioProposal") }
         guard Set(value.keys) == Set(["summary", "strengths", "risks", "questions", "limitations", "valuation"]),
               let summary = value["summary"] as? [String: Any],
-              let valuation = value["valuation"] as? [String: Any],
-              Set(valuation.keys) == expectedValuationKeys,
+              let valuation = value["valuation"] as? [String: Any] else {
+            throw AIInsightError.formatValidation(.analysisFields)
+        }
+        guard Set(valuation.keys) == expectedValuationKeys,
               valuation["scope"] as? String == scope.rawValue,
               let interpretation = valuation["interpretation"] as? [String: Any],
               let valuationLimitations = valuation["limitations"] as? [[String: Any]],
               !valuationLimitations.isEmpty, valuationLimitations.count <= 3 else {
-            throw AIInsightError.malformedResponse
+            throw AIInsightError.formatValidation(.valuationFields)
         }
         if requiresScenarioProposal {
             guard let proposal = valuation["scenarioProposal"] as? [String: Any],
                   Set(proposal.keys) == Set(["method", "conservative", "base", "optimistic"]),
-                  proposal["method"] is String else { throw AIInsightError.malformedResponse }
+                  proposal["method"] is String else { throw AIInsightError.formatValidation(.scenarioFields) }
             for key in ["conservative", "base", "optimistic"] {
                 guard let assumption = proposal[key] as? [String: Any],
                       Set(assumption.keys) == Set(["multiple", "rationale"]),
                       assumption["multiple"] is String,
                       let rationale = assumption["rationale"] as? [String: Any],
                       Set(rationale.keys) == Set(["text", "evidenceIDs"]) else {
-                    throw AIInsightError.malformedResponse
+                    throw AIInsightError.formatValidation(.scenarioFields)
                 }
             }
         }
         var claims = [summary, interpretation] + valuationLimitations
         for key in ["strengths", "risks", "questions", "limitations"] {
-            guard let section = value[key] as? [[String: Any]], section.count <= 6 else {
-                throw AIInsightError.malformedResponse
+            guard let section = value[key] as? [[String: Any]], section.count <= 6,
+                  key != "limitations" || !section.isEmpty else {
+                throw AIInsightError.formatValidation(.sectionFields)
             }
             claims += section
         }
         guard claims.allSatisfy({ Set($0.keys) == Set(["text", "evidenceIDs"]) }) else {
-            throw AIInsightError.malformedResponse
+            throw AIInsightError.formatValidation(.claimFields)
         }
     }
     private static let instructions = """
