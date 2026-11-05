@@ -226,7 +226,7 @@ private struct OptionTradeContent: View {
     private func previewContent(_ preview: LedgerImportPreview) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("本次记账预览").font(.headline)
-            if let entry, entry.action != .opening {
+            if let entry, entry.action == .expiration {
                 Text("来源：\(entry.sourceSystem) · 编号：\(entry.externalID.isEmpty ? "见各腿成交编号" : entry.externalID)")
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
@@ -287,7 +287,7 @@ private struct OptionTradeContent: View {
                     Text(event.source.evidence)
                 }.textSelection(.enabled)
             }.font(.caption).foregroundStyle(.secondary)
-        } else if let reference = event.source.externalTransactionID {
+        } else if entry?.action == .expiration, let reference = event.source.externalTransactionID {
             Text("记录编号：" + reference).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
     }
@@ -479,7 +479,7 @@ private extension OptionTradeEntryAction {
         case .opening:
             "请填写开仓成交时间、开仓权利金单价及费用（无费用填 0）；来源、编号和记录依据可留空。"
         case .closing:
-            "请填写平仓成交时间、来源、唯一成交编号、记录依据、平仓成交单价及费用；本次已实现盈亏由账本计算。"
+            "请填写平仓成交时间、张数、成交单价及费用（无费用填 0）；本次已实现盈亏由账本计算。"
         case .expiration:
             "请填写到期结清时间、来源、唯一记录编号、记录依据及结清费用；到期未行权无需填写成交价。"
         }
@@ -495,7 +495,7 @@ private struct OptionTradeEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if draft.action != .opening {
+            if draft.action == .expiration {
                 HStack(alignment: .top, spacing: 12) {
                     field("券商 / 记录来源", text: $draft.sourceSystem, prompt: "例如：券商名称")
                     if draft.legs.count == 1 {
@@ -518,7 +518,7 @@ private struct OptionTradeEditor: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(leg.label + " · " + (leg.form.existingOption?.occSymbol ?? leg.form.occSymbol))
                         .font(.headline).textSelection(.enabled)
-                    if draft.action != .opening, draft.legs.count > 1 {
+                    if draft.action == .expiration, draft.legs.count > 1 {
                         field("本腿成交编号", text: $leg.form.externalID, prompt: "填写回单 / CSV 中本腿的唯一编号")
                     }
                     HStack(alignment: .top, spacing: 12) {
@@ -542,7 +542,7 @@ private struct OptionTradeEditor: View {
             if draft.action == .opening {
                 DisclosureGroup("来源与记录信息（选填）") { openingMetadataFields }
                     .font(.callout)
-            } else {
+            } else if draft.action == .expiration {
                 field("记录依据", text: $draft.evidence, prompt: draft.action.evidencePrompt)
             }
             if draft.action == .expiration {
