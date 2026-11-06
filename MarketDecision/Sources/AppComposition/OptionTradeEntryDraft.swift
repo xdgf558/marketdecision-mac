@@ -19,8 +19,8 @@ public enum OptionTradeEntryError: Error, Equatable, LocalizedError {
         case .invalidContract: "合约与当前记录不一致，或成交日期超出合约日期范围。日常开仓仅支持每张 100 股的标准股票／ETF 期权。"
         case .unconfirmedContract: "请先明确核对实际合约条款与依据，试算的到期假设不会自动成为成交证据。"
         case .ambiguousContract: "账户中有同一合约的不同版本，暂时不能自动选用；请在高级账本核对原记录。"
-        case .missingExecution: "请补齐本次成交或到期结清的必填信息；开仓的来源、编号和记录依据可留空。"
-        case .duplicateExecutionID: "已填写的各腿成交编号不能重复；开仓可留空由软件编号，不要用同一个订单编号代替。"
+        case .missingExecution: "请补齐本次成交或到期结清的必填信息；开仓和平仓的内部记录信息由软件自动整理。"
+        case .duplicateExecutionID: "已填写的各腿成交编号不能重复；可留空由软件编号，不要用同一个订单编号代替。"
         case .invalidAccount: "请使用当前账本中的同一账户。"
         case .invalidLot: "请选择仍未结束的期权持仓批次。"
         case .changedLot: "持仓批次已变化，请重新选择；原草稿不会自动改用新的数量或合约。"
@@ -227,10 +227,10 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
 
     /// The sole public event-building path requires the verified account ledger.
     /// Original broker execution IDs are preserved, including across CSV/manual
-    /// entry paths. Opening metadata is optional: absent identifiers are local
+    /// entry paths. Opening/closing metadata is optional: absent identifiers are local
     /// record identities, stable for this draft and leg, never broker evidence.
     /// A new draft without broker identifiers cannot identify the same real fill.
-    /// Closing/expiration metadata and the ledger's source contract stay strict.
+    /// Expiration metadata and the ledger's source contract stay strict.
     public func events(in snapshot: LedgerSnapshot) throws -> [LedgerEvent] {
         guard legs.map(\.id) == originalLegIDs else { throw OptionTradeEntryError.changedLegs }
         guard let account = snapshot.accounts.first(where: { $0.id == accountID }) else { throw OptionTradeEntryError.invalidAccount }
@@ -239,13 +239,14 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
         }
         try optionTradeRejectSynthetic(account)
         let suppliedIDs = legs.count == 1 ? [externalID] : legs.map { $0.form.externalID }
-        let recordedSource = action == .opening && optionTradeBlank(sourceSystem)
-            ? "local-manual-option-opening.v1" : sourceSystem
-        let recordedEvidence = action == .opening && optionTradeBlank(evidence)
-            ? "用户手工录入开仓；未提供附加记录依据。" : evidence
+        let usesLocalMetadata = action != .expiration
+        let recordedSource = usesLocalMetadata && optionTradeBlank(sourceSystem)
+            ? "local-manual-option-\(action.rawValue).v1" : sourceSystem
+        let recordedEvidence = usesLocalMetadata && optionTradeBlank(evidence)
+            ? "用户手工录入\(action == .opening ? "开仓" : "平仓")；未提供附加记录依据。" : evidence
         let executionIDs = suppliedIDs.enumerated().map { index, supplied in
-            action == .opening && optionTradeBlank(supplied)
-                ? "local-option-opening.v1:" + id.uuidString + ":" + legs[index].id : supplied
+            usesLocalMetadata && optionTradeBlank(supplied)
+                ? "local-option-\(action.rawValue).v1:" + id.uuidString + ":" + legs[index].id : supplied
         }
         guard !optionTradeBlank(timestamp), !optionTradeBlank(recordedSource), executionIDs.allSatisfy({ !optionTradeBlank($0) }),
               !optionTradeBlank(recordedEvidence) else { throw OptionTradeEntryError.missingExecution }
@@ -271,7 +272,7 @@ public struct OptionTradeEntryDraft: Identifiable, Equatable, Sendable {
             var form = leg.form
             form.id = eventID; form.timestamp = timestamp; form.sourceSystem = recordedSource
             form.externalID = externalLegID; form.evidence = recordedEvidence; form.notes = notes
-            if action == .opening, optionTradeBlank(suppliedIDs[index]) {
+            if usesLocalMetadata, optionTradeBlank(suppliedIDs[index]) {
                 form.evidence += "内部记录编号由软件生成，非券商成交编号。"
             }
             form.rollGroupID = ""; form.multiLegGroupID = legs.count > 1 ? groupID : ""

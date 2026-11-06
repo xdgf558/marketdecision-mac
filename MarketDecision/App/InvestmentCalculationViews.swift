@@ -32,6 +32,7 @@ private struct InvestmentCalendarSelection: Equatable {
 struct InvestmentCalculationView: View {
     @Bindable var model: PortfolioWorkspaceModel
     let onSaved: (UUID) -> Void
+    private let comparisonWindow: InvestmentBenchmarkWindow?
     @State private var draft: InvestmentCalculationDraft?
     @State private var baseline: PortfolioPreparationBaseline?
     @State private var reusable: SavedPerformanceReport?
@@ -48,13 +49,27 @@ struct InvestmentCalculationView: View {
     @State private var visible = false
     private let accent = Color(red: 0, green: 0.43, blue: 0.42)
 
-    init(model: PortfolioWorkspaceModel, onSaved: @escaping (UUID) -> Void) {
-        self.model = model; self.onSaved = onSaved
+    init(model: PortfolioWorkspaceModel, comparisonWindow: InvestmentBenchmarkWindow? = nil,
+         onSaved: @escaping (UUID) -> Void) {
+        self.model = model; self.onSaved = onSaved; self.comparisonWindow = comparisonWindow
         _baseline = State(initialValue: model.preparationBaseline)
         _reusable = State(initialValue: model.origin == .frozen ? model.savedReport : nil)
         var empty = try? InvestmentCalculationDraft(accountID: model.selectedAccountID ?? "")
         empty?.replacesCalendar = true; empty?.usesNewFlowEvidence = true
+        if let value = empty { empty = Self.applying(comparisonWindow, to: value) }
         _draft = State(initialValue: empty)
+    }
+
+    private static func applying(_ window: InvestmentBenchmarkWindow?, to value: InvestmentCalculationDraft) -> InvestmentCalculationDraft {
+        guard let window else { return value }
+        var result = value
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "America/New_York")
+        formatter.dateFormat = "yyyy-MM-dd"
+        result.startDay = formatter.string(from: window.start)
+        result.endDay = formatter.string(from: window.end)
+        return result
     }
 
     private var current: Bool { baseline != nil && baseline == model.preparationBaseline }
@@ -303,7 +318,8 @@ struct InvestmentCalculationView: View {
     private func reuse(_ request: PerformanceRequest) {
         guard current, !model.isBusy else { return }
         do {
-            draft = try .init(accountID: model.selectedAccountID ?? "", reusing: request)
+            let value = try InvestmentCalculationDraft(accountID: model.selectedAccountID ?? "", reusing: request)
+            draft = Self.applying(comparisonWindow, to: value)
             clearInspection(); error = nil
         } catch { self.error = "这份报告不能用于当前账户。合成资料不能转换为个人账户证据。" }
     }
@@ -312,7 +328,7 @@ struct InvestmentCalculationView: View {
         do {
             var empty = try InvestmentCalculationDraft(accountID: model.selectedAccountID ?? "")
             empty.replacesCalendar = true; empty.usesNewFlowEvidence = true
-            draft = empty; clearInspection(); error = nil
+            draft = Self.applying(comparisonWindow, to: empty); clearInspection(); error = nil
         } catch { self.error = "请先选择有效账户。" }
     }
     private func inspect() {

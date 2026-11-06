@@ -19,6 +19,8 @@ private actor PortfolioWorkspaceGate {
 private actor PortfolioWorkspaceFake: PerformanceStorage {
     var performanceRevision = UUID(), ledgerRevision = UUID()
     var reads = 0, prepares = 0, commits = 0
+    var opened: [UUID] = [], ordinaryEvents: [LedgerEvent] = []
+    var openVariant: String?
     var lastRaw: Data?, baselines: [(UUID, UUID)] = []
     var plans: [UUID: PerformancePreview] = [:], records: [UUID: SavedPerformanceReport] = [:]
     var cancelled: [UUID] = []
@@ -38,8 +40,9 @@ private actor PortfolioWorkspaceFake: PerformanceStorage {
         try await pause("context:\(read):before")
         let input = try PortfolioSyntheticExample.input()
         let accounts = input.accounts + [.init(id: "ordinary-b", name: "独立空账户")]
-        let ledger = try LedgerSnapshot(revision: ledgerRevision, accounts: accounts, events: input.events,
-            state: LedgerEngine.replay(accounts: accounts, events: input.events))
+        let events = input.events + ordinaryEvents
+        let ledger = try LedgerSnapshot(revision: ledgerRevision, accounts: accounts, events: events,
+            state: LedgerEngine.replay(accounts: accounts, events: events))
         let result = PerformanceStoreContext(ledger: ledger, revision: performanceRevision)
         try await pause("context:\(read)")
         try await pause("context")
@@ -73,18 +76,67 @@ private actor PortfolioWorkspaceFake: PerformanceStorage {
     func reports(accountID: String) async throws -> [PerformanceSummary] {
         try await pause("reports")
         return records.values.filter { $0.report.input.request.accountID == accountID }.map { record in
-            .init(id: record.id, accountID: accountID, createdAt: record.createdAt, startDate: "2026-01-02", endDate: "2026-01-07",
-                dayCount: 4, ledgerRevision: record.ledgerRevision, inputHash: record.inputHash, reportHash: record.reportHash,
+            .init(id: record.id, accountID: accountID, createdAt: record.createdAt,
+                startDate: record.report.input.request.calendar.tradingDays.first ?? "",
+                endDate: record.report.input.request.calendar.tradingDays.last ?? "",
+                dayCount: record.report.input.request.calendar.tradingDays.count,
+                ledgerRevision: record.ledgerRevision, inputHash: record.inputHash, reportHash: record.reportHash,
                 engineVersion: record.report.engineVersion, isCurrentLedger: record.ledgerRevision == ledgerRevision)
         }
     }
     func open(id: UUID) async throws -> SavedPerformanceReport {
-        guard let result = records[id] else { throw PerformanceStoreError.notFound }
+        opened.append(id)
+        guard let original = records[id] else { throw PerformanceStoreError.notFound }
+        let result = SavedPerformanceReport(id: openVariant == "identity" ? UUID() : original.id,
+            createdAt: original.createdAt, report: original.report,
+            inputHash: openVariant == "hash" ? String(repeating: "e", count: 64) : original.inputHash,
+            reportHash: original.reportHash, ledgerRevision: original.ledgerRevision,
+            isCurrentLedger: openVariant != "stale" && original.isCurrentLedger,
+            replayMatched: openVariant != "unreplayed" && original.replayMatched)
         try await pause("open")
         return result
     }
     func advanceLedger() { ledgerRevision = UUID() }
     func advancePerformance() { performanceRevision = UUID() }
+    func setOpenVariant(_ value: String) { openVariant = value }
+
+    /// Offline invented ledger values; the evidence exercises the ordinary
+    /// local-document branch, not a claim of real account/provider validation.
+    func seedReturnRecord() throws -> UUID {
+        func cash(_ id: String, at time: String, kind: LedgerCashKind, amount: String) throws -> LedgerEvent {
+            try .init(id: id, accountID: "ordinary-b", effectiveAt: LedgerCSV.timestamp(time),
+                      source: .init(sourceSystem: "fixture-local-ledger", externalTransactionID: id,
+                                    evidence: "fixture-local-document"),
+                      payload: .cash(.init(kind: kind, amount: Money(amount))))
+        }
+        ordinaryEvents = try [cash("return-deposit", at: "2025-12-01T15:00:00Z", kind: .deposit, amount: "1000"),
+                              cash("return-interest", at: "2026-01-07T15:00:00Z", kind: .interest, amount: "100")]
+        let original = try PortfolioSyntheticExample.input()
+        let account = LedgerAccount(id: "ordinary-b", name: "独立空账户")
+        let source = try PerformanceEvidence(id: "return-source", source: "fixture-local-document", kind: .localDocument,
+            availableAt: LedgerCSV.timestamp("2025-12-01T14:00:00Z"), reference: "offline-cash-calendar", rawDocument: Data("invented offline ledger fixture".utf8))
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let formatter = DateFormatter(); formatter.calendar = calendar; formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .gmt; formatter.dateFormat = "yyyy-MM-dd"
+        var day = try LedgerCSV.timestamp("2025-12-05T21:00:00Z"), days: [PerformanceDayInput] = []
+        let last = try LedgerCSV.timestamp("2026-01-07T21:00:00Z")
+        while day <= last {
+            if (2...6).contains(calendar.component(.weekday, from: day)) {
+                days.append(.init(day: formatter.string(from: day), valuationAt: day, sessions: [], prices: []))
+            }
+            day = day.addingTimeInterval(86_400)
+        }
+        let request = try PerformanceRequest(accountID: account.id, calculatedAt: LedgerCSV.timestamp("2026-01-07T22:00:00Z"),
+            calendar: .init(tradingDays: days.map(\.day), evidence: source), days: days,
+            externalFlowsComplete: true, flowCompletenessEvidence: source)
+        let input = PerformanceInput(request: request, ledgerRevision: ledgerRevision,
+            accounts: original.accounts + [account], events: original.events + ordinaryEvents)
+        let report = try PerformanceEngine.calculate(input), id = UUID()
+        records[id] = SavedPerformanceReport(id: id, createdAt: request.calculatedAt, report: report,
+            inputHash: String(repeating: "c", count: 64), reportHash: String(repeating: "d", count: 64),
+            ledgerRevision: ledgerRevision, isCurrentLedger: true, replayMatched: true)
+        return id
+    }
 }
 @Suite("Portfolio workspace publication and local evidence") @MainActor
 struct PortfolioWorkspaceTests {
@@ -107,6 +159,13 @@ struct PortfolioWorkspaceTests {
         await model.generatePeriodReports(accountID: account, baseline: baseline, at: try LedgerCSV.timestamp(timestamp))
         #expect(model.periodReports.count == 3 && !model.hasError)
         return model.periodReports
+    }
+    private func returnShareSetup() async throws -> (PortfolioWorkspaceModel, PortfolioWorkspaceFake, UUID, InvestmentPeriodReport) {
+        let storage = PortfolioWorkspaceFake(), id = try await storage.seedReturnRecord()
+        let model = PortfolioWorkspaceModel(storage: storage)
+        await model.load(); await model.chooseAccount("ordinary-b")
+        let reports = try await generateQuickReports(model)
+        return (model, storage, id, try #require(reports.first { $0.period == .month }))
     }
     @Test func initializationDoesNotReadStorageOrSynthesizeAnAccount() async {
         let storage = PortfolioWorkspaceFake()
@@ -533,7 +592,7 @@ struct PortfolioWorkspaceTests {
         #expect(snapshot.periodSelection == .month && snapshot.card(options: options).amount == "0.00 USD")
         #expect(model.periodReports.count == 3 && model.preparationBaseline == baseline)
         #expect(!model.isBusy && !model.hasError && model.report == nil && model.savedReport == nil)
-        #expect(await storage.reads == reads + 3)
+        #expect(await storage.reads == reads + 4)
         #expect(await storage.prepares == 0)
         #expect(await storage.commits == 0)
         #expect(await storage.records.isEmpty)
@@ -575,7 +634,7 @@ struct PortfolioWorkspaceTests {
         // Failure returns to the caller; only a new explicit request retries.
         let retry = await model.generatePeriodShare(accountID: "ordinary-b", baseline: baseline, at: cutoff)
         #expect(retry?.periodSelection == .month && !model.hasError && !model.isBusy)
-        #expect(await storage.reads == reads + 6)
+        #expect(await storage.reads == reads + 7)
         #expect(await storage.prepares == 0)
         #expect(await storage.commits == 0)
     }
@@ -625,7 +684,7 @@ struct PortfolioWorkspaceTests {
         #expect(model.periodReports == reports && model.preparationBaseline == baseline)
         #expect(model.report == nil && model.savedReport == nil && model.preview == nil && !model.canSave)
         #expect(!model.isBusy && !model.hasError)
-        #expect(await storage.reads == initialReads + 3)
+        #expect(await storage.reads == initialReads + 6)
         #expect(await storage.prepares == 0)
         #expect(await storage.commits == 0)
         #expect(await storage.records.isEmpty)
@@ -739,6 +798,107 @@ struct PortfolioWorkspaceTests {
         #expect(await storage.prepares == 0)
         #expect(await storage.commits == 0)
         #expect(await storage.cancelled.isEmpty)
+    }
+    @Test func periodShareReopensCurrentAccountNAVWithoutCreatingOrSavingAnotherReport() async throws {
+        let (model, storage, id, report) = try await returnShareSetup()
+        let baseline = try #require(model.preparationBaseline), reads = await storage.reads
+        let result = await model.preparePeriodShare(report), snapshot = try #require(result)
+        var options = InvestmentShareOptions(); options.showAmounts = true
+        #expect(snapshot.supportsReturn && snapshot.periodSelection == .month)
+        #expect(snapshot.card(options: options).amount == "+100.00 USD")
+        #expect(await storage.opened == [id])
+        #expect(await storage.reads == reads + 2)
+        #expect(await storage.prepares == 0)
+        #expect(await storage.commits == 0)
+        #expect(await storage.cancelled.isEmpty)
+        #expect(model.preparationBaseline == baseline && model.report == nil && model.preview == nil)
+        #expect(!model.hasError && !model.isBusy)
+    }
+    @Test func periodShareNeverReusesCurrentNAVForAnotherAccountOrUncoveredPeriod() async throws {
+        let (model, storage, _, _) = try await returnShareSetup()
+        let yearly = try #require(model.periodReports.first { $0.period == .year })
+        let annualShare = await model.preparePeriodShare(yearly)
+        #expect(annualShare != nil && annualShare?.supportsReturn == false)
+        #expect(await storage.opened.isEmpty)
+        let other = try #require(model.context?.ledger.accounts.first { $0.id != "ordinary-b" }?.id)
+        await model.chooseAccount(other)
+        let reports = try await generateQuickReports(model), monthly = try #require(reports.first { $0.period == .month })
+        let otherShare = await model.preparePeriodShare(monthly)
+        #expect(otherShare != nil && otherShare?.supportsReturn == false)
+        #expect(await storage.opened.isEmpty)
+    }
+    @Test func periodShareKeepsBookedFactsButNeverFallbackReturnAfterNAVReadOrReplayFailure() async throws {
+        for failure in ["reports", "open", "identity", "hash", "unreplayed"] {
+            let (model, storage, _, report) = try await returnShareSetup()
+            if ["reports", "open"].contains(failure) { await storage.fail(failure) }
+            else { await storage.setOpenVariant(failure) }
+            let result = await model.preparePeriodShare(report), snapshot = try #require(result)
+            var options = InvestmentShareOptions(); options.showAmounts = true
+            #expect(!snapshot.supportsReturn && snapshot.card(options: options).amount == "+100.00 USD")
+            #expect(!model.hasError && !model.isBusy && model.periodReports.contains(report))
+            #expect(await storage.prepares == 0)
+            #expect(await storage.commits == 0)
+        }
+    }
+    @Test func periodShareRejectsStaleOpenedNAVAndEitherRevisionChangingDuringEvidenceRead() async throws {
+        let (staleModel, staleStorage, _, staleReport) = try await returnShareSetup()
+        await staleStorage.setOpenVariant("stale")
+        #expect(await staleModel.preparePeriodShare(staleReport) == nil)
+        #expect(staleModel.hasError && staleModel.context == nil && staleModel.periodReports.isEmpty)
+        for stage in ["reports", "open", "final-context"] {
+            for ledgerChanged in [true, false] {
+                let (model, storage, _, report) = try await returnShareSetup()
+                let gate = PortfolioWorkspaceGate(), reads = await storage.reads
+                await storage.gate(stage == "final-context" ? "context:\(reads + 2):before" : stage, gate)
+                let sharing = Task { await model.preparePeriodShare(report) }
+                await gate.wait()
+                if ledgerChanged { await storage.advanceLedger() } else { await storage.advancePerformance() }
+                await gate.release()
+                #expect(await sharing.value == nil)
+                #expect(model.hasError && !model.isBusy && model.context == nil && model.periodReports.isEmpty)
+                #expect(await storage.prepares == 0)
+                #expect(await storage.commits == 0)
+            }
+        }
+    }
+    @Test func lateNAVSuccessOrFailureCannotPublishAfterDepartureOrClearNewAccountBusyState() async throws {
+        for stage in ["reports", "open"] {
+            for fails in [false, true] {
+                let (model, storage, _, report) = try await returnShareSetup()
+                let oldGate = PortfolioWorkspaceGate(), newGate = PortfolioWorkspaceGate()
+                await storage.gate(stage, oldGate)
+                if fails { await storage.fail(stage) }
+                let old = Task { await model.preparePeriodShare(report) }
+                await oldGate.wait()
+                model.disappear(); await model.load()
+                let other = try #require(model.context?.ledger.accounts.first { $0.id != "ordinary-b" }?.id)
+                await model.chooseAccount(other)
+                let baseline = try #require(model.preparationBaseline), read = await storage.reads + 1
+                await storage.gate("context:\(read)", newGate)
+                let newer = Task { await model.generatePeriodReports(accountID: other, baseline: baseline,
+                    at: try LedgerCSV.timestamp("2026-01-07T22:00:00Z")) }
+                await newGate.wait()
+                let message = model.message
+                await oldGate.release()
+                #expect(await old.value == nil)
+                #expect(model.isBusy && !model.hasError && model.message == message && model.periodReports.isEmpty)
+                #expect(model.preparationBaseline == baseline && model.selectedAccountID == other)
+                await newGate.release()
+                #expect(try await newer.value)
+                #expect(!model.isBusy && !model.hasError)
+            }
+        }
+    }
+    @Test func cancelledNAVReopenReturnsNoSnapshotAndAllowsExplicitRetry() async throws {
+        let (model, storage, _, report) = try await returnShareSetup()
+        let gate = PortfolioWorkspaceGate()
+        await storage.gate("open", gate)
+        let task = Task { await model.preparePeriodShare(report) }
+        await gate.wait(); task.cancel(); await gate.release()
+        #expect(await task.value == nil)
+        #expect(!model.hasError && !model.isBusy && model.periodReports.contains(report))
+        let retry = await model.preparePeriodShare(report)
+        #expect(retry?.supportsReturn == true && !model.isBusy)
     }
     @Test func localFormNeverInventsCalendarEvidenceOrTimezone() throws {
         let draft = PortfolioInputDraft()

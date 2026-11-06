@@ -125,7 +125,7 @@ enum AIInsightFailureMessage {
     private static func response(_ error: AIInsightError) -> String {
         switch error {
         case .outputLimitReached:
-            return "API 已响应，但达到本次输出 token 上限，解读未生成完整。此上限也包含推理 token；不会自动加额或重发。[AI-OUTPUT-LIMIT]"
+            return "本次推理与回答达到 token 上限，解读未完成；这不是 API Key 无效。可在 AI 设置查看额度，已用 token 可能计费，不会自动加额或重发。[AI-OUTPUT-LIMIT]"
         case .contentFiltered:
             return "API 的内容过滤中断了解读，未取得完整回答。[AI-CONTENT-FILTER]"
         case .responseFailed:
@@ -142,6 +142,8 @@ enum AIInsightFailureMessage {
             return scenarioProposal(issue)
         case .malformedResponse:
             return "AI 回答格式未通过本地校验，已拒绝展示；这不表示 Key 无效。[AI-FORMAT]"
+        case .formatValidation(let issue):
+            return formatValidation(issue)
         case .unexpectedOutput:
             return "AI 返回了未支持的内容结构，已拒绝展示。[AI-OUTPUT-STRUCTURE]"
         case .outputStructure(let issue):
@@ -153,6 +155,25 @@ enum AIInsightFailureMessage {
         case .invalidModel:
             return "模型 ID 格式无效，请检查 AI 设置。[AI-MODEL-FORMAT]"
         }
+    }
+
+    private static func formatValidation(_ issue: AIInsightFormatIssue) -> String {
+        let reason: String, code: String
+        switch issue {
+        case .responseJSON: reason = "API 响应不是可解析的 JSON 对象"; code = "RESPONSE-JSON"
+        case .responseEnvelope: reason = "API 响应的类型或完成状态不一致"; code = "RESPONSE-STATE"
+        case .responseModel: reason = "API 返回的模型标识缺失或格式不符"; code = "RESPONSE-MODEL"
+        case .responseOutput: reason = "API 响应缺少有效的输出列表"; code = "RESPONSE-OUTPUT"
+        case .analysisJSON: reason = "最终回答不是所要求的 JSON 对象"; code = "ANSWER-JSON"
+        case .analysisFields: reason = "财报解读缺少必需部分或含额外字段"; code = "ANSWER-FIELDS"
+        case .valuationFields: reason = "估值解读的口径、字段或条目数量不符"; code = "VALUATION-FIELDS"
+        case .scenarioFields: reason = "三档估值假设的字段或类型不符"; code = "SCENARIO-FIELDS"
+        case .sectionFields: reason = "优势、风险或限制列表的类型或数量不符"; code = "SECTION-FIELDS"
+        case .claimFields: reason = "分析论点的字段不完整或含额外字段"; code = "CLAIM-FIELDS"
+        case .analysisDecode: reason = "财报解读的正文或引用字段类型不符"; code = "ANSWER-TYPE"
+        case .usage: reason = "API 用量统计缺失必需字段、类型不符或总数不一致"; code = "USAGE"
+        }
+        return "\(reason)，已拒绝展示；这不表示 Key 无效，不会自动重发。[AI-FORMAT-\(code)]"
     }
 
     private static func evidence(_ issue: AIInsightEvidenceIssue, section: AIInsightClaimSection) -> String {

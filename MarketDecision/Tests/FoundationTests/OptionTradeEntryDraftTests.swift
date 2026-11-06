@@ -734,21 +734,111 @@ struct OptionTradeEntryDraftTests {
         }
     }
 
-    @Test func closingAndExpirationStillRequireAllExecutionMetadata() throws {
+    @Test func closingBlankMetadataUsesStableLocalIdentityWithoutMutatingDraft() throws {
         let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
-        for action in [OptionTradeEntryAction.closing, .expiration] {
-            for blank in ["", " \t\n"] {
-                for field in ["source", "identifier", "evidence"] {
-                    var draft = try optionEntryFinish(lot, action: action, id: "finish-42")
-                    switch field {
-                    case "source": draft.sourceSystem = blank
-                    case "identifier": draft.externalID = blank
-                    default: draft.evidence = blank
-                    }
-                    let original = draft
-                    #expect(throws: OptionTradeEntryError.missingExecution) { try draft.events(in: snapshot) }
-                    #expect(draft == original)
+        for blank in ["", " \t\n"] {
+            var draft = try optionEntryFinish(lot, action: .closing, id: "")
+            draft.sourceSystem = blank; draft.externalID = blank; draft.evidence = blank
+            draft.notes = "Actual closing regression vector"
+            let original = draft, events = try draft.events(in: snapshot)
+            let event = try #require(events.first)
+            #expect(events.count == 1)
+            #expect(events == (try draft.events(in: snapshot)))
+            #expect(draft == original)
+            #expect(event.source.sourceSystem == "local-manual-option-closing.v1")
+            #expect(event.source.externalTransactionID == "local-option-closing.v1:" + draft.id.uuidString + ":" + draft.legs[0].id)
+            #expect(event.source.evidence == "用户手工录入平仓；未提供附加记录依据。内部记录编号由软件生成，非券商成交编号。")
+            #expect(event.source.fileHash == nil && event.source.rowIndex == nil)
+            #expect(event.effectiveAt == (try LedgerCSV.timestamp(draft.timestamp)) && event.notes == draft.notes)
+            guard case .trade(let trade) = event.payload else { Issue.record("Expected closing trade"); return }
+            #expect(trade.effect == .close && trade.side == .buy && trade.instrument == lot.instrument)
+            #expect(trade.selections == [.init(lotID: lot.id, quantity: lot.quantityRemaining)])
+            #expect(trade.unitPrice == (try Money("1.1")))
+            #expect(trade.fee == (try Money("0.65")))
+        }
+    }
+
+    @Test func closingPartialMetadataPreservesEveryProvidedValue() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        for supplied in 1...7 {
+            var draft = try optionEntryFinish(lot, action: .closing, id: "")
+            let source = " broker-record ", executionID = " close-42 ", evidence = " User supplied closing receipt "
+            draft.sourceSystem = supplied & 1 != 0 ? source : " \t"
+            draft.externalID = supplied & 2 != 0 ? executionID : " \n"
+            draft.evidence = supplied & 4 != 0 ? evidence : " \t"
+            let original = draft, event = try #require(draft.events(in: snapshot).first)
+            #expect(draft == original)
+            #expect(event.source.sourceSystem == (supplied & 1 != 0 ? source : "local-manual-option-closing.v1"))
+            #expect(event.source.externalTransactionID == (supplied & 2 != 0 ? executionID
+                : "local-option-closing.v1:" + draft.id.uuidString + ":" + draft.legs[0].id))
+            let recordedEvidence = supplied & 4 != 0 ? evidence : "用户手工录入平仓；未提供附加记录依据。"
+            #expect(event.source.evidence == recordedEvidence + (supplied & 2 != 0
+                ? "" : "内部记录编号由软件生成，非券商成交编号。"))
+        }
+    }
+
+    @Test func closingAutomaticMetadataStillRequiresActualTimePriceAndFee() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        for blank in ["", " \t\n"] {
+            for field in ["time", "price", "fee"] {
+                var draft = try optionEntryFinish(lot, action: .closing, id: "")
+                draft.sourceSystem = ""; draft.evidence = ""
+                switch field {
+                case "time": draft.timestamp = blank
+                case "price": draft.legs[0].form.unitPrice = blank
+                default: draft.legs[0].form.fee = blank
                 }
+                let original = draft
+                #expect(throws: OptionTradeEntryError.missingExecution) { try draft.events(in: snapshot) }
+                #expect(draft == original)
+            }
+        }
+    }
+
+    @Test func closingAutomaticMetadataStillRejectsDeclaredSyntheticEvidence() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        for field in ["source", "identifier", "evidence", "notes"] {
+            var draft = try optionEntryFinish(lot, action: .closing, id: "")
+            draft.sourceSystem = ""; draft.evidence = ""
+            switch field {
+            case "source": draft.sourceSystem = "SYNTHETIC source"
+            case "identifier": draft.externalID = "SYNTHETIC fill"
+            case "evidence": draft.evidence = "SYNTHETIC receipt"
+            default: draft.notes = "SYNTHETIC note"
+            }
+            let original = draft
+            #expect(throws: OptionTradeEntryError.syntheticEvidence) { try draft.events(in: snapshot) }
+            #expect(draft == original)
+        }
+    }
+
+    @Test func freshClosingDraftsWithoutBrokerIDsHaveDistinctInternalIdentities() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        var first = try optionEntryFinish(lot, action: .closing, id: "")
+        var second = try optionEntryFinish(lot, action: .closing, id: "")
+        first.sourceSystem = ""; first.evidence = ""
+        second.sourceSystem = ""; second.evidence = ""
+        let firstEvent = try #require(first.events(in: snapshot).first)
+        let secondEvent = try #require(second.events(in: snapshot).first)
+        #expect(first.id != second.id && firstEvent.id != secondEvent.id)
+        #expect(try firstEvent.idempotencyKey != secondEvent.idempotencyKey)
+        #expect(firstEvent.source.externalTransactionID != secondEvent.source.externalTransactionID)
+        #expect(firstEvent.payload == secondEvent.payload)
+    }
+
+    @Test func expirationStillRequiresAllExecutionMetadata() throws {
+        let snapshot = try optionEntryTwoLots(), lot = try #require(snapshot.state.lots.first)
+        for blank in ["", " \t\n"] {
+            for field in ["source", "identifier", "evidence"] {
+                var draft = try optionEntryFinish(lot, action: .expiration, id: "finish-42")
+                switch field {
+                case "source": draft.sourceSystem = blank
+                case "identifier": draft.externalID = blank
+                default: draft.evidence = blank
+                }
+                let original = draft
+                #expect(throws: OptionTradeEntryError.missingExecution) { try draft.events(in: snapshot) }
+                #expect(draft == original)
             }
         }
     }
@@ -837,7 +927,8 @@ struct OptionTradeEntryDraftTests {
         #expect(final.state.cashByAccount["A"] == (try Money("387.9")))
     }
 
-    @Test func oneClosingFillConsumesTwoLotsWithOneFeeAndRetainsLedgerDeduplication() async throws {
+    @Test(arguments: [false, true])
+    func oneClosingFillConsumesTwoLotsWithOneFeeAndRetainsLedgerDeduplication(_ automaticMetadata: Bool) async throws {
         let store = try LedgerStore(path: ":memory:"), fixture = try optionEntryTwoLots()
         let initial = try await store.snapshot()
         let created = try await store.createAccount(.init(id: "A", name: "Account A"), expectedRevision: initial.revision)
@@ -847,12 +938,14 @@ struct OptionTradeEntryDraftTests {
         let lots = opened.state.lots.sorted { $0.acquiredAt < $1.acquiredAt }
         try #require(lots.count == 2)
         var draft = try optionEntryFinish(lots[0], action: .closing, id: "close-001", otherClosingLots: [lots[1]])
+        if automaticMetadata { draft.sourceSystem = ""; draft.externalID = ""; draft.evidence = "" }
         draft.closingAllocations = [lots[0].id: "1", lots[1].id: "1"]
         draft.legs[0].form.quantity = "2"; draft.legs[0].form.unitPrice = "1"; draft.legs[0].form.fee = "1.30"
         let events = try draft.events(in: opened)
         try #require(events.count == 1)
         let event = events[0]
-        #expect(event.source.externalTransactionID == "close-001")
+        #expect(event.source.externalTransactionID == (automaticMetadata
+            ? "local-option-closing.v1:" + draft.id.uuidString + ":" + draft.legs[0].id : "close-001"))
         guard case .trade(let trade) = event.payload else { Issue.record("Expected one closing fill"); return }
         #expect(trade.quantity == (try Money("2")))
         #expect(trade.fee == (try Money("1.30")))
@@ -863,7 +956,11 @@ struct OptionTradeEntryDraftTests {
         #expect(changedEvents[0].id == event.id && changedEvents[0].source == event.source)
         let closingPlan = try await store.previewManual(events: events, expectedRevision: opened.revision)
         #expect(closingPlan.canCommit && closingPlan.rows.count == 1 && closingPlan.rows[0].disposition == .new)
+        let retry = try await store.previewManual(events: draft.events(in: opened), expectedRevision: opened.revision)
+        #expect(retry.canCommit && retry.rows == closingPlan.rows && retry.projectedState == closingPlan.projectedState)
+        await store.cancel(planID: retry.id)
         let committed = try await store.commit(planID: closingPlan.id, expectedRevision: opened.revision)
+        #expect(throws: OptionTradeEntryError.changedLot) { try draft.events(in: committed) }
         let committedLotsClosed = committed.state.lots.allSatisfy(\.isClosed)
         #expect(committedLotsClosed)
         let realizations = committed.state.realizations.filter { $0.eventID == event.id }

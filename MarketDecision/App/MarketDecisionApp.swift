@@ -3,6 +3,7 @@ import AppKit
 import AppComposition
 import CoreDomain
 import DataContracts
+import AIInsights
 
 enum AppPage: String, CaseIterable, Identifiable {
     case investments = "我的投资", options = "期权交易", stocks = "股票分析", settings = "设置"
@@ -31,6 +32,7 @@ struct MarketDecisionApp: App {
     @State private var model: WorkspaceModel
     @AppStorage("appearance") private var appearance = "system"
     init() {
+        AIModelConfiguration.migrateStoredModel(in: .standard)
         #if UI_TEST_HOST
         // A separate test-only target. Shipping Debug/Release never select this factory.
         _model = State(initialValue: WorkspaceModel(prepareEnvironment: NativeUITestEnvironment.prepare))

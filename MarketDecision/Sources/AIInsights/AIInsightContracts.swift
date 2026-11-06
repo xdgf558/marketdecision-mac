@@ -14,9 +14,17 @@ public enum AIInsightError: Error, Equatable, Sendable {
     case invalidInput, invalidModel, budgetExceeded, malformedResponse
     case incompleteResponse, refused, unexpectedOutput, invalidEvidence
     case outputLimitReached, contentFiltered, responseFailed
+    case formatValidation(AIInsightFormatIssue)
     case outputStructure(AIInsightOutputIssue)
     case evidenceValidation(AIInsightEvidenceIssue, section: AIInsightClaimSection)
     case scenarioProposal(AIPriceSalesScenarioIssue)
+}
+
+/// Parser locations only. Never include model-generated keys, text, IDs or tokens.
+public enum AIInsightFormatIssue: String, CaseIterable, Equatable, Sendable {
+    case responseJSON, responseEnvelope, responseModel, responseOutput
+    case analysisJSON, analysisFields, valuationFields, scenarioFields
+    case sectionFields, claimFields, analysisDecode, usage
 }
 
 /// Closed diagnostics only. Neither a failed claim nor its actual reference IDs

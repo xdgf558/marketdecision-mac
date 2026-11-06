@@ -7,7 +7,7 @@ import Persistence
 struct AISettingsView: View {
     let credentials: CredentialSettingsModel
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
+    @AppStorage(AIModelConfiguration.modelPreferenceKey) private var modelName = AIModelConfiguration.defaultModel
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -19,7 +19,13 @@ struct AISettingsView: View {
                 Section("模型") {
                     TextField("OpenAI 模型 ID", text: $modelName).textFieldStyle(.roundedBorder)
                         .accessibilityIdentifier("aiModelID")
-                    Text("默认 gpt-6-luna。可填写账户支持的 Responses / Structured Outputs 模型；API 单独按使用量计费。")
+                    LabeledContent("推理强度", value: AIModelConfiguration.reasoningEffort(for: modelName)?.uppercased() ?? "模型默认")
+                        .accessibilityIdentifier("aiReasoningEffort")
+                    Text("默认 GPT 6.1 SOL（gpt-6.1-sol），推理强度 MAX。可填写账户支持的 Responses / Structured Outputs 模型；其他模型采用其默认推理强度。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    LabeledContent("单次额度（含推理）", value: "财报 \(AIModelConfiguration.maxOutputTokens(for: modelName, purpose: .financialAnalysis)) / 标普 \(AIModelConfiguration.maxOutputTokens(for: modelName, purpose: .benchmarkSearch)) tokens")
+                        .accessibilityIdentifier("aiOutputTokenBudget")
+                    Text("MAX 可能增加等待时间与 API 用量。单次网络请求最多等待 5 分钟，可随时取消；按实际 token 用量计费，额度不是固定费用，也不保证一定生成完整回答。失败不自动加额或重试。")
                         .font(.caption).foregroundStyle(.secondary)
                     Text("收益分享的标普参考另需模型支持 web_search；联网搜索有工具费用，不支持时会提示失败，不自动换模型或重试。")
                         .font(.caption).foregroundStyle(.secondary)
@@ -48,7 +54,7 @@ struct AIInsightCard: View {
     @State private var showsValuationInputs = false
     @State private var detail: AIInsightDetail?
     @Environment(\.colorScheme) private var colorScheme
-    @AppStorage("openAIFinancialModel") private var modelName = "gpt-6-luna"
+    @AppStorage(AIModelConfiguration.modelPreferenceKey) private var modelName = AIModelConfiguration.defaultModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

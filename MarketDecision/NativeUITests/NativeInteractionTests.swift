@@ -814,6 +814,23 @@ import XCTest
         }
         // Read-only booked reports never create a complete frozen valuation.
         XCTAssertFalse(mainWindow.staticTexts["investmentNetPnL"].exists)
+        waitReportAction(share); share.click()
+        XCTAssertTrue(quickPreview.exists || quickPreview.waitForExistence(timeout: 10))
+        waitText("不代表收益率为 0%", in: mainWindow.staticTexts["investmentShareReturnMissing"])
+        // macOS exposes this link-styled action with a non-Button AX role.
+        // Match its stable identifier, then reveal its own share viewport.
+        let prepareReturn = mainWindow.descendants(matching: .any)["investmentSharePrepareReturn"].firstMatch
+        XCTAssertTrue(prepareReturn.exists || prepareReturn.waitForExistence(timeout: 5))
+        let shareScroll = mainWindow.scrollViews.containing(prepareReturn.elementType,
+            identifier: "investmentSharePrepareReturn").firstMatch
+        XCTAssertTrue(shareScroll.exists, "The return action must remain in the share scroll view")
+        revealOptionControl(prepareReturn)
+        waitReportAction(prepareReturn); prepareReturn.click(); waitAbsent(quickPreview)
+        let startDay = mainWindow.textFields["investmentStartDay"]
+        XCTAssertTrue(startDay.exists || startDay.waitForExistence(timeout: 5))
+        XCTAssertFalse((startDay.value as? String ?? "").isEmpty)
+        XCTAssertFalse((mainWindow.textFields["investmentEndDay"].value as? String ?? "").isEmpty)
+        XCTAssertFalse(mainWindow.staticTexts["investmentCalculationPnL"].exists)
     }
     func testOptionEvidenceOfflineKindsFreezeReplayAndDraftInvalidation() {
         configure(); launchMainWindow()

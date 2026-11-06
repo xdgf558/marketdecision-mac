@@ -7,6 +7,82 @@ public struct PerformanceCashFlow: Codable, Equatable, Sendable {
     public init(day: String, amount: Money) { self.day = day; self.amount = amount }
 }
 
+/// A compact projection of a calculated/replayed report. It deliberately retains
+/// no account names, ledger events, positions, or source documents. The owner must
+/// validate report replay and ledger identity before constructing this projection.
+/// Endpoints are exact valuation instants; matching a calendar date alone never
+/// authorizes use of an intraday or differently timed NAV.
+public struct PerformanceReturnSeries: Sendable, Equatable {
+    private struct Anchor: Sendable, Equatable {
+        let day: String
+        let valuationAt: Date?
+        let nav: Money?
+        let status: PerformanceStatus
+        let hasStalePrice: Bool
+
+        var usable: Bool {
+            guard let valuationAt, valuationAt.timeIntervalSinceReferenceDate.isFinite,
+                  let nav, nav.amount >= 0, status == .available else { return false }
+            return !hasStalePrice
+        }
+    }
+    private let anchors: [Anchor]
+    private let segments: [PerformanceSegment]
+    private let flowsComplete: Bool
+
+    public init(report: PerformanceReport) {
+        anchors = report.daily.map {
+            Anchor(day: $0.day, valuationAt: $0.valuationAt, nav: $0.nav, status: $0.status,
+                   hasStalePrice: $0.positions.contains { $0.priceKind == .lastStale })
+        }
+        segments = report.segments
+        flowsComplete = report.input.request.externalFlowsComplete && report.input.request.flowCompletenessEvidence != nil
+    }
+
+    public func latestValuation(onOrBefore cutoff: Date, notBefore lowerBound: Date) -> Date? {
+        guard flowsComplete, cutoff.timeIntervalSinceReferenceDate.isFinite,
+              lowerBound.timeIntervalSinceReferenceDate.isFinite, lowerBound <= cutoff else { return nil }
+        return anchors.compactMap { anchor -> Date? in
+            guard anchor.usable, let at = anchor.valuationAt, at >= lowerBound, at <= cutoff else { return nil }
+            return at
+        }.max()
+    }
+
+    /// Reuses the engine's continuous-segment calculation, including its
+    /// end-of-day external-flow convention. No return is derived from cash P&L.
+    public func timeWeightedReturn(from start: Date, to end: Date) -> PerformanceNumber {
+        guard start.timeIntervalSinceReferenceDate.isFinite, end.timeIntervalSinceReferenceDate.isFinite, start < end else {
+            return PerformanceReturns.number(nil, .invalidInput, reason: "收益率起止时刻无效或未递增")
+        }
+        guard flowsComplete else {
+            return PerformanceReturns.number(nil, .missingInput, reason: "尚未核对期间出入金的完整性")
+        }
+        let starts = anchors.indices.filter { anchors[$0].valuationAt == start }
+        let ends = anchors.indices.filter { anchors[$0].valuationAt == end }
+        guard starts.count == 1, ends.count == 1, let first = starts.first, let last = ends.first, first < last else {
+            return PerformanceReturns.number(nil, .missingInput, reason: "缺少与比较起止时刻一致的已核对净值")
+        }
+        let selected = anchors[first...last]
+        guard selected.allSatisfy(\.usable) else {
+            return PerformanceReturns.number(nil, .missingInput, reason: "期间净值缺失或含陈旧价格，无法计算可比收益率")
+        }
+        guard let initialNAV = anchors[first].nav, initialNAV.amount > 0 else {
+            return PerformanceReturns.number(nil, .zeroDenominator, reason: "期初净值须为正；不能用已入账金额代替本金")
+        }
+        for index in (first + 1)...last {
+            guard let before = anchors[index - 1].valuationAt, let after = anchors[index].valuationAt,
+                  before < after, anchors[index - 1].day < anchors[index].day else {
+                return PerformanceReturns.number(nil, .invalidInput, reason: "净值时序不一致")
+            }
+        }
+        let value = PerformanceReturns.intervalReturn(from: anchors[first].day, to: anchors[last].day, segments: segments)
+        guard value.status == .available, let rate = value.value, rate.isFinite else {
+            return PerformanceReturns.number(nil, value.status, reason: "期间净值不在同一连续收益段，不能拼接收益率")
+        }
+        return PerformanceNumber(value: rate, status: .available, sampleCount: last - first)
+    }
+}
+
 /// Actual/365, end-of-day cash-flow convention. A found root is never a claim of global uniqueness.
 public enum PerformanceXIRRSolver {
     public static func solve(_ flows: [PerformanceCashFlow]) throws -> PerformanceXIRR {
